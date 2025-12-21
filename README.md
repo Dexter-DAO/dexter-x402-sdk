@@ -1,149 +1,145 @@
-# @dexter/x402-solana
+<p align="center">
+  <img src="https://dexter.cash/assets/logos/dexter-wordmark.svg" alt="Dexter wordmark" width="360">
+</p>
 
-Dexter's x402 v2 SDK for Solana payments. Make and accept machine-to-machine payments with one line of code.
+<p align="center">
+  <a href="https://nodejs.org/en/download"><img src="https://img.shields.io/badge/node-%3E=20-green.svg" alt="Node >= 20"></a>
+  <a href="https://www.npmjs.com/package/@dexter/x402-solana"><img src="https://img.shields.io/badge/npm-%40dexter%2Fx402--solana-red.svg" alt="npm @dexter/x402-solana"></a>
+  <a href="https://x402.dexter.cash"><img src="https://img.shields.io/badge/facilitator-x402.dexter.cash-orange.svg" alt="x402 Facilitator"></a>
+</p>
 
-## What is x402?
+<p align="center">
+  <a href="https://github.com/BranchManager69/dexter-api">Dexter API</a>
+  · <a href="https://github.com/BranchManager69/dexter-fe">Dexter FE</a>
+  · <a href="https://github.com/BranchManager69/dexter-mcp">Dexter MCP</a>
+  · <strong>Dexter x402 SDK</strong>
+  · <a href="https://github.com/BranchManager69/dexter-ops">Dexter Ops</a>
+</p>
 
-x402 is a protocol for HTTP-native payments. When a server responds with `402 Payment Required`, the client automatically pays and retries. No checkout flows, no API keys, no accounts.
+Official SDK for integrating with Dexter's x402 v2 Solana payment protocol. Provides client-side auto-402 handling and server-side helpers for generating payment requirements and verifying settlements through the Dexter facilitator.
 
-Dexter runs a public x402 v2 facilitator at `https://x402.dexter.cash`.
+---
 
-## Installation
+## Highlights
+
+- **Zero-config client** – wrap your `fetch` calls; the SDK auto-handles 402 responses, signs transactions via wallet adapter, and retries with payment proof.
+- **Server helpers** – generate correct `PAYMENT-REQUIRED` headers and verify/settle payments through the Dexter facilitator in one line.
+- **v2 header-based flow** – uses `PAYMENT-REQUIRED` and `PAYMENT-SIGNATURE` headers (not legacy `X-PAYMENT`).
+- **Solana-native** – builds proper `TransferChecked` transactions with ComputeBudget instructions that comply with Dexter's sponsored-fee policy.
+- **Dual ESM/CJS** – ships both module formats with full TypeScript definitions.
+
+---
+
+## Quick Start
+
+### Install
 
 ```bash
-npm install @dexter/x402-solana
+npm install @dexter/x402-solana @solana/web3.js @solana/spl-token
 ```
 
-## Quick Start (Client)
+### Client (Browser/Node)
 
-Make paid API requests with automatic 402 handling:
-
-```ts
+```typescript
 import { createX402Client } from '@dexter/x402-solana/client';
 
 const client = createX402Client({
-  wallet, // any @solana/wallet-adapter compatible wallet
+  wallet,  // wallet adapter with signTransaction
+  network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+  verbose: true,
 });
 
-// This automatically handles 402 responses:
-// 1. Server returns 402 with PAYMENT-REQUIRED header
-// 2. SDK builds + signs a USDC transfer
-// 3. SDK retries with PAYMENT-SIGNATURE header
-// 4. You get the response
-const response = await client.fetch('https://api.dexter.cash/api/shield/create', {
+// Auto-handles 402s, signs payment, retries
+const res = await client.fetch('https://api.dexter.cash/api/shield/create', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ prompt: 'Hello world' }),
+  body: JSON.stringify(payload),
 });
 ```
 
-### Client Options
+### Server (Express/Next.js)
 
-```ts
-createX402Client({
-  wallet,                    // Required: wallet with signTransaction
-  network: 'solana:5eykt...', // Optional: CAIP-2 network (defaults to mainnet)
-  rpcUrl: 'https://...',     // Optional: custom RPC
-  maxAmountAtomic: '100000', // Optional: cap payments (in atomic units)
-  fetch: customFetch,        // Optional: custom fetch for proxies
-  verbose: true,             // Optional: debug logging
-});
-```
-
-## Quick Start (Server)
-
-Accept x402 payments in your Express/Node server:
-
-```ts
+```typescript
 import { createX402Server } from '@dexter/x402-solana/server';
 
-const x402 = createX402Server({
-  payTo: 'YourSolanaWalletAddress',
+const server = createX402Server({
+  facilitatorUrl: 'https://x402.dexter.cash',
+  network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+  payTo: 'YourWalletAddress...',
+  asset: { mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', decimals: 6 },
 });
 
-app.post('/api/premium', async (req, res) => {
-  // Check for payment
-  const paymentHeader = req.headers['payment-signature'];
-  
-  if (!paymentHeader) {
-    // No payment — return 402
-    const requirements = x402.buildRequirements({
-      amountAtomic: '50000', // 0.05 USDC
-      resourceUrl: 'https://yourapi.com/api/premium',
-      description: 'Premium API access',
-    });
-    
-    res.status(402)
-      .set('PAYMENT-REQUIRED', x402.encodeRequirements(requirements))
-      .json({});
-    return;
-  }
-
-  // Verify + settle payment
-  const settled = await x402.settlePayment(paymentHeader);
-  if (!settled.success) {
-    return res.status(402).json({ error: 'Payment failed' });
-  }
-
-  // Payment confirmed — serve the response
-  res.json({ data: 'premium content' });
+// Generate 402 response
+const requirements = server.buildRequirements({
+  amountAtomic: '50000',  // 0.05 USDC
+  resourceUrl: '/api/protected',
 });
+
+res.setHeader('PAYMENT-REQUIRED', btoa(JSON.stringify(requirements)));
+res.status(402).json({ error: 'Payment required' });
 ```
 
-### Server Options
+---
 
-```ts
-createX402Server({
-  payTo: 'YourWallet',                      // Required: where USDC lands
-  facilitatorUrl: 'https://x402.dexter.cash', // Optional: facilitator URL
-  network: 'solana:5eykt...',               // Optional: CAIP-2 network
-  asset: { mint: 'EPjFW...', decimals: 6 }, // Optional: defaults to USDC
-  defaultTimeoutSeconds: 60,                // Optional: payment timeout
-});
+## API Surface
+
+### Client
+
+| Method | Description |
+|--------|-------------|
+| `createX402Client(config)` | Returns a client with a wrapped `fetch` that auto-handles 402 flows |
+
+**Config options:**
+- `wallet` – Solana wallet adapter with `publicKey` and `signTransaction`
+- `network` – CAIP-2 network ID (e.g. `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp`)
+- `rpcUrl` – optional custom RPC endpoint
+- `maxAmountAtomic` – optional payment cap in atomic units
+- `fetch` – optional custom fetch implementation
+- `verbose` – optional logging flag
+
+### Server
+
+| Method | Description |
+|--------|-------------|
+| `createX402Server(config)` | Returns helpers for building requirements and verifying payments |
+| `.buildRequirements(params)` | Generates a valid `PaymentRequired` payload |
+
+**Coming soon:**
+- `.send402Response()` – helper to set headers and respond
+- `.verifyPayment()` – validate payment signature via facilitator
+- `.settlePayment()` – confirm settlement via facilitator
+
+---
+
+## Dexter Stack
+
+| Repo | Role |
+|------|------|
+| [`dexter-api`](https://github.com/BranchManager69/dexter-api) | Issues realtime tokens, proxies MCP, x402 billing |
+| [`dexter-fe`](https://github.com/BranchManager69/dexter-fe) | Next.js frontend for voice/chat surfaces |
+| [`dexter-mcp`](https://github.com/BranchManager69/dexter-mcp) | Hosted MCP transport powering tool access |
+| [`dexter-ops`](https://github.com/BranchManager69/dexter-ops) | Shared operations scripts, PM2 config, nginx templates |
+
+---
+
+## Development
+
+```bash
+npm run build    # Build ESM + CJS to dist/
+npm run dev      # Watch mode
+npm run lint     # ESLint
+npm test         # Run tests (TODO)
 ```
 
-## Protocol Details
+---
 
-### Headers
+## Resources
 
-| Header | Direction | Purpose |
-|--------|-----------|---------|
-| `PAYMENT-REQUIRED` | Server → Client | Base64-encoded payment requirements |
-| `PAYMENT-SIGNATURE` | Client → Server | Base64-encoded signed transaction |
-| `PAYMENT-RESPONSE` | Server → Client | Settlement confirmation |
-
-### PaymentRequired Structure
-
-```json
-{
-  "x402Version": 2,
-  "resource": {
-    "url": "https://api.example.com/endpoint",
-    "description": "API access",
-    "mimeType": "application/json"
-  },
-  "accepts": [{
-    "scheme": "exact",
-    "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
-    "amount": "50000",
-    "asset": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-    "payTo": "SellerWalletAddress",
-    "maxTimeoutSeconds": 60,
-    "extra": {
-      "feePayer": "FacilitatorAddress",
-      "decimals": 6
-    }
-  }]
-}
-```
-
-## Links
-
-- [Dexter Facilitator](https://dexter.cash/facilitator)
-- [Seller Onboarding](https://dexter.cash/onboard)
 - [x402 v2 Migration Guide](https://docs.cdp.coinbase.com/x402/migration-guide)
+- [Seller Onboarding](https://dexter.cash/onboard)
+- [Facilitator Metrics](https://dexter.cash/facilitator)
+
+---
 
 ## License
 
-MIT
-
+Private – internal Dexter SDK infrastructure.
