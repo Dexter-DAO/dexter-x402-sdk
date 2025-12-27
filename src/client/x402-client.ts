@@ -1,15 +1,17 @@
 /**
- * x402 Client — Core Implementation
+ * Dexter x402 v2 Client
  *
- * TODO: Implement the full client that:
- * - Wraps fetch with 402 auto-handling
- * - Reads PAYMENT-REQUIRED header
- * - Builds and signs TransferChecked tx
- * - Retries with PAYMENT-SIGNATURE header
+ * A fetch wrapper that automatically handles x402 payments:
+ * 1. Makes initial request
+ * 2. On 402, reads PAYMENT-REQUIRED header
+ * 3. Builds and signs Solana transaction
+ * 4. Retries with PAYMENT-SIGNATURE header
  */
 
-import type { PaymentRequired, PaymentAccept } from '../types';
+import type { PaymentRequired, PaymentAccept, PaymentSignature } from '../types';
 import { X402Error, SOLANA_MAINNET_NETWORK } from '../types';
+import { buildPaymentTransaction, serializeTransaction } from './transaction-builder';
+import { getDefaultRpcUrl, isSolanaNetwork } from '../utils';
 
 /**
  * Wallet interface compatible with @solana/wallet-adapter
@@ -47,27 +49,39 @@ export interface X402Client {
 
 /**
  * Create an x402 client for making paid API requests
+ *
+ * @example
+ * ```ts
+ * const client = createX402Client({
+ *   wallet,
+ *   network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+ * });
+ *
+ * const response = await client.fetch('https://api.example.com/paid-endpoint', {
+ *   method: 'POST',
+ *   body: JSON.stringify({ query: 'example' }),
+ * });
+ * ```
  */
 export function createX402Client(config: X402ClientConfig): X402Client {
   const {
     wallet,
     network = SOLANA_MAINNET_NETWORK,
-    rpcUrl: _rpcUrl,
+    rpcUrl,
     maxAmountAtomic,
     fetch: customFetch = globalThis.fetch,
     verbose = false,
   } = config;
 
-  // TODO: Use rpcUrl for building transactions
-  void _rpcUrl;
-
+  const resolvedRpcUrl = rpcUrl || getDefaultRpcUrl(network);
   const log = verbose ? console.log.bind(console, '[x402]') : () => {};
 
   async function x402Fetch(
     input: string | URL | Request,
     init?: RequestInit
   ): Promise<Response> {
-    log('Making request:', input);
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    log('Making request:', url);
 
     // Initial request
     const response = await customFetch(input, init);
@@ -77,9 +91,9 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       return response;
     }
 
-    log('Received 402, reading PAYMENT-REQUIRED header');
+    log('Received 402, reading payment requirements...');
 
-    // Read payment requirements from header
+    // Read payment requirements from PAYMENT-REQUIRED header
     const paymentRequiredHeader = response.headers.get('PAYMENT-REQUIRED');
     if (!paymentRequiredHeader) {
       throw new X402Error(
@@ -100,34 +114,48 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       );
     }
 
-    log('Payment requirements:', requirements);
+    log('Payment requirements:', JSON.stringify(requirements, null, 2));
 
-    // Find a Solana payment option
+    // Find a Solana payment option that matches our network
     const accept = requirements.accepts.find(
       (a): a is PaymentAccept =>
-        a.scheme === 'exact' && a.network === network
+        a.scheme === 'exact' && isSolanaNetwork(a.network) && a.network === network
     );
 
     if (!accept) {
+      // Try to find any Solana option
+      const anySolana = requirements.accepts.find(
+        (a): a is PaymentAccept => a.scheme === 'exact' && isSolanaNetwork(a.network)
+      );
+      
+      if (anySolana) {
+        throw new X402Error(
+          'unsupported_network',
+          `Server requires ${anySolana.network} but client configured for ${network}`,
+          { serverNetwork: anySolana.network, clientNetwork: network }
+        );
+      }
+
       throw new X402Error(
         'no_solana_accept',
-        `No payment option for network ${network}`
+        `No Solana payment option found. Available networks: ${requirements.accepts.map(a => a.network).join(', ')}`
       );
     }
 
     // Validate required fields
     if (!accept.extra?.feePayer) {
-      throw new X402Error('missing_fee_payer', 'Payment option missing feePayer');
+      throw new X402Error('missing_fee_payer', 'Payment option missing feePayer in extra');
     }
     if (typeof accept.extra?.decimals !== 'number') {
-      throw new X402Error('missing_decimals', 'Payment option missing decimals');
+      throw new X402Error('missing_decimals', 'Payment option missing decimals in extra');
     }
 
     // Check max amount
     if (maxAmountAtomic && BigInt(accept.amount) > BigInt(maxAmountAtomic)) {
       throw new X402Error(
         'amount_exceeds_max',
-        `Amount ${accept.amount} exceeds max ${maxAmountAtomic}`
+        `Payment amount ${accept.amount} exceeds maximum ${maxAmountAtomic}`,
+        { amount: accept.amount, max: maxAmountAtomic }
       );
     }
 
@@ -139,32 +167,68 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       );
     }
 
-    // TODO: Build and sign the transaction
-    // This is where we'd:
-    // 1. Create ComputeBudget instructions
-    // 2. Create TransferChecked instruction
-    // 3. Build and sign the transaction
-    // 4. Encode to base64
+    log('Building payment transaction...');
 
-    throw new X402Error(
-      'transaction_build_failed',
-      'Transaction building not yet implemented'
-    );
+    // Build and sign the transaction
+    let signedTx;
+    try {
+      signedTx = await buildPaymentTransaction(wallet, accept, resolvedRpcUrl);
+    } catch (err) {
+      throw new X402Error(
+        'transaction_build_failed',
+        `Failed to build payment transaction: ${err instanceof Error ? err.message : String(err)}`,
+        err
+      );
+    }
 
-    // TODO: Retry with PAYMENT-SIGNATURE header
-    // const paymentSignature: PaymentSignature = { ... };
-    // const retryResponse = await customFetch(input, {
-    //   ...init,
-    //   headers: {
-    //     ...init?.headers,
-    //     'PAYMENT-SIGNATURE': btoa(JSON.stringify(paymentSignature)),
-    //   },
-    // });
-    // return retryResponse;
+    log('Transaction signed successfully');
+
+    // Serialize transaction to base64
+    const transactionBase64 = serializeTransaction(signedTx);
+
+    // Build PaymentSignature payload
+    const paymentSignature: PaymentSignature = {
+      x402Version: 2,
+      resource: requirements.resource,
+      accepted: accept,
+      payload: {
+        transaction: transactionBase64,
+      },
+    };
+
+    // Encode for header
+    const paymentSignatureHeader = btoa(JSON.stringify(paymentSignature));
+
+    log('Retrying with PAYMENT-SIGNATURE header...');
+
+    // Retry with PAYMENT-SIGNATURE header
+    const retryInit: RequestInit = {
+      ...init,
+      headers: {
+        ...(init?.headers instanceof Headers
+          ? Object.fromEntries(init.headers.entries())
+          : init?.headers || {}),
+        'PAYMENT-SIGNATURE': paymentSignatureHeader,
+      },
+    };
+
+    const retryResponse = await customFetch(input, retryInit);
+
+    log('Retry response status:', retryResponse.status);
+
+    // Check if payment was rejected
+    if (retryResponse.status === 402) {
+      throw new X402Error(
+        'payment_rejected',
+        'Payment was rejected by the server',
+        { status: retryResponse.status }
+      );
+    }
+
+    return retryResponse;
   }
 
   return {
     fetch: x402Fetch,
   };
 }
-

@@ -1,5 +1,5 @@
 {
-  "name": "@dexter/x402-solana",
+  "name": "@dexterai/x402-solana",
   "version": "0.1.0",
   "description": "Dexter x402 v2 SDK for Solana payments",
   "author": "Dexter",
@@ -27,14 +27,18 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "release": "npm version patch && npm publish --access public",
+    "release:minor": "npm version minor && npm publish --access public",
+    "release:major": "npm version major && npm publish --access public"
   },
   "dependencies": {
-    "@solana/web3.js": "^1.98.0",
-    "@solana/spl-token": "^0.4.9"
+    "@solana/spl-token": "^0.4.9",
+    "@solana/web3.js": "^1.98.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "bs58": "^6.0.0",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
@@ -62,4 +66,3 @@
     "url": "https://github.com/BranchManager69/dexter-x402-sdk"
   }
 }
-
