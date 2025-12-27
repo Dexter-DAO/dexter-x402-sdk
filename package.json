@@ -1,6 +1,6 @@
 {
   "name": "@dexterai/x402-solana",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Dexter x402 v2 SDK for Solana payments",
   "author": "Dexter",
   "license": "MIT",
