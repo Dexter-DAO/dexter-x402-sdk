@@ -95,6 +95,9 @@ app.post('/protected', async (req, res) => {
 });
 ```
 
+> ⚠️ **Note:** The server SDK (`createX402Server`) has not been battle-tested in production. 
+> The client SDK and React hook have been verified with real payments.
+
 ### React
 
 ```tsx
