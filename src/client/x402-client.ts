@@ -255,9 +255,23 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       );
     }
 
+    // Check balance before signing
+    const rpcUrl = getRpcUrl(accept.network, adapter);
+    log('Checking balance...');
+    const balance = await adapter.getBalance(accept, wallet, rpcUrl);
+    const requiredAmount = Number(accept.amount) / Math.pow(10, accept.extra.decimals);
+    
+    if (balance < requiredAmount) {
+      const network = adapter.name === 'EVM' ? 'Base' : 'Solana';
+      throw new X402Error(
+        'insufficient_balance',
+        `Insufficient USDC balance on ${network}. Have $${balance.toFixed(4)}, need $${requiredAmount.toFixed(4)}`
+      );
+    }
+    log(`Balance OK: $${balance.toFixed(4)} >= $${requiredAmount.toFixed(4)}`);
+
     // Build and sign transaction
     log('Building transaction...');
-    const rpcUrl = getRpcUrl(accept.network, adapter);
     const signedTx = await adapter.buildTransaction(accept, wallet, rpcUrl);
     log('Transaction signed');
 

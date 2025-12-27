@@ -185,6 +185,7 @@ export type X402ErrorCode =
   | 'missing_fee_payer'
   | 'missing_decimals'
   | 'amount_exceeds_max'
+  | 'insufficient_balance'
   | 'wallet_missing_sign_transaction'
   | 'wallet_not_connected'
   | 'transaction_build_failed'
