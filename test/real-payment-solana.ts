@@ -2,7 +2,9 @@
  * Real Payment Test - Solana
  *
  * Tests the full x402 flow with actual USDC payment on Solana mainnet.
- * Uses the CONNECTOR_REWARD wallet for testing.
+ *
+ * Required environment variable:
+ *   SOLANA_TEST_PRIVATE_KEY - Base58-encoded private key for Solana wallet with USDC
  */
 
 import { Keypair, Connection, PublicKey } from '@solana/web3.js';
@@ -10,8 +12,14 @@ import { getAssociatedTokenAddress, getAccount } from '@solana/spl-token';
 import bs58 from 'bs58';
 import { createX402Client, SOLANA_MAINNET, USDC_MINT } from '../src/client';
 
-// Test wallet (CONNECTOR_REWARD from dexter-api)
-const PRIVATE_KEY = 'REDACTED_SOLANA_KEY';
+// Load from environment
+const PRIVATE_KEY = process.env.SOLANA_TEST_PRIVATE_KEY;
+if (!PRIVATE_KEY) {
+  console.error('❌ Missing SOLANA_TEST_PRIVATE_KEY environment variable');
+  console.error('   Set it in .env or export SOLANA_TEST_PRIVATE_KEY="..."');
+  process.exit(1);
+}
+
 const RPC_URL = 'https://api.mainnet-beta.solana.com';
 
 async function main() {
@@ -63,7 +71,7 @@ async function main() {
   console.log('\n📡 Making paid API request to Dexter...\n');
 
   try {
-    const response = await client.fetch('https://x402.dexter.cash/api/tools/solscan/trending', {
+    const response = await client.fetch('https://api.dexter.cash/api/tools/solscan/trending', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ limit: 3 }),
@@ -94,4 +102,3 @@ async function main() {
 }
 
 main();
-

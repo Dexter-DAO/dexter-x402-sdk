@@ -7,3 +7,11 @@ dist/
 coverage/
 
 test-wallet-base.json
+
+# Environment files with secrets
+.env
+.env.*
+*.env
+
+# Test wallet files
+test-wallet*.json

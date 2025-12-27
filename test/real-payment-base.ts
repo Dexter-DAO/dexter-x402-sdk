@@ -2,16 +2,21 @@
  * Real Payment Test - Base
  *
  * Tests the full x402 flow with actual USDC payment on Base mainnet.
+ *
+ * Required environment variable:
+ *   BASE_TEST_PRIVATE_KEY - Private key for Base wallet with USDC
  */
 
 import { ethers } from 'ethers';
 import { createX402Client, BASE_MAINNET } from '../src/client';
 
-// Test wallet (from test-wallet-base.json)
-const TEST_WALLET = {
-  address: '0xA6D5F4E5ECbE00E0A0Ee6bAAA2137d703C98F0EE',
-  privateKey: 'REDACTED_BASE_KEY',
-};
+// Load from environment
+const PRIVATE_KEY = process.env.BASE_TEST_PRIVATE_KEY;
+if (!PRIVATE_KEY) {
+  console.error('❌ Missing BASE_TEST_PRIVATE_KEY environment variable');
+  console.error('   Set it in .env or export BASE_TEST_PRIVATE_KEY="0x..."');
+  process.exit(1);
+}
 
 const RPC_URL = 'https://mainnet.base.org';
 const USDC_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
@@ -32,7 +37,7 @@ async function main() {
   console.log('===========================\n');
 
   const provider = new ethers.JsonRpcProvider(RPC_URL);
-  const signer = new ethers.Wallet(TEST_WALLET.privateKey, provider);
+  const signer = new ethers.Wallet(PRIVATE_KEY, provider);
 
   console.log(`Wallet: ${signer.address}`);
 
@@ -81,7 +86,7 @@ async function main() {
   console.log('\n📡 Making paid API request to Dexter (Base)...\n');
 
   try {
-    const response = await client.fetch('https://x402.dexter.cash/api/tools/solscan/trending', {
+    const response = await client.fetch('https://api.dexter.cash/api/tools/solscan/trending', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ limit: 3 }),
@@ -113,4 +118,3 @@ async function main() {
 }
 
 main();
-
