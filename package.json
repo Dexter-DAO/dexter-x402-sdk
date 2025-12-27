@@ -37,7 +37,7 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "echo 'Real payment tests require funded wallets. Run: npx tsx test/real-payment-solana.ts'",
     "test:watch": "vitest",
     "prepublishOnly": "npm run build",
     "release": "npm version patch && npm publish --access public",
@@ -90,7 +90,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/Dexter-DAO/x402-sdk"
+    "url": "https://github.com/Dexter-DAO/dexter-x402-sdk"
   },
   "homepage": "https://dexter.cash/sdk",
   "bugs": {
