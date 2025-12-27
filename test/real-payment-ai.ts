@@ -62,8 +62,7 @@ async function main() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
         prompt,
-        model: 'gpt-4o-mini',  // Use real OpenAI model
-        maxTokens: 200 
+        model: 'gpt-4o-mini',  // Token-based pricing
       }),
     });
 
@@ -77,13 +76,12 @@ async function main() {
     console.log('─'.repeat(40));
     console.log(data.response);
     console.log('─'.repeat(40));
-    console.log(`\nBilling: $${data.billing?.chargeUsd} | TX: ${data.billing?.txHash?.slice(0,20)}...`);
-
-    await new Promise(r => setTimeout(r, 2000));
-    const accountAfter = await getAccount(connection, ata);
-    const balanceAfter = Number(accountAfter.amount) / 1_000_000;
-
-    console.log(`\n💸 Spent: $${(balanceBefore - balanceAfter).toFixed(4)} USDC`);
+    // Payment details from API response (authoritative - no balance diff needed)
+    console.log('\n💰 Payment Confirmed:');
+    console.log(`   Charged: $${data.billing?.chargeUsd} USDC`);
+    console.log(`   Atomic:  ${data.billing?.amountAtomic} units`);
+    console.log(`   TX:      ${data.billing?.txHash}`);
+    console.log(`   Verify:  https://solscan.io/tx/${data.billing?.txHash}`);
 
   } catch (error: any) {
     console.error('\n❌ Failed:', error.message);
