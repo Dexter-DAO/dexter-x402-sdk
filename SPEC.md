@@ -1,7 +1,7 @@
 # Dexter x402 v2 SDK — Spec + Build Brief
 
 Purpose: define a **clean, correct, developer‑friendly** SDK for Dexter's x402
-v2 Solana payments (header‑based), so third parties can integrate in minutes
+v2 payments (Solana, Base, and EVM chains), so third parties can integrate in minutes
 without mis‑implementing the protocol.
 
 Status: Draft spec (authoritative for build). v2‑only.
@@ -71,7 +71,7 @@ We are **not** shipping a facilitator in this SDK.
 ### 4.1 Primary API
 
 ```ts
-import { createX402Client } from '@dexter/x402-solana/client';
+import { createX402Client } from '@dexterai/x402/client';
 
 const client = createX402Client({
   wallet,               // wallet adapter with signTransaction
@@ -120,7 +120,7 @@ The SDK must allow overrides, but defaults must be safe under Dexter policy.
 ### 5.1 Payment requirement builder
 
 ```ts
-import { createX402Server } from '@dexter/x402-solana/server';
+import { createX402Server } from '@dexterai/x402/server';
 
 const server = createX402Server({
   facilitatorUrl: 'https://x402.dexter.cash',
@@ -224,10 +224,10 @@ These are thin wrappers around the facilitator `/verify` and `/settle`.
 
 ## 9) Packaging + Docs
 
-- Package name: `@dexter/x402-solana`
+- Package name: `@dexterai/x402`
 - Entry points:
-  - `@dexter/x402-solana/client`
-  - `@dexter/x402-solana/server`
+  - `@dexterai/x402/client`
+  - `@dexterai/x402/server`
 - README with 5‑minute setup.
 - Example apps:
   - React wallet‑pay demo
