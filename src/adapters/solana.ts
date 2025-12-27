@@ -177,15 +177,17 @@ export class SolanaAdapter implements ChainAdapter {
     const connection = new Connection(url, 'confirmed');
     const userPubkey = new PublicKey(wallet.publicKey.toBase58());
 
-    // Extract required fields
-    const { payTo, asset, amount, extra } = accept;
+    // Extract required fields (amount or maxAmountRequired for x402 spec compatibility)
+    const { payTo, asset, extra } = accept;
+    const amount = accept.amount || accept.maxAmountRequired;
+    if (!amount) {
+      throw new Error('Missing amount in payment requirements');
+    }
 
     if (!extra?.feePayer) {
       throw new Error('Missing feePayer in payment requirements');
     }
-    if (typeof extra?.decimals !== 'number') {
-      throw new Error('Missing decimals in payment requirements');
-    }
+    // Note: decimals is optional - we fetch from mint on-chain if not provided
 
     const feePayerPubkey = new PublicKey(extra.feePayer);
     const mintPubkey = new PublicKey(asset);
@@ -227,9 +229,9 @@ export class SolanaAdapter implements ChainAdapter {
         ? TOKEN_2022_PROGRAM_ID
         : TOKEN_PROGRAM_ID;
 
-    // Fetch mint to verify decimals
+    // Fetch mint to get decimals (required for TransferChecked)
     const mint = await getMint(connection, mintPubkey, undefined, programId);
-    if (mint.decimals !== extra.decimals) {
+    if (typeof extra?.decimals === 'number' && mint.decimals !== extra.decimals) {
       this.log(
         `Decimals mismatch: requirements say ${extra.decimals}, mint says ${mint.decimals}`
       );
@@ -308,4 +310,6 @@ export class SolanaAdapter implements ChainAdapter {
 export function createSolanaAdapter(config?: AdapterConfig): SolanaAdapter {
   return new SolanaAdapter(config);
 }
+
+
 

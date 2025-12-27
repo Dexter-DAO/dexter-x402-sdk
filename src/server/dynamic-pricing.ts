@@ -245,3 +245,5 @@ export function formatPricing(config: DynamicPricingConfig): string {
   return `from $${rate} per ${units} chars`;
 }
 
+
+

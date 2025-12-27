@@ -71,10 +71,10 @@ export interface ResourceInfo {
  * Chain-specific fields may vary
  */
 export interface AcceptsExtra {
-  /** Facilitator address that pays tx fees (required) */
-  feePayer: string;
-  /** Token decimals (required) */
-  decimals: number;
+  /** Facilitator address that pays tx fees (required for Solana) */
+  feePayer?: string;
+  /** Token decimals (optional - defaults to 6 for USDC) */
+  decimals?: number;
   /** EIP-712: Token name (EVM only) */
   name?: string;
   /** EIP-712: Token version (EVM only) */
@@ -91,8 +91,10 @@ export interface PaymentAccept {
   scheme: 'exact';
   /** CAIP-2 network identifier */
   network: string;
-  /** Payment amount in atomic units (as string to avoid precision loss) */
-  amount: string;
+  /** Payment amount in atomic units - x402 spec uses maxAmountRequired */
+  amount?: string;
+  /** Payment amount in atomic units (x402 spec field) */
+  maxAmountRequired?: string;
   /** Token address */
   asset: string;
   /** Seller's address to receive payment */
@@ -184,6 +186,7 @@ export type X402ErrorCode =
   | 'no_solana_accept' // Legacy, kept for compatibility
   | 'missing_fee_payer'
   | 'missing_decimals'
+  | 'missing_amount'
   | 'amount_exceeds_max'
   | 'insufficient_balance'
   | 'wallet_missing_sign_transaction'

@@ -220,7 +220,11 @@ export class EvmAdapter implements ChainAdapter {
       throw new Error('Wallet not connected');
     }
 
-    const { payTo, asset, amount, extra } = accept;
+    const { payTo, asset, extra } = accept;
+    const amount = accept.amount || accept.maxAmountRequired;
+    if (!amount) {
+      throw new Error('Missing amount in payment requirements');
+    }
 
     this.log('Building EVM transaction:', {
       from: wallet.address,

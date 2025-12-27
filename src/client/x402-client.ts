@@ -245,19 +245,32 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       );
     }
 
-    // Validate decimals
-    if (typeof accept.extra?.decimals !== 'number') {
+    // Get decimals: from extra, or default to 6 for USDC
+    const USDC_MINTS = [
+      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // Solana mainnet
+      '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU', // Solana devnet
+      '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // Base mainnet
+      '0x036CbD53842c5426634e7929541eC2318f3dCF7e', // Base sepolia
+    ];
+    const decimals = accept.extra?.decimals ?? (USDC_MINTS.includes(accept.asset) ? 6 : undefined);
+    if (typeof decimals !== 'number') {
       throw new X402Error(
         'missing_decimals',
-        'Payment option missing decimals in extra'
+        'Payment option missing decimals - provide in extra or use a known stablecoin'
       );
     }
 
+    // Get amount (x402 spec uses maxAmountRequired, we also support amount)
+    const paymentAmount = accept.amount || accept.maxAmountRequired;
+    if (!paymentAmount) {
+      throw new X402Error('missing_amount', 'Payment option missing amount');
+    }
+
     // Check amount limit
-    if (maxAmountAtomic && BigInt(accept.amount) > BigInt(maxAmountAtomic)) {
+    if (maxAmountAtomic && BigInt(paymentAmount) > BigInt(maxAmountAtomic)) {
       throw new X402Error(
         'amount_exceeds_max',
-        `Payment amount ${accept.amount} exceeds maximum ${maxAmountAtomic}`
+        `Payment amount ${paymentAmount} exceeds maximum ${maxAmountAtomic}`
       );
     }
 
@@ -265,7 +278,7 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     const rpcUrl = getRpcUrl(accept.network, adapter);
     log('Checking balance...');
     const balance = await adapter.getBalance(accept, wallet, rpcUrl);
-    const requiredAmount = Number(accept.amount) / Math.pow(10, accept.extra.decimals);
+    const requiredAmount = Number(paymentAmount) / Math.pow(10, decimals);
     
     if (balance < requiredAmount) {
       const network = adapter.name === 'EVM' ? 'Base' : 'Solana';
