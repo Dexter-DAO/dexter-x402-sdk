@@ -218,6 +218,12 @@ export function createX402Client(config: X402ClientConfig): X402Client {
 
     log('Payment requirements:', requirements);
 
+    // Capture X-Quote-Hash if present (for dynamic pricing validation)
+    const quoteHash = response.headers.get('X-Quote-Hash');
+    if (quoteHash) {
+      log('Quote hash received:', quoteHash);
+    }
+
     // Find a payment option we can use
     const match = findPaymentOption(requirements.accepts);
     if (!match) {
@@ -303,6 +309,8 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       headers: {
         ...(init?.headers || {}),
         'PAYMENT-SIGNATURE': paymentSignatureHeader,
+        // Forward quote hash for dynamic pricing validation
+        ...(quoteHash ? { 'X-Quote-Hash': quoteHash } : {}),
       },
     });
 

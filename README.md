@@ -179,6 +179,54 @@ app.post('/protected', async (req, res) => {
 
 ---
 
+## 💸 Dynamic Pricing
+
+For LLM/AI endpoints where cost scales with input size:
+
+```typescript
+import { createX402Server, createDynamicPricing } from '@dexterai/x402/server';
+
+const server = createX402Server({ payTo: '...', network: '...' });
+const pricing = createDynamicPricing({
+  unitSize: 1000,      // chars per unit
+  ratePerUnit: 0.01,   // $0.01 per unit
+  minUsd: 0.01,        // floor
+  maxUsd: 10.00,       // ceiling
+});
+
+app.post('/api/llm', async (req, res) => {
+  const { prompt } = req.body;
+  const paymentSig = req.headers['payment-signature'];
+
+  if (!paymentSig) {
+    const quote = pricing.calculate(prompt);
+    const requirements = await server.buildRequirements({
+      amountAtomic: quote.amountAtomic,
+      resourceUrl: req.originalUrl,
+    });
+    res.setHeader('PAYMENT-REQUIRED', server.encodeRequirements(requirements));
+    res.setHeader('X-Quote-Hash', quote.quoteHash);
+    return res.status(402).json({ usdAmount: quote.usdAmount });
+  }
+
+  // Validate quote hasn't changed (prevents prompt manipulation)
+  const quoteHash = req.headers['x-quote-hash'];
+  if (!pricing.validateQuote(prompt, quoteHash)) {
+    return res.status(400).json({ error: 'Prompt changed, re-quote required' });
+  }
+
+  const result = await server.settlePayment(paymentSig);
+  if (!result.success) return res.status(402).json({ error: result.errorReason });
+
+  const response = await runLLM(prompt);
+  res.json(response);
+});
+```
+
+The client SDK automatically forwards `X-Quote-Hash` on retry.
+
+---
+
 ## 📋 API Reference
 
 ### `createX402Client(options)`

@@ -54,6 +54,10 @@ export type {
 
 export { FacilitatorClient, type SupportedKind, type SupportedResponse } from './facilitator-client';
 
+// Dynamic pricing
+export { createDynamicPricing, formatPricing } from './dynamic-pricing';
+export type { DynamicPricingConfig, DynamicPricing, PriceQuote } from './dynamic-pricing';
+
 // Re-export types for convenience
 export type { VerifyResponse, SettleResponse, PaymentRequired, PaymentAccept } from '../types';
 export { DEXTER_FACILITATOR_URL, SOLANA_MAINNET_NETWORK, BASE_MAINNET_NETWORK, USDC_MINT, USDC_BASE } from '../types';
