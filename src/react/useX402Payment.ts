@@ -194,7 +194,7 @@ export function useX402Payment(config: UseX402PaymentConfig): UseX402PaymentRetu
           const accept = {
             scheme: 'exact' as const,
             network: SOLANA_MAINNET_NETWORK,
-            amount: '0',
+            maxAmountRequired: '0',
             asset: USDC_MINT,
             payTo: '',
             maxTimeoutSeconds: 60,
@@ -221,7 +221,7 @@ export function useX402Payment(config: UseX402PaymentConfig): UseX402PaymentRetu
           const accept = {
             scheme: 'exact' as const,
             network: BASE_MAINNET_NETWORK,
-            amount: '0',
+            maxAmountRequired: '0',
             asset: USDC_BASE,
             payTo: '',
             maxTimeoutSeconds: 60,

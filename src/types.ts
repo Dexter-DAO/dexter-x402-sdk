@@ -91,10 +91,10 @@ export interface PaymentAccept {
   scheme: 'exact';
   /** CAIP-2 network identifier */
   network: string;
-  /** Payment amount in atomic units - x402 spec uses maxAmountRequired */
+  /** Payment amount in atomic units (x402 spec field - REQUIRED) */
+  maxAmountRequired: string;
+  /** Alias for maxAmountRequired (for convenience) */
   amount?: string;
-  /** Payment amount in atomic units (x402 spec field) */
-  maxAmountRequired?: string;
   /** Token address */
   asset: string;
   /** Seller's address to receive payment */
