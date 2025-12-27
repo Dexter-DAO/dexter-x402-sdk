@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./assets/dexter-wordmark.svg" alt="Dexter" width="360">
+</p>
+
 # @dexterai/x402-solana
 
 <p align="center">
@@ -101,10 +105,10 @@ res.status(402).json({ error: 'Payment required' });
 ## Development
 
 ```bash
-npm run build    # Build ESM + CJS to dist/
-npm run dev      # Watch mode
-npm run lint     # ESLint
-npm test         # Run tests (TODO)
+npm run build      # Build ESM + CJS to dist/
+npm run dev        # Watch mode
+npm run typecheck  # TypeScript type checking
+npm test           # Run tests
 ```
 
 ---
