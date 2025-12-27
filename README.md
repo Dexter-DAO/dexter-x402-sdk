@@ -1,19 +1,9 @@
-<p align="center">
-  <img src="https://dexter.cash/assets/logos/dexter-wordmark.svg" alt="Dexter wordmark" width="360">
-</p>
+# @dexterai/x402-solana
 
 <p align="center">
-  <a href="https://nodejs.org/en/download"><img src="https://img.shields.io/badge/node-%3E=20-green.svg" alt="Node >= 20"></a>
-  <a href="https://www.npmjs.com/package/@dexter/x402-solana"><img src="https://img.shields.io/badge/npm-%40dexter%2Fx402--solana-red.svg" alt="npm @dexter/x402-solana"></a>
+  <a href="https://nodejs.org/en/download"><img src="https://img.shields.io/badge/node-%3E=18-green.svg" alt="Node >= 18"></a>
+  <a href="https://www.npmjs.com/package/@dexterai/x402-solana"><img src="https://img.shields.io/npm/v/@dexterai/x402-solana.svg" alt="npm version"></a>
   <a href="https://x402.dexter.cash"><img src="https://img.shields.io/badge/facilitator-x402.dexter.cash-orange.svg" alt="x402 Facilitator"></a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/BranchManager69/dexter-api">Dexter API</a>
-  · <a href="https://github.com/BranchManager69/dexter-fe">Dexter FE</a>
-  · <a href="https://github.com/BranchManager69/dexter-mcp">Dexter MCP</a>
-  · <strong>Dexter x402 SDK</strong>
-  · <a href="https://github.com/BranchManager69/dexter-ops">Dexter Ops</a>
 </p>
 
 Official SDK for integrating with Dexter's x402 v2 Solana payment protocol. Provides client-side auto-402 handling and server-side helpers for generating payment requirements and verifying settlements through the Dexter facilitator.
@@ -35,13 +25,13 @@ Official SDK for integrating with Dexter's x402 v2 Solana payment protocol. Prov
 ### Install
 
 ```bash
-npm install @dexter/x402-solana @solana/web3.js @solana/spl-token
+npm install @dexterai/x402-solana @solana/web3.js @solana/spl-token
 ```
 
 ### Client (Browser/Node)
 
 ```typescript
-import { createX402Client } from '@dexter/x402-solana/client';
+import { createX402Client } from '@dexterai/x402-solana/client';
 
 const client = createX402Client({
   wallet,  // wallet adapter with signTransaction
@@ -59,7 +49,7 @@ const res = await client.fetch('https://api.dexter.cash/api/shield/create', {
 ### Server (Express/Next.js)
 
 ```typescript
-import { createX402Server } from '@dexter/x402-solana/server';
+import { createX402Server } from '@dexterai/x402-solana/server';
 
 const server = createX402Server({
   facilitatorUrl: 'https://x402.dexter.cash',
@@ -101,23 +91,10 @@ res.status(402).json({ error: 'Payment required' });
 | Method | Description |
 |--------|-------------|
 | `createX402Server(config)` | Returns helpers for building requirements and verifying payments |
-| `.buildRequirements(params)` | Generates a valid `PaymentRequired` payload |
-
-**Coming soon:**
-- `.send402Response()` – helper to set headers and respond
-- `.verifyPayment()` – validate payment signature via facilitator
-- `.settlePayment()` – confirm settlement via facilitator
-
----
-
-## Dexter Stack
-
-| Repo | Role |
-|------|------|
-| [`dexter-api`](https://github.com/BranchManager69/dexter-api) | Issues realtime tokens, proxies MCP, x402 billing |
-| [`dexter-fe`](https://github.com/BranchManager69/dexter-fe) | Next.js frontend for voice/chat surfaces |
-| [`dexter-mcp`](https://github.com/BranchManager69/dexter-mcp) | Hosted MCP transport powering tool access |
-| [`dexter-ops`](https://github.com/BranchManager69/dexter-ops) | Shared operations scripts, PM2 config, nginx templates |
+| `.buildRequirements(opts)` | Generates a valid `PaymentRequired` payload |
+| `.encodeRequirements(req)` | Base64-encodes for the `PAYMENT-REQUIRED` header |
+| `.verifyPayment(header)` | Validates payment signature via facilitator |
+| `.settlePayment(header)` | Confirms settlement via facilitator, returns tx signature |
 
 ---
 
@@ -142,4 +119,4 @@ npm test         # Run tests (TODO)
 
 ## License
 
-Private – internal Dexter SDK infrastructure.
+MIT – see [LICENSE](./LICENSE) for details.
