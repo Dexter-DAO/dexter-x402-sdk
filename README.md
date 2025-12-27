@@ -17,8 +17,9 @@ Official SDK for integrating with Dexter's x402 v2 Solana payment protocol. Prov
 ## Highlights
 
 - **Zero-config client** – wrap your `fetch` calls; the SDK auto-handles 402 responses, signs transactions via wallet adapter, and retries with payment proof.
+- **React hook** – `useX402Payment` with balance tracking, wallet status, and transaction URLs.
 - **Server helpers** – generate correct `PAYMENT-REQUIRED` headers and verify/settle payments through the Dexter facilitator in one line.
-- **v2 header-based flow** – uses `PAYMENT-REQUIRED` and `PAYMENT-SIGNATURE` headers (not legacy `X-PAYMENT`).
+- **v2-native** – uses `PAYMENT-REQUIRED` and `PAYMENT-SIGNATURE` headers. If you want v1, use a different SDK.
 - **Solana-native** – builds proper `TransferChecked` transactions with ComputeBudget instructions that comply with Dexter's sponsored-fee policy.
 - **Dual ESM/CJS** – ships both module formats with full TypeScript definitions.
 
@@ -72,6 +73,42 @@ res.setHeader('PAYMENT-REQUIRED', btoa(JSON.stringify(requirements)));
 res.status(402).json({ error: 'Payment required' });
 ```
 
+### React
+
+```tsx
+import { useX402Payment } from '@dexterai/x402-solana/react';
+import { useWallet } from '@solana/wallet-adapter-react';
+
+function PayButton() {
+  const wallet = useWallet();
+  const {
+    fetch,
+    isLoading,
+    balance,
+    transactionUrl,
+    isWalletConnected,
+  } = useX402Payment({ wallet });
+
+  const handlePay = async () => {
+    const response = await fetch('https://api.example.com/paid-endpoint');
+    const data = await response.json();
+    console.log('Paid!', data);
+  };
+
+  if (!isWalletConnected) return <p>Connect wallet first</p>;
+
+  return (
+    <div>
+      <p>Balance: ${balance?.toFixed(2) ?? '...'} USDC</p>
+      <button onClick={handlePay} disabled={isLoading}>
+        {isLoading ? 'Paying...' : 'Pay'}
+      </button>
+      {transactionUrl && <a href={transactionUrl}>View Transaction</a>}
+    </div>
+  );
+}
+```
+
 ---
 
 ## API Surface
@@ -99,6 +136,24 @@ res.status(402).json({ error: 'Payment required' });
 | `.encodeRequirements(req)` | Base64-encodes for the `PAYMENT-REQUIRED` header |
 | `.verifyPayment(header)` | Validates payment signature via facilitator |
 | `.settlePayment(header)` | Confirms settlement via facilitator, returns tx signature |
+
+### React
+
+| Export | Description |
+|--------|-------------|
+| `useX402Payment(config)` | React hook with payment state management |
+
+**Hook returns:**
+- `fetch` – wrapped fetch that handles x402 v2 payments
+- `isLoading` – payment in progress
+- `status` – `'idle'` | `'pending'` | `'success'` | `'error'`
+- `error` – last error
+- `transactionId` – tx signature after success
+- `transactionUrl` – Orb Markets link to view tx
+- `balance` – USDC balance in human units (e.g., `12.50`)
+- `isWalletConnected` – wallet ready
+- `refreshBalance()` – manually refresh balance
+- `reset()` – reset state to idle
 
 ---
 
