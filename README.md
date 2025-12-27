@@ -2,26 +2,25 @@
   <img src="./assets/dexter-wordmark.svg" alt="Dexter" width="360">
 </p>
 
-# @dexterai/x402-solana
+# @dexterai/x402
 
 <p align="center">
   <a href="https://nodejs.org/en/download"><img src="https://img.shields.io/badge/node-%3E=18-green.svg" alt="Node >= 18"></a>
-  <a href="https://www.npmjs.com/package/@dexterai/x402-solana"><img src="https://img.shields.io/npm/v/@dexterai/x402-solana.svg" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/@dexterai/x402"><img src="https://img.shields.io/npm/v/@dexterai/x402.svg" alt="npm version"></a>
   <a href="https://x402.dexter.cash"><img src="https://img.shields.io/badge/facilitator-x402.dexter.cash-orange.svg" alt="x402 Facilitator"></a>
 </p>
 
-Official SDK for integrating with Dexter's x402 v2 Solana payment protocol. Provides client-side auto-402 handling and server-side helpers for generating payment requirements and verifying settlements through the Dexter facilitator.
+Chain-agnostic SDK for x402 v2 payments. Works with **Solana**, **Base**, and any x402-compatible network.
 
 ---
 
 ## Highlights
 
-- **Zero-config client** – wrap your `fetch` calls; the SDK auto-handles 402 responses, signs transactions via wallet adapter, and retries with payment proof.
-- **React hook** – `useX402Payment` with balance tracking, wallet status, and transaction URLs.
-- **Server helpers** – generate correct `PAYMENT-REQUIRED` headers and verify/settle payments through the Dexter facilitator in one line.
-- **v2-native** – uses `PAYMENT-REQUIRED` and `PAYMENT-SIGNATURE` headers. If you want v1, use a different SDK.
-- **Solana-native** – builds proper `TransferChecked` transactions with ComputeBudget instructions that comply with Dexter's sponsored-fee policy.
-- **Dual ESM/CJS** – ships both module formats with full TypeScript definitions.
+- **Chain-agnostic** – pay on Solana, Base, or any supported chain
+- **Zero-config client** – wrap `fetch`, auto-handles 402 responses
+- **Server helpers** – generate requirements, verify & settle payments
+- **React hook** – multi-wallet support with balance tracking
+- **Dual ESM/CJS** – full TypeScript definitions
 
 ---
 
@@ -30,78 +29,103 @@ Official SDK for integrating with Dexter's x402 v2 Solana payment protocol. Prov
 ### Install
 
 ```bash
-npm install @dexterai/x402-solana @solana/web3.js @solana/spl-token
+npm install @dexterai/x402 @solana/web3.js @solana/spl-token
 ```
 
 ### Client (Browser/Node)
 
 ```typescript
-import { createX402Client } from '@dexterai/x402-solana/client';
+import { createX402Client } from '@dexterai/x402/client';
 
+// Single wallet (Solana)
 const client = createX402Client({
-  wallet,  // wallet adapter with signTransaction
-  network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
-  verbose: true,
+  wallet: solanaWallet,
 });
 
-// Auto-handles 402s, signs payment, retries
-const res = await client.fetch('https://api.dexter.cash/api/shield/create', {
-  method: 'POST',
-  body: JSON.stringify(payload),
+// Multi-chain: provide wallets for each chain
+const client = createX402Client({
+  wallets: {
+    solana: solanaWallet,
+    evm: evmWallet,  // from wagmi, viem, etc.
+  },
+  preferredNetwork: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
 });
+
+// Automatically handles 402 responses
+const response = await client.fetch('https://api.example.com/protected');
 ```
 
 ### Server (Express/Next.js)
 
 ```typescript
-import { createX402Server } from '@dexterai/x402-solana/server';
+import { createX402Server } from '@dexterai/x402/server';
 
+// Create server for Solana payments
 const server = createX402Server({
-  facilitatorUrl: 'https://x402.dexter.cash',
+  payTo: 'YourSolanaAddress...',
   network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
-  payTo: 'YourWalletAddress...',
-  asset: { mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', decimals: 6 },
 });
 
-// Generate 402 response
-const requirements = server.buildRequirements({
-  amountAtomic: '50000',  // 0.05 USDC
-  resourceUrl: '/api/protected',
+// Or for Base payments
+const baseServer = createX402Server({
+  payTo: '0xYourEvmAddress...',
+  network: 'eip155:8453',
+  asset: { address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', decimals: 6 },
 });
 
-res.setHeader('PAYMENT-REQUIRED', btoa(JSON.stringify(requirements)));
-res.status(402).json({ error: 'Payment required' });
+// In your route handler
+app.post('/protected', async (req, res) => {
+  const paymentSig = req.headers['payment-signature'];
+
+  if (!paymentSig) {
+    const requirements = await server.buildRequirements({
+      amountAtomic: '50000',  // 0.05 USDC
+      resourceUrl: req.originalUrl,
+    });
+    res.setHeader('PAYMENT-REQUIRED', server.encodeRequirements(requirements));
+    return res.status(402).json({});
+  }
+
+  const result = await server.settlePayment(paymentSig);
+  if (!result.success) {
+    return res.status(402).json({ error: result.errorReason });
+  }
+
+  res.json({ data: 'protected content', transaction: result.transaction });
+});
 ```
 
 ### React
 
 ```tsx
-import { useX402Payment } from '@dexterai/x402-solana/react';
+import { useX402Payment } from '@dexterai/x402/react';
 import { useWallet } from '@solana/wallet-adapter-react';
+import { useAccount } from 'wagmi';
 
 function PayButton() {
-  const wallet = useWallet();
+  const solanaWallet = useWallet();
+  const evmWallet = useAccount();
+
   const {
     fetch,
     isLoading,
-    balance,
+    balances,
+    connectedChains,
     transactionUrl,
-    isWalletConnected,
-  } = useX402Payment({ wallet });
-
-  const handlePay = async () => {
-    const response = await fetch('https://api.example.com/paid-endpoint');
-    const data = await response.json();
-    console.log('Paid!', data);
-  };
-
-  if (!isWalletConnected) return <p>Connect wallet first</p>;
+  } = useX402Payment({
+    wallets: {
+      solana: solanaWallet,
+      evm: evmWallet,
+    },
+  });
 
   return (
     <div>
-      <p>Balance: ${balance?.toFixed(2) ?? '...'} USDC</p>
-      <button onClick={handlePay} disabled={isLoading}>
-        {isLoading ? 'Paying...' : 'Pay'}
+      {balances.map(b => (
+        <p key={b.network}>{b.chainName}: ${b.balance.toFixed(2)}</p>
+      ))}
+      <button onClick={() => fetch(url)} disabled={isLoading}>
+        {isLoading ? 'Paying...' : 'Pay $0.05'}
       </button>
       {transactionUrl && <a href={transactionUrl}>View Transaction</a>}
     </div>
@@ -111,58 +135,107 @@ function PayButton() {
 
 ---
 
-## API Surface
+## Supported Networks
+
+| Network | CAIP-2 ID | Asset |
+|---------|-----------|-------|
+| Solana Mainnet | `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` | USDC |
+| Base Mainnet | `eip155:8453` | USDC |
+| Arbitrum One | `eip155:42161` | USDC |
+| Ethereum | `eip155:1` | USDC |
+
+---
+
+## API
 
 ### Client
 
-| Method | Description |
-|--------|-------------|
-| `createX402Client(config)` | Returns a client with a wrapped `fetch` that auto-handles 402 flows |
+```typescript
+import { createX402Client } from '@dexterai/x402/client';
 
-**Config options:**
-- `wallet` – Solana wallet adapter with `publicKey` and `signTransaction`
-- `network` – CAIP-2 network ID (e.g. `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp`)
-- `rpcUrl` – optional custom RPC endpoint
-- `maxAmountAtomic` – optional payment cap in atomic units
-- `fetch` – optional custom fetch implementation
-- `verbose` – optional logging flag
+const client = createX402Client({
+  wallets: { solana, evm },     // Multi-chain wallets
+  wallet: solanaWallet,          // Legacy: single wallet
+  preferredNetwork: '...',       // Prefer this network
+  rpcUrls: { 'eip155:8453': 'https://...' },  // Custom RPCs
+  maxAmountAtomic: '100000',     // Payment cap
+  verbose: true,                 // Debug logging
+});
+
+const response = await client.fetch(url, init);
+```
 
 ### Server
 
-| Method | Description |
-|--------|-------------|
-| `createX402Server(config)` | Returns helpers for building requirements and verifying payments |
-| `.buildRequirements(opts)` | Generates a valid `PaymentRequired` payload |
-| `.encodeRequirements(req)` | Base64-encodes for the `PAYMENT-REQUIRED` header |
-| `.verifyPayment(header)` | Validates payment signature via facilitator |
-| `.settlePayment(header)` | Confirms settlement via facilitator, returns tx signature |
+```typescript
+import { createX402Server } from '@dexterai/x402/server';
 
-### React
+const server = createX402Server({
+  payTo: 'address',
+  network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+  asset: { address: 'mint', decimals: 6 },
+  facilitatorUrl: 'https://x402.dexter.cash',
+  defaultTimeoutSeconds: 60,
+});
 
-| Export | Description |
-|--------|-------------|
-| `useX402Payment(config)` | React hook with payment state management |
+await server.buildRequirements({ amountAtomic, resourceUrl });
+server.encodeRequirements(requirements);
+await server.verifyPayment(header);
+await server.settlePayment(header);
+```
 
-**Hook returns:**
-- `fetch` – wrapped fetch that handles x402 v2 payments
-- `isLoading` – payment in progress
-- `status` – `'idle'` | `'pending'` | `'success'` | `'error'`
-- `error` – last error
-- `transactionId` – tx signature after success
-- `transactionUrl` – Orb Markets link to view tx
-- `balance` – USDC balance in human units (e.g., `12.50`)
-- `isWalletConnected` – wallet ready
-- `refreshBalance()` – manually refresh balance
-- `reset()` – reset state to idle
+### React Hook
+
+```typescript
+import { useX402Payment } from '@dexterai/x402/react';
+
+const {
+  fetch,              // Payment-aware fetch
+  isLoading,          // Payment in progress
+  status,             // 'idle' | 'pending' | 'success' | 'error'
+  error,              // Error if failed
+  transactionId,      // Tx signature on success
+  transactionUrl,     // Explorer link
+  balances,           // Token balances per chain
+  connectedChains,    // { solana: bool, evm: bool }
+  reset,              // Clear state
+  refreshBalances,    // Manual balance refresh
+} = useX402Payment({ wallets, preferredNetwork, verbose });
+```
+
+### Adapters (Advanced)
+
+```typescript
+import {
+  createSolanaAdapter,
+  createEvmAdapter,
+  SOLANA_MAINNET,
+  BASE_MAINNET,
+} from '@dexterai/x402/adapters';
+
+const adapters = [
+  createSolanaAdapter({ verbose: true }),
+  createEvmAdapter({ rpcUrls: { 'eip155:8453': '...' } }),
+];
+
+// Find adapter for a network
+const adapter = adapters.find(a => a.canHandle('eip155:8453'));
+
+// Build transaction manually
+const signedTx = await adapter.buildTransaction(accept, wallet);
+
+// Check balance
+const balance = await adapter.getBalance(accept, wallet);
+```
 
 ---
 
 ## Development
 
 ```bash
-npm run build      # Build ESM + CJS to dist/
+npm run build      # Build ESM + CJS
 npm run dev        # Watch mode
-npm run typecheck  # TypeScript type checking
+npm run typecheck  # TypeScript checks
 npm test           # Run tests
 ```
 
@@ -170,12 +243,12 @@ npm test           # Run tests
 
 ## Resources
 
-- [x402 v2 Migration Guide](https://docs.cdp.coinbase.com/x402/migration-guide)
+- [Dexter Facilitator](https://x402.dexter.cash)
+- [x402 Protocol Spec](https://docs.cdp.coinbase.com/x402)
 - [Seller Onboarding](https://dexter.cash/onboard)
-- [Facilitator Metrics](https://dexter.cash/facilitator)
 
 ---
 
 ## License
 
-MIT – see [LICENSE](./LICENSE) for details.
+MIT – see [LICENSE](./LICENSE)

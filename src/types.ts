@@ -1,75 +1,176 @@
 /**
- * Dexter x402 v2 SDK — Shared Types
+ * x402 v2 SDK — Shared Types
+ *
+ * Chain-agnostic types for x402 v2 payments.
+ * Works with Solana, Base, and any future x402-compatible networks.
  */
+
+// ============================================================================
+// Network Constants
+// ============================================================================
 
 /** CAIP-2 network identifier for Solana mainnet */
 export const SOLANA_MAINNET_NETWORK = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 
+/** CAIP-2 network identifier for Base mainnet */
+export const BASE_MAINNET_NETWORK = 'eip155:8453';
+
+/** Alias for Solana mainnet */
+export const SOLANA_MAINNET = SOLANA_MAINNET_NETWORK;
+
+/** Alias for Base mainnet */
+export const BASE_MAINNET = BASE_MAINNET_NETWORK;
+
+// ============================================================================
+// Asset Constants
+// ============================================================================
+
 /** USDC mint on Solana mainnet */
 export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+/** USDC address on Base mainnet */
+export const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+
+// ============================================================================
+// Facilitator Constants
+// ============================================================================
 
 /** Dexter's public x402 v2 facilitator URL */
 export const DEXTER_FACILITATOR_URL = 'https://x402.dexter.cash';
 
+// ============================================================================
+// Payment Types
+// ============================================================================
+
 /**
  * Asset configuration for payments
  */
-export type AssetConfig = {
-  mint: string;
+export interface AssetConfig {
+  /** Token address (mint on Solana, contract on EVM) */
+  address: string;
+  /** Token decimals */
   decimals: number;
-};
+  /** Optional: Human-readable symbol */
+  symbol?: string;
+}
 
 /**
  * Resource info included in payment requirements
  */
-export type ResourceInfo = {
+export interface ResourceInfo {
+  /** Resource URL */
   url: string;
+  /** Human-readable description */
   description?: string;
+  /** MIME type of the resource */
   mimeType?: string;
-};
+}
 
 /**
- * Extra fields specific to Dexter v2 Solana payments
+ * Extra fields in payment requirements
+ * Chain-specific fields may vary
  */
-export type AcceptsExtra = {
+export interface AcceptsExtra {
+  /** Facilitator address that pays tx fees (required) */
   feePayer: string;
+  /** Token decimals (required) */
   decimals: number;
-};
+  /** EIP-712: Token name (EVM only) */
+  name?: string;
+  /** EIP-712: Token version (EVM only) */
+  version?: string;
+  /** Additional chain-specific fields */
+  [key: string]: unknown;
+}
 
 /**
  * A single payment option in the accepts array
  */
-export type PaymentAccept = {
+export interface PaymentAccept {
+  /** Payment scheme (always 'exact' for x402 v2) */
   scheme: 'exact';
+  /** CAIP-2 network identifier */
   network: string;
+  /** Payment amount in atomic units (as string to avoid precision loss) */
   amount: string;
+  /** Token address */
   asset: string;
+  /** Seller's address to receive payment */
   payTo: string;
+  /** Maximum seconds until payment expires */
   maxTimeoutSeconds: number;
+  /** Chain-specific extra data */
   extra: AcceptsExtra;
-};
+}
 
 /**
  * Full PaymentRequired structure (sent in PAYMENT-REQUIRED header)
  */
-export type PaymentRequired = {
+export interface PaymentRequired {
+  /** x402 version (always 2) */
   x402Version: 2;
+  /** Resource being accessed */
   resource: ResourceInfo;
+  /** Available payment options */
   accepts: PaymentAccept[];
+  /** Optional error message */
   error?: string;
-};
+}
 
 /**
  * PaymentSignature structure (sent in PAYMENT-SIGNATURE header)
  */
-export type PaymentSignature = {
+export interface PaymentSignature {
+  /** x402 version (always 2) */
   x402Version: 2;
+  /** Resource being accessed */
   resource: ResourceInfo;
+  /** The payment option that was accepted */
   accepted: PaymentAccept;
+  /** The signed payment */
   payload: {
-    transaction: string; // base64 encoded signed transaction
+    /** Signed transaction (base64 for Solana, JSON for EVM) */
+    transaction: string;
   };
-};
+}
+
+// ============================================================================
+// Facilitator Response Types
+// ============================================================================
+
+/**
+ * Response from /verify endpoint
+ */
+export interface VerifyResponse {
+  /** Whether the payment is valid */
+  isValid: boolean;
+  /** Reason for invalidity (if invalid) */
+  invalidReason?: string;
+  /** Payer address */
+  payer?: string;
+}
+
+/**
+ * Response from /settle endpoint
+ */
+export interface SettleResponse {
+  /** Whether settlement succeeded */
+  success: boolean;
+  /** Transaction signature/hash */
+  transaction?: string;
+  /** Network the payment was made on */
+  network: string;
+  /** Error reason (if failed) */
+  errorReason?: string;
+  /** Error code (if failed) */
+  errorCode?: string;
+  /** Payer address */
+  payer?: string;
+}
+
+// ============================================================================
+// Error Types
+// ============================================================================
 
 /**
  * SDK error codes
@@ -79,24 +180,29 @@ export type X402ErrorCode =
   | 'missing_payment_required_header'
   | 'invalid_payment_required'
   | 'unsupported_network'
-  | 'no_solana_accept'
+  | 'no_matching_payment_option'
+  | 'no_solana_accept' // Legacy, kept for compatibility
   | 'missing_fee_payer'
   | 'missing_decimals'
   | 'amount_exceeds_max'
   | 'wallet_missing_sign_transaction'
+  | 'wallet_not_connected'
   | 'transaction_build_failed'
   | 'payment_rejected'
   // Server errors
   | 'invalid_payment_signature'
   | 'facilitator_verify_failed'
   | 'facilitator_settle_failed'
+  | 'facilitator_request_failed'
   | 'no_matching_requirement';
 
 /**
  * Custom error class for x402 operations
  */
 export class X402Error extends Error {
+  /** Error code for programmatic handling */
   code: X402ErrorCode;
+  /** Additional error details */
   details?: unknown;
 
   constructor(code: X402ErrorCode, message: string, details?: unknown) {
@@ -104,6 +210,7 @@ export class X402Error extends Error {
     this.name = 'X402Error';
     this.code = code;
     this.details = details;
+    // Maintain proper prototype chain
+    Object.setPrototypeOf(this, X402Error.prototype);
   }
 }
-

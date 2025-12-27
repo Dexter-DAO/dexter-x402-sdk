@@ -1,89 +1,145 @@
 /**
- * useX402Payment - React hook for x402 v2 payments
+ * React Hook for x402 v2 Payments
  *
- * Wraps the x402 client with React state management.
- * Provides balance checking, wallet status, and transaction tracking.
+ * Chain-agnostic hook that manages payment state, wallet connection,
+ * and balances across Solana and EVM chains.
  *
  * @example
  * ```tsx
- * const { fetch, isLoading, balance, transactionUrl } = useX402Payment({
- *   wallet,
- *   network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
- * });
+ * import { useX402Payment } from '@dexterai/x402/react';
  *
- * const response = await fetch('https://api.example.com/paid-endpoint');
+ * function PayButton() {
+ *   const {
+ *     fetch,
+ *     isLoading,
+ *     status,
+ *     error,
+ *     balances,
+ *     connectedChains,
+ *     transactionUrl,
+ *   } = useX402Payment({
+ *     wallets: {
+ *       solana: solanaWallet,
+ *       evm: evmWallet,
+ *     },
+ *   });
+ *
+ *   return (
+ *     <button onClick={() => fetch(url)} disabled={isLoading}>
+ *       {isLoading ? 'Paying...' : 'Pay $0.05'}
+ *     </button>
+ *   );
+ * }
  * ```
  */
 
 import { useState, useCallback, useEffect, useMemo } from 'react';
-import { Connection, PublicKey } from '@solana/web3.js';
-import { getAssociatedTokenAddress, getAccount } from '@solana/spl-token';
-import { createX402Client, type X402Wallet } from '../client/x402-client';
-import { SOLANA_MAINNET_NETWORK, USDC_MINT } from '../types';
-import { getDefaultRpcUrl } from '../utils';
+import { createX402Client } from '../client/x402-client';
+import type { X402Client } from '../client/x402-client';
+import type { WalletSet, BalanceInfo } from '../adapters/types';
+import { createSolanaAdapter, createEvmAdapter, isSolanaWallet, isEvmWallet } from '../adapters';
+import { X402Error, SOLANA_MAINNET_NETWORK, BASE_MAINNET_NETWORK, USDC_MINT, USDC_BASE } from '../types';
+import { getChainName, getExplorerUrl } from '../utils';
 
-/**
- * Payment status states
- */
+// ============================================================================
+// Types
+// ============================================================================
+
+/** Payment flow status */
 export type PaymentStatus = 'idle' | 'pending' | 'success' | 'error';
 
-/**
- * Configuration for useX402Payment hook
- */
+/** Which chains are connected */
+export interface ConnectedChains {
+  solana: boolean;
+  evm: boolean;
+}
+
+/** Configuration for the hook */
 export interface UseX402PaymentConfig {
-  /** Wallet adapter with publicKey and signTransaction */
-  wallet: X402Wallet;
-  /** CAIP-2 network identifier (defaults to Solana mainnet) */
-  network?: string;
-  /** Solana RPC URL (optional) */
-  rpcUrl?: string;
-  /** Maximum payment amount in atomic units (optional cap) */
-  maxAmountAtomic?: string;
-  /** Enable verbose logging */
+  /**
+   * Wallets for each chain type.
+   * Pass the wallets from your wallet adapter(s).
+   */
+  wallets?: WalletSet;
+
+  /**
+   * Legacy: Single Solana wallet.
+   * Use `wallets` for multi-chain support.
+   */
+  wallet?: unknown;
+
+  /**
+   * Preferred network when multiple options are available.
+   * CAIP-2 format (e.g., 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp')
+   */
+  preferredNetwork?: string;
+
+  /**
+   * Custom RPC URLs by network
+   */
+  rpcUrls?: Record<string, string>;
+
+  /**
+   * Enable verbose logging
+   */
   verbose?: boolean;
 }
 
-/**
- * Return type for useX402Payment hook
- */
+/** Return value from the hook */
 export interface UseX402PaymentReturn {
-  /** Make a fetch request with automatic x402 v2 payment handling */
-  fetch: (url: string, init?: RequestInit) => Promise<Response>;
-  /** Whether a payment is currently in progress */
+  /**
+   * Fetch function with automatic x402 payment handling.
+   * Same signature as global fetch.
+   */
+  fetch: X402Client['fetch'];
+
+  /** Whether a payment is in progress */
   isLoading: boolean;
+
   /** Current payment status */
   status: PaymentStatus;
-  /** Error from last payment attempt */
+
+  /** Error if payment failed */
   error: Error | null;
-  /** Transaction signature from last successful payment */
+
+  /** Transaction signature/hash on success */
   transactionId: string | null;
-  /** Orb Markets link to view the transaction */
+
+  /** Network the payment was made on */
+  transactionNetwork: string | null;
+
+  /** Explorer URL for the transaction */
   transactionUrl: string | null;
-  /** Reset state to idle */
+
+  /** Token balances across chains */
+  balances: BalanceInfo[];
+
+  /** Which chains have connected wallets */
+  connectedChains: ConnectedChains;
+
+  /** Whether any wallet is connected */
+  isAnyWalletConnected: boolean;
+
+  /** Reset state (clear errors, transaction info) */
   reset: () => void;
-  /** User's USDC balance in human units (e.g., 12.50) */
-  balance: number | null;
-  /** Whether wallet is connected and ready */
-  isWalletConnected: boolean;
-  /** Refresh the USDC balance */
-  refreshBalance: () => Promise<void>;
+
+  /** Refresh balances manually */
+  refreshBalances: () => Promise<void>;
 }
 
+// ============================================================================
+// Hook Implementation
+// ============================================================================
+
 /**
- * React hook for x402 v2 payments on Solana
- *
- * Features:
- * - Automatic 402 handling with PAYMENT-REQUIRED/PAYMENT-SIGNATURE headers
- * - USDC balance tracking
- * - Wallet connection status
- * - Transaction URL for block explorer
+ * React hook for managing x402 v2 payments across chains
  */
 export function useX402Payment(config: UseX402PaymentConfig): UseX402PaymentReturn {
   const {
-    wallet,
-    network = SOLANA_MAINNET_NETWORK,
-    rpcUrl,
-    maxAmountAtomic,
+    wallets: walletSet,
+    wallet: legacyWallet,
+    preferredNetwork,
+    rpcUrls = {},
     verbose = false,
   } = config;
 
@@ -92,62 +148,107 @@ export function useX402Payment(config: UseX402PaymentConfig): UseX402PaymentRetu
   const [status, setStatus] = useState<PaymentStatus>('idle');
   const [error, setError] = useState<Error | null>(null);
   const [transactionId, setTransactionId] = useState<string | null>(null);
-  const [balance, setBalance] = useState<number | null>(null);
+  const [transactionNetwork, setTransactionNetwork] = useState<string | null>(null);
+  const [balances, setBalances] = useState<BalanceInfo[]>([]);
 
-  // Derived state
-  const isWalletConnected = useMemo(() => {
-    return wallet?.publicKey !== null && wallet?.publicKey !== undefined;
-  }, [wallet?.publicKey]);
+  // Logging
+  const log = useCallback((...args: unknown[]) => {
+    if (verbose) console.log('[useX402Payment]', ...args);
+  }, [verbose]);
 
-  const transactionUrl = useMemo(() => {
-    if (!transactionId) return null;
-    return `https://www.orbmarkets.io/tx/${transactionId}`;
-  }, [transactionId]);
+  // Build wallet set
+  const wallets: WalletSet = useMemo(() => {
+    const w: WalletSet = { ...walletSet };
+    if (legacyWallet && !w.solana && isSolanaWallet(legacyWallet)) {
+      w.solana = legacyWallet;
+    }
+    if (legacyWallet && !w.evm && isEvmWallet(legacyWallet)) {
+      w.evm = legacyWallet;
+    }
+    return w;
+  }, [walletSet, legacyWallet]);
 
-  // RPC connection
-  const resolvedRpcUrl = useMemo(() => {
-    return rpcUrl || getDefaultRpcUrl(network);
-  }, [rpcUrl, network]);
+  // Create adapters
+  const adapters = useMemo(() => [
+    createSolanaAdapter({ verbose, rpcUrls }),
+    createEvmAdapter({ verbose, rpcUrls }),
+  ], [verbose, rpcUrls]);
 
-  // Create x402 client
-  const client = useMemo(() => {
-    return createX402Client({
-      wallet,
-      network,
-      rpcUrl: resolvedRpcUrl,
-      maxAmountAtomic,
-      verbose,
-    });
-  }, [wallet, network, resolvedRpcUrl, maxAmountAtomic, verbose]);
+  // Check connected chains
+  const connectedChains = useMemo((): ConnectedChains => ({
+    solana: wallets.solana ? isSolanaWallet(wallets.solana) && adapters[0].isConnected(wallets.solana) : false,
+    evm: wallets.evm ? isEvmWallet(wallets.evm) && adapters[1].isConnected(wallets.evm) : false,
+  }), [wallets, adapters]);
 
-  // Fetch USDC balance
-  const refreshBalance = useCallback(async () => {
-    if (!isWalletConnected || !wallet.publicKey) {
-      setBalance(null);
-      return;
+  const isAnyWalletConnected = connectedChains.solana || connectedChains.evm;
+
+  // Refresh balances
+  const refreshBalances = useCallback(async () => {
+    const newBalances: BalanceInfo[] = [];
+
+    // Solana balance
+    if (connectedChains.solana && wallets.solana) {
+      try {
+        const solanaAdapter = adapters.find(a => a.name === 'Solana');
+        if (solanaAdapter) {
+          const accept = {
+            scheme: 'exact' as const,
+            network: SOLANA_MAINNET_NETWORK,
+            amount: '0',
+            asset: USDC_MINT,
+            payTo: '',
+            maxTimeoutSeconds: 60,
+            extra: { feePayer: '', decimals: 6 },
+          };
+          const balance = await solanaAdapter.getBalance(accept, wallets.solana);
+          newBalances.push({
+            network: SOLANA_MAINNET_NETWORK,
+            chainName: getChainName(SOLANA_MAINNET_NETWORK),
+            balance,
+            asset: 'USDC',
+          });
+        }
+      } catch (e) {
+        log('Failed to fetch Solana balance:', e);
+      }
     }
 
-    try {
-      const connection = new Connection(resolvedRpcUrl, 'confirmed');
-      const walletPubkey = new PublicKey(wallet.publicKey.toBase58());
-      const usdcMint = new PublicKey(USDC_MINT);
-
-      const ata = await getAssociatedTokenAddress(usdcMint, walletPubkey);
-      const account = await getAccount(connection, ata);
-
-      // USDC has 6 decimals
-      const balanceHuman = Number(account.amount) / 1_000_000;
-      setBalance(balanceHuman);
-    } catch {
-      // Token account doesn't exist or other error
-      setBalance(0);
+    // Base balance
+    if (connectedChains.evm && wallets.evm) {
+      try {
+        const evmAdapter = adapters.find(a => a.name === 'EVM');
+        if (evmAdapter) {
+          const accept = {
+            scheme: 'exact' as const,
+            network: BASE_MAINNET_NETWORK,
+            amount: '0',
+            asset: USDC_BASE,
+            payTo: '',
+            maxTimeoutSeconds: 60,
+            extra: { feePayer: '', decimals: 6 },
+          };
+          const balance = await evmAdapter.getBalance(accept, wallets.evm);
+          newBalances.push({
+            network: BASE_MAINNET_NETWORK,
+            chainName: getChainName(BASE_MAINNET_NETWORK),
+            balance,
+            asset: 'USDC',
+          });
+        }
+      } catch (e) {
+        log('Failed to fetch Base balance:', e);
+      }
     }
-  }, [isWalletConnected, wallet.publicKey, resolvedRpcUrl]);
 
-  // Fetch balance on mount and when wallet changes
+    setBalances(newBalances);
+  }, [connectedChains, wallets, adapters, log]);
+
+  // Refresh balances on mount and when wallets change
   useEffect(() => {
-    refreshBalance();
-  }, [refreshBalance]);
+    refreshBalances();
+    const interval = setInterval(refreshBalances, 30000); // Refresh every 30s
+    return () => clearInterval(interval);
+  }, [refreshBalances]);
 
   // Reset state
   const reset = useCallback(() => {
@@ -155,62 +256,89 @@ export function useX402Payment(config: UseX402PaymentConfig): UseX402PaymentRetu
     setStatus('idle');
     setError(null);
     setTransactionId(null);
+    setTransactionNetwork(null);
   }, []);
 
-  // Wrapped fetch with state management
-  const wrappedFetch = useCallback(
-    async (url: string, init?: RequestInit): Promise<Response> => {
-      setIsLoading(true);
-      setStatus('pending');
-      setError(null);
-      setTransactionId(null);
+  // Create client
+  const client = useMemo(() => createX402Client({
+    adapters,
+    wallets,
+    preferredNetwork,
+    rpcUrls,
+    verbose,
+  }), [adapters, wallets, preferredNetwork, rpcUrls, verbose]);
 
-      try {
-        const response = await client.fetch(url, init);
+  // Wrapped fetch
+  const fetchWithPayment = useCallback(async (
+    input: string | URL | Request,
+    init?: RequestInit
+  ): Promise<Response> => {
+    setIsLoading(true);
+    setStatus('pending');
+    setError(null);
+    setTransactionId(null);
+    setTransactionNetwork(null);
 
-        // Try to extract transaction ID from response headers
-        const paymentResponse = response.headers.get('X-PAYMENT-RESPONSE');
-        if (paymentResponse) {
-          try {
-            const decoded = JSON.parse(atob(paymentResponse));
-            const txId = decoded.transaction || decoded.transactionId || decoded.signature;
-            if (txId) {
-              setTransactionId(txId);
-            }
-          } catch {
-            // Ignore decode errors
+    if (!isAnyWalletConnected) {
+      const connError = new X402Error('wallet_not_connected', 'No wallet connected');
+      setError(connError);
+      setStatus('error');
+      setIsLoading(false);
+      throw connError;
+    }
+
+    try {
+      const response = await client.fetch(input, init);
+
+      // Try to extract transaction info from response
+      const paymentResponse = response.headers.get('PAYMENT-RESPONSE');
+      if (paymentResponse) {
+        try {
+          const decoded = JSON.parse(atob(paymentResponse));
+          if (decoded.transaction) {
+            setTransactionId(decoded.transaction);
           }
+          if (decoded.network) {
+            setTransactionNetwork(decoded.network);
+          }
+        } catch {
+          log('Could not parse PAYMENT-RESPONSE header');
         }
-
-        setStatus('success');
-        setIsLoading(false);
-
-        // Refresh balance after successful payment
-        refreshBalance();
-
-        return response;
-      } catch (err) {
-        const paymentError = err instanceof Error ? err : new Error(String(err));
-        setError(paymentError);
-        setStatus('error');
-        setIsLoading(false);
-        throw err;
       }
-    },
-    [client, refreshBalance]
-  );
+
+      setStatus('success');
+      return response;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      setError(error);
+      setStatus('error');
+      throw err;
+    } finally {
+      setIsLoading(false);
+      // Refresh balances after payment attempt
+      setTimeout(refreshBalances, 2000);
+    }
+  }, [client, isAnyWalletConnected, log, refreshBalances]);
+
+  // Transaction URL
+  const transactionUrl = useMemo(() => {
+    if (!transactionId) return null;
+    const network = transactionNetwork || preferredNetwork || SOLANA_MAINNET_NETWORK;
+    return getExplorerUrl(transactionId, network);
+  }, [transactionId, transactionNetwork, preferredNetwork]);
 
   return {
-    fetch: wrappedFetch,
+    fetch: fetchWithPayment,
     isLoading,
     status,
     error,
     transactionId,
+    transactionNetwork,
     transactionUrl,
+    balances,
+    connectedChains,
+    isAnyWalletConnected,
     reset,
-    balance,
-    isWalletConnected,
-    refreshBalance,
+    refreshBalances,
   };
 }
-

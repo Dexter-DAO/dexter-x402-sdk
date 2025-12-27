@@ -1,56 +1,42 @@
 /**
- * @dexter/x402-solana/client
+ * @dexterai/x402 Client
  *
- * Client SDK for making x402 v2 payments on Solana.
- * Wraps fetch with automatic 402 handling.
+ * Chain-agnostic client for x402 v2 payments.
  *
  * @example
- * ```ts
- * import { createX402Client } from '@dexter/x402-solana/client';
+ * ```typescript
+ * import { createX402Client } from '@dexterai/x402/client';
  *
+ * // Simple: auto-detects adapters, pass wallet
  * const client = createX402Client({
- *   wallet,
- *   network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+ *   wallet: solanaWallet,
  * });
  *
- * const response = await client.fetch('https://api.example.com/endpoint');
+ * // Multi-chain: explicit wallets
+ * const client = createX402Client({
+ *   wallets: {
+ *     solana: solanaWallet,
+ *     evm: evmWallet,
+ *   },
+ * });
+ *
+ * // Fetch with automatic payment handling
+ * const response = await client.fetch('https://api.example.com/protected');
  * ```
  */
 
-// Main exports
 export { createX402Client } from './x402-client';
-export type { X402ClientConfig, X402Client, X402Wallet } from './x402-client';
+export type { X402ClientConfig, X402Client } from './x402-client';
 
-// Transaction building (for advanced use cases)
-export { buildPaymentTransaction, serializeTransaction } from './transaction-builder';
-
-// Re-export shared types and constants
+// Re-export types and adapters for convenience
+export type { ChainAdapter, WalletSet } from '../adapters/types';
+export { X402Error } from '../types';
 export {
-  SOLANA_MAINNET_NETWORK,
-  USDC_MINT,
-  DEXTER_FACILITATOR_URL,
-  X402Error,
-} from '../types';
+  createSolanaAdapter,
+  createEvmAdapter,
+  SOLANA_MAINNET,
+  BASE_MAINNET,
+} from '../adapters';
 
-export type {
-  PaymentRequired,
-  PaymentSignature,
-  PaymentAccept,
-  ResourceInfo,
-  AcceptsExtra,
-  X402ErrorCode,
-} from '../types';
-
-// Re-export utilities
-export {
-  getDefaultRpcUrl,
-  isSolanaNetwork,
-  toCAIP2Network,
-  encodePaymentRequired,
-  decodePaymentRequired,
-  buildPaymentSignature,
-  encodePaymentSignature,
-  decodePaymentSignature,
-  toAtomicUnits,
-  fromAtomicUnits,
-} from '../utils';
+// Constants
+export { DEXTER_FACILITATOR_URL, USDC_MINT } from '../types';

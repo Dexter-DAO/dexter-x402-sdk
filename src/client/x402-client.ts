@@ -1,89 +1,192 @@
 /**
- * Dexter x402 v2 Client
+ * x402 v2 Client
  *
- * A fetch wrapper that automatically handles x402 payments:
- * 1. Makes initial request
- * 2. On 402, reads PAYMENT-REQUIRED header
- * 3. Builds and signs Solana transaction
- * 4. Retries with PAYMENT-SIGNATURE header
+ * Chain-agnostic client for x402 v2 payments.
+ * Automatically detects 402 responses, finds a matching payment option,
+ * builds the transaction with the appropriate chain adapter, and retries.
+ *
+ * @example
+ * ```typescript
+ * import { createX402Client } from '@dexterai/x402/client';
+ * import { createSolanaAdapter, createEvmAdapter } from '@dexterai/x402/adapters';
+ *
+ * const client = createX402Client({
+ *   adapters: [createSolanaAdapter(), createEvmAdapter()],
+ *   wallets: {
+ *     solana: solanaWallet,
+ *     evm: evmWallet,
+ *   },
+ * });
+ *
+ * const response = await client.fetch(url);
+ * ```
  */
 
-import type { PaymentRequired, PaymentAccept, PaymentSignature } from '../types';
-import { X402Error, SOLANA_MAINNET_NETWORK } from '../types';
-import { buildPaymentTransaction, serializeTransaction } from './transaction-builder';
-import { getDefaultRpcUrl, isSolanaNetwork } from '../utils';
+import type { ChainAdapter, WalletSet } from '../adapters/types';
+import type {
+  PaymentRequired,
+  PaymentAccept,
+} from '../types';
+import { X402Error } from '../types';
+import { createSolanaAdapter, createEvmAdapter, isSolanaWallet, isEvmWallet } from '../adapters';
 
 /**
- * Wallet interface compatible with @solana/wallet-adapter
- */
-export interface X402Wallet {
-  publicKey: { toBase58(): string } | null;
-  signTransaction<T>(tx: T): Promise<T>;
-}
-
-/**
- * Configuration for the x402 client
+ * Client configuration
  */
 export interface X402ClientConfig {
-  /** Wallet with signTransaction capability */
-  wallet: X402Wallet;
-  /** CAIP-2 network identifier (defaults to Solana mainnet) */
-  network?: string;
-  /** Solana RPC URL (optional, uses public RPC if not provided) */
-  rpcUrl?: string;
-  /** Maximum payment amount in atomic units (optional cap) */
+  /**
+   * Chain adapters to use for building transactions.
+   * If not provided, uses Solana and EVM adapters by default.
+   */
+  adapters?: ChainAdapter[];
+
+  /**
+   * Wallets for each chain type.
+   * Can also pass a single wallet for backwards compatibility.
+   */
+  wallets?: WalletSet;
+
+  /**
+   * Legacy: Single wallet (Solana).
+   * Use `wallets` for multi-chain support.
+   */
+  wallet?: unknown;
+
+  /**
+   * Preferred network to use when multiple options are available.
+   * CAIP-2 format (e.g., 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', 'eip155:8453')
+   */
+  preferredNetwork?: string;
+
+  /**
+   * Custom RPC URLs by network
+   */
+  rpcUrls?: Record<string, string>;
+
+  /**
+   * Maximum payment amount allowed (in atomic units).
+   * Rejects payments exceeding this amount.
+   */
   maxAmountAtomic?: string;
-  /** Custom fetch implementation (for proxies/CORS) */
-  fetch?: typeof fetch;
-  /** Enable verbose logging */
+
+  /**
+   * Custom fetch implementation
+   */
+  fetch?: typeof globalThis.fetch;
+
+  /**
+   * Enable verbose logging
+   */
   verbose?: boolean;
 }
 
 /**
- * x402 Client instance
+ * x402 Client interface
  */
 export interface X402Client {
-  /** Make a fetch request with automatic 402 handling */
+  /**
+   * Fetch with automatic x402 payment handling.
+   * If the server returns 402, handles payment automatically and retries.
+   */
   fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>;
 }
 
 /**
- * Create an x402 client for making paid API requests
- *
- * @example
- * ```ts
- * const client = createX402Client({
- *   wallet,
- *   network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
- * });
- *
- * const response = await client.fetch('https://api.example.com/paid-endpoint', {
- *   method: 'POST',
- *   body: JSON.stringify({ query: 'example' }),
- * });
- * ```
+ * Result of finding a payment option
+ */
+interface MatchedPayment {
+  accept: PaymentAccept;
+  adapter: ChainAdapter;
+  wallet: unknown;
+}
+
+/**
+ * Create an x402 v2 client
  */
 export function createX402Client(config: X402ClientConfig): X402Client {
   const {
-    wallet,
-    network = SOLANA_MAINNET_NETWORK,
-    rpcUrl,
+    adapters = [createSolanaAdapter({ verbose: config.verbose }), createEvmAdapter({ verbose: config.verbose })],
+    wallets: walletSet,
+    wallet: legacyWallet,
+    preferredNetwork,
+    rpcUrls = {},
     maxAmountAtomic,
     fetch: customFetch = globalThis.fetch,
     verbose = false,
   } = config;
 
-  const resolvedRpcUrl = rpcUrl || getDefaultRpcUrl(network);
-  const log = verbose ? console.log.bind(console, '[x402]') : () => {};
+  const log = verbose
+    ? console.log.bind(console, '[x402]')
+    : () => {};
 
+  // Build wallet set from legacy format if needed
+  const wallets: WalletSet = walletSet || {};
+  if (legacyWallet && !wallets.solana && isSolanaWallet(legacyWallet)) {
+    wallets.solana = legacyWallet;
+  }
+  if (legacyWallet && !wallets.evm && isEvmWallet(legacyWallet)) {
+    wallets.evm = legacyWallet;
+  }
+
+  /**
+   * Find a payment option we can handle
+   * Prioritizes:
+   * 1. Preferred network (if specified)
+   * 2. Networks where we have a connected wallet
+   * 3. First available option
+   */
+  function findPaymentOption(accepts: PaymentAccept[]): MatchedPayment | null {
+    // Filter to options we can handle
+    const candidates: MatchedPayment[] = [];
+
+    for (const accept of accepts) {
+      const adapter = adapters.find(a => a.canHandle(accept.network));
+      if (!adapter) continue;
+
+      // Find the right wallet for this adapter
+      let wallet: unknown;
+      if (adapter.name === 'Solana') {
+        wallet = wallets.solana;
+      } else if (adapter.name === 'EVM') {
+        wallet = wallets.evm;
+      }
+
+      if (wallet && adapter.isConnected(wallet)) {
+        candidates.push({ accept, adapter, wallet });
+      }
+    }
+
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    // Prefer the specified network
+    if (preferredNetwork) {
+      const preferred = candidates.find(c => c.accept.network === preferredNetwork);
+      if (preferred) return preferred;
+    }
+
+    // Return first available
+    return candidates[0];
+  }
+
+  /**
+   * Get RPC URL for a network
+   */
+  function getRpcUrl(network: string, adapter: ChainAdapter): string {
+    return rpcUrls[network] || adapter.getDefaultRpcUrl(network);
+  }
+
+  /**
+   * Main fetch function with x402 payment handling
+   */
   async function x402Fetch(
     input: string | URL | Request,
     init?: RequestInit
   ): Promise<Response> {
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-    log('Making request:', url);
+    log('Making request:', input);
 
-    // Initial request
+    // Make initial request
     const response = await customFetch(input, init);
 
     // If not 402, return as-is
@@ -91,9 +194,9 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       return response;
     }
 
-    log('Received 402, reading payment requirements...');
+    log('Received 402 Payment Required');
 
-    // Read payment requirements from PAYMENT-REQUIRED header
+    // Parse PAYMENT-REQUIRED header
     const paymentRequiredHeader = response.headers.get('PAYMENT-REQUIRED');
     if (!paymentRequiredHeader) {
       throw new X402Error(
@@ -102,7 +205,6 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       );
     }
 
-    // Parse requirements
     let requirements: PaymentRequired;
     try {
       const decoded = atob(paymentRequiredHeader);
@@ -114,114 +216,97 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       );
     }
 
-    log('Payment requirements:', JSON.stringify(requirements, null, 2));
+    log('Payment requirements:', requirements);
 
-    // Find a Solana payment option that matches our network
-    const accept = requirements.accepts.find(
-      (a): a is PaymentAccept =>
-        a.scheme === 'exact' && isSolanaNetwork(a.network) && a.network === network
-    );
-
-    if (!accept) {
-      // Try to find any Solana option
-      const anySolana = requirements.accepts.find(
-        (a): a is PaymentAccept => a.scheme === 'exact' && isSolanaNetwork(a.network)
-      );
-      
-      if (anySolana) {
-        throw new X402Error(
-          'unsupported_network',
-          `Server requires ${anySolana.network} but client configured for ${network}`,
-          { serverNetwork: anySolana.network, clientNetwork: network }
-        );
-      }
-
+    // Find a payment option we can use
+    const match = findPaymentOption(requirements.accepts);
+    if (!match) {
+      const availableNetworks = requirements.accepts.map(a => a.network).join(', ');
       throw new X402Error(
-        'no_solana_accept',
-        `No Solana payment option found. Available networks: ${requirements.accepts.map(a => a.network).join(', ')}`
+        'no_matching_payment_option',
+        `No connected wallet for any available network: ${availableNetworks}`
       );
     }
 
-    // Validate required fields
-    if (!accept.extra?.feePayer) {
-      throw new X402Error('missing_fee_payer', 'Payment option missing feePayer in extra');
-    }
-    if (typeof accept.extra?.decimals !== 'number') {
-      throw new X402Error('missing_decimals', 'Payment option missing decimals in extra');
+    const { accept, adapter, wallet } = match;
+    log(`Using ${adapter.name} for ${accept.network}`);
+
+    // Validate fee payer (Solana only - EVM users pay their own gas)
+    if (adapter.name === 'Solana' && !accept.extra?.feePayer) {
+      throw new X402Error(
+        'missing_fee_payer',
+        'Solana payment option missing feePayer in extra'
+      );
     }
 
-    // Check max amount
+    // Validate decimals
+    if (typeof accept.extra?.decimals !== 'number') {
+      throw new X402Error(
+        'missing_decimals',
+        'Payment option missing decimals in extra'
+      );
+    }
+
+    // Check amount limit
     if (maxAmountAtomic && BigInt(accept.amount) > BigInt(maxAmountAtomic)) {
       throw new X402Error(
         'amount_exceeds_max',
-        `Payment amount ${accept.amount} exceeds maximum ${maxAmountAtomic}`,
-        { amount: accept.amount, max: maxAmountAtomic }
+        `Payment amount ${accept.amount} exceeds maximum ${maxAmountAtomic}`
       );
     }
 
-    // Check wallet
-    if (!wallet.publicKey) {
-      throw new X402Error(
-        'wallet_missing_sign_transaction',
-        'Wallet not connected'
-      );
+    // Build and sign transaction
+    log('Building transaction...');
+    const rpcUrl = getRpcUrl(accept.network, adapter);
+    const signedTx = await adapter.buildTransaction(accept, wallet, rpcUrl);
+    log('Transaction signed');
+
+    // Build PAYMENT-SIGNATURE payload
+    // Solana uses payload.transaction (base64 serialized tx)
+    // EVM uses payload directly (authorization + signature object)
+    let payload: Record<string, unknown>;
+    if (adapter.name === 'EVM') {
+      // EVM: payload is the authorization + signature object
+      payload = JSON.parse(signedTx.serialized);
+    } else {
+      // Solana: payload.transaction is the base64 tx
+      payload = { transaction: signedTx.serialized };
     }
 
-    log('Building payment transaction...');
-
-    // Build and sign the transaction
-    let signedTx;
-    try {
-      signedTx = await buildPaymentTransaction(wallet, accept, resolvedRpcUrl);
-    } catch (err) {
-      throw new X402Error(
-        'transaction_build_failed',
-        `Failed to build payment transaction: ${err instanceof Error ? err.message : String(err)}`,
-        err
-      );
-    }
-
-    log('Transaction signed successfully');
-
-    // Serialize transaction to base64
-    const transactionBase64 = serializeTransaction(signedTx);
-
-    // Build PaymentSignature payload
-    const paymentSignature: PaymentSignature = {
+    const paymentSignature = {
       x402Version: 2,
       resource: requirements.resource,
       accepted: accept,
-      payload: {
-        transaction: transactionBase64,
-      },
+      payload,
     };
 
-    // Encode for header
     const paymentSignatureHeader = btoa(JSON.stringify(paymentSignature));
 
-    log('Retrying with PAYMENT-SIGNATURE header...');
-
-    // Retry with PAYMENT-SIGNATURE header
-    const retryInit: RequestInit = {
+    // Retry request with payment
+    log('Retrying request with payment...');
+    const retryResponse = await customFetch(input, {
       ...init,
       headers: {
-        ...(init?.headers instanceof Headers
-          ? Object.fromEntries(init.headers.entries())
-          : init?.headers || {}),
+        ...(init?.headers || {}),
         'PAYMENT-SIGNATURE': paymentSignatureHeader,
       },
-    };
-
-    const retryResponse = await customFetch(input, retryInit);
+    });
 
     log('Retry response status:', retryResponse.status);
 
-    // Check if payment was rejected
     if (retryResponse.status === 402) {
+      // Try to get rejection reason from body
+      let reason = 'unknown';
+      try {
+        const body = (await retryResponse.clone().json()) as Record<string, unknown>;
+        reason = String(body.error || body.message || JSON.stringify(body));
+        log('Rejection reason:', reason);
+      } catch {
+        // Ignore
+      }
       throw new X402Error(
         'payment_rejected',
-        'Payment was rejected by the server',
-        { status: retryResponse.status }
+        `Payment was rejected by the server: ${reason}`
       );
     }
 
@@ -232,3 +317,7 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     fetch: x402Fetch,
   };
 }
+
+// Re-export types for convenience
+export type { ChainAdapter, WalletSet } from '../adapters/types';
+export { X402Error } from '../types';

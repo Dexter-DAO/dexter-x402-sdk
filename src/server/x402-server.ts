@@ -1,39 +1,83 @@
 /**
- * Dexter x402 v2 Server
+ * x402 v2 Server
  *
- * Server-side helpers for accepting x402 payments:
- * - Build payment requirements for 402 responses
- * - Verify payments with the facilitator
- * - Settle payments to execute the transfer
+ * Server-side helpers for accepting x402 payments.
+ * Chain-agnostic - works with Solana, Base, and any x402-compatible network.
+ *
+ * @example
+ * ```typescript
+ * import { createX402Server } from '@dexterai/x402/server';
+ *
+ * const server = createX402Server({
+ *   payTo: 'YourAddress...',
+ *   network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+ * });
+ *
+ * // Handle 402 responses
+ * if (!paymentSignature) {
+ *   const requirements = await server.buildRequirements({
+ *     amountAtomic: '50000',
+ *     resourceUrl: '/api/protected',
+ *   });
+ *   res.setHeader('PAYMENT-REQUIRED', server.encodeRequirements(requirements));
+ *   res.status(402).json({});
+ *   return;
+ * }
+ *
+ * // Verify and settle
+ * const verify = await server.verifyPayment(paymentSignature);
+ * if (!verify.isValid) throw new Error(verify.invalidReason);
+ *
+ * const settle = await server.settlePayment(paymentSignature);
+ * if (!settle.success) throw new Error(settle.errorReason);
+ *
+ * // Payment successful!
+ * res.json({ transaction: settle.transaction });
+ * ```
  */
 
 import type {
   PaymentRequired,
   PaymentAccept,
   ResourceInfo,
-  AssetConfig,
+  AcceptsExtra,
+  VerifyResponse,
+  SettleResponse,
 } from '../types';
 import {
   SOLANA_MAINNET_NETWORK,
   USDC_MINT,
   DEXTER_FACILITATOR_URL,
 } from '../types';
-import { FacilitatorClient } from './facilitator-client';
-import type { VerifyResponse, SettleResponse } from './facilitator-client';
+import { FacilitatorClient, type SupportedKind } from './facilitator-client';
+
+// ============================================================================
+// Types
+// ============================================================================
 
 /**
- * Configuration for the x402 server
+ * Asset configuration
+ */
+export interface AssetConfig {
+  /** Token address (mint on Solana, contract on EVM) */
+  address: string;
+  /** Token decimals */
+  decimals: number;
+}
+
+/**
+ * Server configuration
  */
 export interface X402ServerConfig {
-  /** Wallet address to receive payments */
+  /** Address to receive payments */
   payTo: string;
-  /** Facilitator URL (defaults to Dexter's public facilitator) */
+  /** Facilitator URL (defaults to Dexter) */
   facilitatorUrl?: string;
-  /** CAIP-2 network identifier (defaults to Solana mainnet) */
+  /** CAIP-2 network identifier */
   network?: string;
   /** Asset configuration (defaults to USDC) */
   asset?: AssetConfig;
-  /** Default timeout for payments in seconds */
+  /** Default payment timeout in seconds */
   defaultTimeoutSeconds?: number;
 }
 
@@ -41,87 +85,97 @@ export interface X402ServerConfig {
  * Options for building payment requirements
  */
 export interface BuildRequirementsOptions {
-  /** Amount in atomic units (e.g., "30000" for 0.03 USDC) */
+  /** Amount in atomic units (e.g., '50000' for 0.05 USDC) */
   amountAtomic: string;
-  /** Full URL of the resource being paid for */
+  /** Full URL of the resource */
   resourceUrl: string;
   /** Human-readable description */
   description?: string;
   /** MIME type of the response */
   mimeType?: string;
-  /** Override timeout for this specific request */
+  /** Override timeout for this request */
   timeoutSeconds?: number;
 }
 
 /**
- * x402 Server instance
+ * x402 Server interface
  */
 export interface X402Server {
-  /** Build a PaymentRequired structure (async to fetch feePayer from facilitator) */
+  /** Build payment requirements (fetches feePayer from facilitator) */
   buildRequirements(options: BuildRequirementsOptions): Promise<PaymentRequired>;
 
-  /** Encode PaymentRequired for the PAYMENT-REQUIRED header */
+  /** Encode requirements for PAYMENT-REQUIRED header */
   encodeRequirements(requirements: PaymentRequired): string;
 
-  /** Create a complete 402 response object */
+  /** Create complete 402 response object */
   create402Response(requirements: PaymentRequired): {
     status: 402;
     headers: { 'PAYMENT-REQUIRED': string };
-    body: Record<string, never>;
+    body: Record<string, unknown>;
   };
 
-  /** Verify a payment signature with the facilitator */
-  verifyPayment(paymentSignatureHeader: string): Promise<VerifyResponse>;
+  /** Verify payment with facilitator */
+  verifyPayment(
+    paymentSignatureHeader: string,
+    requirements?: PaymentAccept
+  ): Promise<VerifyResponse>;
 
-  /** Settle a payment via the facilitator */
-  settlePayment(paymentSignatureHeader: string): Promise<SettleResponse>;
+  /** Settle payment via facilitator */
+  settlePayment(
+    paymentSignatureHeader: string,
+    requirements?: PaymentAccept
+  ): Promise<SettleResponse>;
 
-  /** Get the PaymentAccept structure for verify/settle calls */
+  /** Get PaymentAccept for verify/settle */
   getPaymentAccept(options: BuildRequirementsOptions): Promise<PaymentAccept>;
+
+  /** Get network this server is configured for */
+  readonly network: string;
+
+  /** Get facilitator client for advanced usage */
+  readonly facilitator: FacilitatorClient;
 }
+
+// ============================================================================
+// Implementation
+// ============================================================================
 
 /**
  * Create an x402 server for accepting payments
- *
- * @example
- * ```ts
- * const server = createX402Server({
- *   payTo: 'YourSolanaAddress...',
- * });
- *
- * // In your route handler:
- * const requirements = await server.buildRequirements({
- *   amountAtomic: '30000', // $0.03 USDC
- *   resourceUrl: 'https://api.example.com/resource',
- *   description: 'Access to protected resource',
- * });
- *
- * // Return 402 with PAYMENT-REQUIRED header
- * const response = server.create402Response(requirements);
- * ```
  */
 export function createX402Server(config: X402ServerConfig): X402Server {
   const {
     payTo,
     facilitatorUrl = DEXTER_FACILITATOR_URL,
     network = SOLANA_MAINNET_NETWORK,
-    asset = { mint: USDC_MINT, decimals: 6 },
+    asset = { address: USDC_MINT, decimals: 6 },
     defaultTimeoutSeconds = 60,
   } = config;
 
   const facilitator = new FacilitatorClient(facilitatorUrl);
 
-  // Cache for feePayer to avoid repeated /supported calls
-  let cachedFeePayer: string | null = null;
+  // Cache for network extra data
+  let cachedExtra: SupportedKind['extra'] | null = null;
 
   /**
-   * Get the feePayer from the facilitator (cached)
+   * Get extra data from facilitator (cached)
    */
-  async function getFeePayer(): Promise<string> {
-    if (!cachedFeePayer) {
-      cachedFeePayer = await facilitator.getFeePayer(network);
+  async function getNetworkExtra(): Promise<AcceptsExtra> {
+    if (!cachedExtra) {
+      cachedExtra = await facilitator.getNetworkExtra(network);
     }
-    return cachedFeePayer;
+
+    if (!cachedExtra?.feePayer) {
+      throw new Error(`Facilitator does not provide feePayer for network "${network}"`);
+    }
+
+    return {
+      feePayer: cachedExtra.feePayer,
+      decimals: cachedExtra.decimals ?? asset.decimals,
+      // Include any additional EIP-712 data for EVM chains
+      name: cachedExtra.name,
+      version: cachedExtra.version,
+    };
   }
 
   /**
@@ -133,19 +187,16 @@ export function createX402Server(config: X402ServerConfig): X402Server {
       timeoutSeconds = defaultTimeoutSeconds,
     } = options;
 
-    const feePayer = await getFeePayer();
+    const extra = await getNetworkExtra();
 
     return {
       scheme: 'exact',
       network,
       amount: amountAtomic,
-      asset: asset.mint,
+      asset: asset.address,
       payTo,
       maxTimeoutSeconds: timeoutSeconds,
-      extra: {
-        feePayer, // CORRECT: feePayer comes from facilitator, not payTo
-        decimals: asset.decimals,
-      },
+      extra,
     };
   }
 
@@ -183,15 +234,11 @@ export function createX402Server(config: X402ServerConfig): X402Server {
   }
 
   /**
-   * Create a complete 402 response object
+   * Create complete 402 response object
    */
-  function create402Response(requirements: PaymentRequired): {
-    status: 402;
-    headers: { 'PAYMENT-REQUIRED': string };
-    body: Record<string, never>;
-  } {
+  function create402Response(requirements: PaymentRequired) {
     return {
-      status: 402,
+      status: 402 as const,
       headers: {
         'PAYMENT-REQUIRED': encodeRequirements(requirements),
       },
@@ -200,32 +247,34 @@ export function createX402Server(config: X402ServerConfig): X402Server {
   }
 
   /**
-   * Verify a payment with the facilitator
+   * Verify payment with facilitator
    */
-  async function verifyPayment(paymentSignatureHeader: string): Promise<VerifyResponse> {
-    // We need to know the requirements that were originally sent
-    // The payment signature contains the 'accepted' field which should match
-    // For now, reconstruct from config
-    // In practice, servers should store/pass the original requirements
-    
-    const accept = await getPaymentAccept({
-      amountAtomic: '0', // Will be overwritten by payload
-      resourceUrl: '', // Will be overwritten by payload
+  async function verifyPayment(
+    paymentSignatureHeader: string,
+    requirements?: PaymentAccept
+  ): Promise<VerifyResponse> {
+    // If requirements not provided, build default
+    const req = requirements || await getPaymentAccept({
+      amountAtomic: '0',
+      resourceUrl: '',
     });
 
-    return facilitator.verifyPayment(paymentSignatureHeader, accept);
+    return facilitator.verifyPayment(paymentSignatureHeader, req);
   }
 
   /**
-   * Settle a payment with the facilitator
+   * Settle payment via facilitator
    */
-  async function settlePayment(paymentSignatureHeader: string): Promise<SettleResponse> {
-    const accept = await getPaymentAccept({
-      amountAtomic: '0', // Will be overwritten by payload
-      resourceUrl: '', // Will be overwritten by payload
+  async function settlePayment(
+    paymentSignatureHeader: string,
+    requirements?: PaymentAccept
+  ): Promise<SettleResponse> {
+    const req = requirements || await getPaymentAccept({
+      amountAtomic: '0',
+      resourceUrl: '',
     });
 
-    return facilitator.settlePayment(paymentSignatureHeader, accept);
+    return facilitator.settlePayment(paymentSignatureHeader, req);
   }
 
   return {
@@ -235,5 +284,7 @@ export function createX402Server(config: X402ServerConfig): X402Server {
     verifyPayment,
     settlePayment,
     getPaymentAccept,
+    network,
+    facilitator,
   };
 }

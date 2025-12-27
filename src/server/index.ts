@@ -1,67 +1,59 @@
 /**
- * @dexter/x402-solana/server
+ * @dexterai/x402 Server
  *
- * Server SDK for accepting x402 v2 payments.
- * Helpers for building requirements, verifying, and settling.
+ * Server-side helpers for accepting x402 payments.
+ * Works with any x402 v2 facilitator.
  *
  * @example
- * ```ts
- * import { createX402Server } from '@dexter/x402-solana/server';
+ * ```typescript
+ * import { createX402Server } from '@dexterai/x402/server';
  *
- * const server = createX402Server({
+ * // Create server for Solana payments
+ * const solanaServer = createX402Server({
  *   payTo: 'YourSolanaAddress...',
+ *   network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
  * });
  *
- * // Build 402 response
- * const requirements = await server.buildRequirements({
- *   amountAtomic: '30000',
- *   resourceUrl: req.url,
+ * // Create server for Base payments
+ * const baseServer = createX402Server({
+ *   payTo: '0xYourEvmAddress...',
+ *   network: 'eip155:8453',
+ *   asset: { address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', decimals: 6 },
  * });
  *
- * // Verify payment
- * const verified = await server.verifyPayment(paymentHeader);
+ * // In your Express handler:
+ * app.post('/protected', async (req, res) => {
+ *   const paymentSig = req.headers['payment-signature'];
  *
- * // Settle payment
- * const settled = await server.settlePayment(paymentHeader);
+ *   if (!paymentSig) {
+ *     const requirements = await solanaServer.buildRequirements({
+ *       amountAtomic: '50000',
+ *       resourceUrl: req.originalUrl,
+ *     });
+ *     res.setHeader('PAYMENT-REQUIRED', solanaServer.encodeRequirements(requirements));
+ *     return res.status(402).json({});
+ *   }
+ *
+ *   const result = await solanaServer.settlePayment(paymentSig);
+ *   if (!result.success) {
+ *     return res.status(402).json({ error: result.errorReason });
+ *   }
+ *
+ *   res.json({ data: 'protected content', transaction: result.transaction });
+ * });
  * ```
  */
 
-// Main exports
 export { createX402Server } from './x402-server';
-export type { X402ServerConfig, X402Server, BuildRequirementsOptions } from './x402-server';
-
-// Facilitator client (for advanced use cases)
-export { FacilitatorClient } from './facilitator-client';
-export type { SupportedKind, SupportedResponse, VerifyResponse, SettleResponse } from './facilitator-client';
-
-// Re-export shared types and constants
-export {
-  SOLANA_MAINNET_NETWORK,
-  USDC_MINT,
-  DEXTER_FACILITATOR_URL,
-  X402Error,
-} from '../types';
-
 export type {
-  PaymentRequired,
-  PaymentSignature,
-  PaymentAccept,
-  ResourceInfo,
+  X402ServerConfig,
+  X402Server,
+  BuildRequirementsOptions,
   AssetConfig,
-  AcceptsExtra,
-  X402ErrorCode,
-} from '../types';
+} from './x402-server';
 
-// Re-export utilities
-export {
-  getDefaultRpcUrl,
-  isSolanaNetwork,
-  toCAIP2Network,
-  encodePaymentRequired,
-  decodePaymentRequired,
-  buildPaymentSignature,
-  encodePaymentSignature,
-  decodePaymentSignature,
-  toAtomicUnits,
-  fromAtomicUnits,
-} from '../utils';
+export { FacilitatorClient, type SupportedKind, type SupportedResponse } from './facilitator-client';
+
+// Re-export types for convenience
+export type { VerifyResponse, SettleResponse, PaymentRequired, PaymentAccept } from '../types';
+export { DEXTER_FACILITATOR_URL, SOLANA_MAINNET_NETWORK, BASE_MAINNET_NETWORK, USDC_MINT, USDC_BASE } from '../types';

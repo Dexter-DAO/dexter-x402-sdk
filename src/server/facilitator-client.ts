@@ -1,15 +1,17 @@
 /**
- * Dexter Facilitator Client
+ * Facilitator Client
  *
- * Communicates with the Dexter x402 facilitator for:
- * - /supported - Get supported payment schemes and fee payer address
+ * Communicates with the x402 facilitator for:
+ * - /supported - Get supported payment schemes and fee payer addresses
  * - /verify - Verify a payment signature before processing
  * - /settle - Submit the payment for execution
+ *
+ * Works with any x402 v2 facilitator (Dexter or others).
  */
 
-import type { PaymentAccept } from '../types';
+import type { PaymentAccept, PaymentSignature, VerifyResponse, SettleResponse } from '../types';
 import { DEXTER_FACILITATOR_URL } from '../types';
-import { isSolanaNetwork, decodePaymentSignature } from '../utils';
+import { decodeBase64Json } from '../utils';
 
 /**
  * Supported payment kind from facilitator /supported endpoint
@@ -21,6 +23,8 @@ export interface SupportedKind {
   extra?: {
     feePayer?: string;
     decimals?: number;
+    name?: string;
+    version?: string;
     [key: string]: unknown;
   };
 }
@@ -33,27 +37,7 @@ export interface SupportedResponse {
 }
 
 /**
- * Response from facilitator /verify endpoint
- */
-export interface VerifyResponse {
-  isValid: boolean;
-  invalidReason?: string;
-  payer?: string;
-}
-
-/**
- * Response from facilitator /settle endpoint
- */
-export interface SettleResponse {
-  success: boolean;
-  transaction?: string;
-  network?: string;
-  payer?: string;
-  errorReason?: string;
-}
-
-/**
- * Client for communicating with the Dexter x402 facilitator
+ * Client for communicating with an x402 v2 facilitator
  */
 export class FacilitatorClient {
   private facilitatorUrl: string;
@@ -88,17 +72,17 @@ export class FacilitatorClient {
   /**
    * Get the fee payer address for a specific network
    *
-   * @param network - CAIP-2 network identifier (e.g., 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp')
+   * @param network - CAIP-2 network identifier
    * @returns Fee payer address
    */
   async getFeePayer(network: string): Promise<string> {
     const supported = await this.getSupported();
 
-    // Find matching network support
+    // Find matching network support (exact match or v2)
     const kind = supported.kinds.find(
       (k) =>
+        k.x402Version === 2 &&
         k.scheme === 'exact' &&
-        isSolanaNetwork(k.network) &&
         k.network === network
     );
 
@@ -112,24 +96,22 @@ export class FacilitatorClient {
   }
 
   /**
-   * Get decimals for an asset on a specific network
+   * Get extra data for a network (feePayer, decimals, EIP-712 data, etc.)
+   *
+   * @param network - CAIP-2 network identifier
+   * @returns Extra data from /supported
    */
-  async getDecimals(network: string): Promise<number> {
+  async getNetworkExtra(network: string): Promise<SupportedKind['extra']> {
     const supported = await this.getSupported();
 
     const kind = supported.kinds.find(
       (k) =>
+        k.x402Version === 2 &&
         k.scheme === 'exact' &&
-        isSolanaNetwork(k.network) &&
         k.network === network
     );
 
-    if (typeof kind?.extra?.decimals !== 'number') {
-      // Default to 6 for USDC
-      return 6;
-    }
-
-    return kind.extra.decimals;
+    return kind?.extra;
   }
 
   /**
@@ -144,7 +126,7 @@ export class FacilitatorClient {
     requirements: PaymentAccept
   ): Promise<VerifyResponse> {
     try {
-      const paymentPayload = decodePaymentSignature(paymentSignatureHeader);
+      const paymentPayload = decodeBase64Json<PaymentSignature>(paymentSignatureHeader);
 
       const verifyPayload = {
         paymentPayload,
@@ -190,7 +172,7 @@ export class FacilitatorClient {
     requirements: PaymentAccept
   ): Promise<SettleResponse> {
     try {
-      const paymentPayload = decodePaymentSignature(paymentSignatureHeader);
+      const paymentPayload = decodeBase64Json<PaymentSignature>(paymentSignatureHeader);
 
       const settlePayload = {
         paymentPayload,
@@ -210,18 +192,23 @@ export class FacilitatorClient {
         console.error(`Facilitator /settle returned ${response.status}:`, errorText);
         return {
           success: false,
+          network: requirements.network,
           errorReason: `facilitator_error_${response.status}`,
         };
       }
 
-      return (await response.json()) as SettleResponse;
+      const result = (await response.json()) as SettleResponse;
+      return {
+        ...result,
+        network: requirements.network,
+      };
     } catch (error) {
       console.error('Payment settlement failed:', error);
       return {
         success: false,
+        network: requirements.network,
         errorReason: error instanceof Error ? error.message : 'unexpected_settle_error',
       };
     }
   }
 }
-

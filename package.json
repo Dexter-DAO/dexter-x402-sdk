@@ -1,7 +1,7 @@
 {
-  "name": "@dexterai/x402-solana",
-  "version": "0.2.0",
-  "description": "Dexter x402 v2 SDK for Solana payments",
+  "name": "@dexterai/x402",
+  "version": "1.0.0",
+  "description": "Chain-agnostic x402 v2 SDK for Solana, Base, and EVM payments",
   "author": "Dexter",
   "license": "MIT",
   "type": "module",
@@ -20,11 +20,18 @@
       "types": "./dist/react/index.d.ts",
       "import": "./dist/react/index.js",
       "require": "./dist/react/index.cjs"
+    },
+    "./adapters": {
+      "types": "./dist/adapters/index.d.ts",
+      "import": "./dist/adapters/index.js",
+      "require": "./dist/adapters/index.cjs"
     }
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "assets"
   ],
   "scripts": {
     "build": "tsup",
@@ -45,6 +52,7 @@
     "@types/node": "^22.10.0",
     "@types/react": "^18.0.0",
     "bs58": "^6.0.0",
+    "ethers": "^6.13.0",
     "react": "^18.0.0",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",
@@ -52,13 +60,17 @@
   },
   "peerDependencies": {
     "@solana/wallet-adapter-base": "^0.9.0",
-    "react": "^18.0.0 || ^19.0.0"
+    "react": "^18.0.0 || ^19.0.0",
+    "viem": "^2.0.0"
   },
   "peerDependenciesMeta": {
     "@solana/wallet-adapter-base": {
       "optional": true
     },
     "react": {
+      "optional": true
+    },
+    "viem": {
       "optional": true
     }
   },
@@ -68,12 +80,20 @@
   "keywords": [
     "x402",
     "solana",
+    "base",
+    "evm",
+    "ethereum",
     "payments",
     "dexter",
-    "web3"
+    "web3",
+    "crypto"
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/BranchManager69/dexter-x402-sdk"
+    "url": "https://github.com/Dexter-DAO/x402-sdk"
+  },
+  "homepage": "https://dexter.cash/sdk",
+  "bugs": {
+    "url": "https://github.com/Dexter-DAO/x402-sdk/issues"
   }
 }

@@ -1,15 +1,15 @@
 /**
- * @dexter/x402-solana - Server Example (Express)
- * 
+ * @dexterai/x402 - Server Example (Express)
+ *
  * Demonstrates how to protect API endpoints with x402 payments.
- * Users pay USDC on Solana to access your API.
- * 
+ * Users pay USDC on Solana (or Base) to access your API.
+ *
  * Setup:
  *   export X402_PAY_TO="YourSolanaWalletAddress"
- *   
+ *
  * Run:
  *   npx tsx examples/server-express.ts
- *   
+ *
  * Test:
  *   curl http://localhost:3000/api/premium
  *   # Returns 402 with PAYMENT-REQUIRED header
@@ -39,17 +39,17 @@ if (!PAY_TO) {
 const x402 = createX402Server({
   // Dexter's public facilitator (handles fee sponsorship + settlement)
   facilitatorUrl: 'https://x402.dexter.cash',
-  
+
   // Solana mainnet
   network: SOLANA_MAINNET_NETWORK,
-  
+
   // Your wallet to receive payments
   payTo: PAY_TO,
-  
+
   // USDC on Solana
-  asset: { 
-    mint: USDC_MINT, 
-    decimals: 6 
+  asset: {
+    address: USDC_MINT,
+    decimals: 6
   },
 });
 
@@ -60,11 +60,8 @@ const x402 = createX402Server({
 const app = express();
 app.use(express.json());
 
-// Middleware to handle x402 payments
-async function requirePayment(
-  amount: string,
-  description: string
-) {
+// Middleware factory for requiring payment
+function requirePayment(amount: string, description: string) {
   return async (
     req: express.Request,
     res: express.Response,
@@ -72,7 +69,7 @@ async function requirePayment(
   ) => {
     // Check for payment signature
     const paymentSignature = req.headers['payment-signature'] as string;
-    
+
     if (!paymentSignature) {
       // No payment - return 402 with requirements
       const requirements = await x402.buildRequirements({
@@ -80,41 +77,41 @@ async function requirePayment(
         resourceUrl: req.originalUrl,
         description,
       });
-      
+
       res.setHeader('PAYMENT-REQUIRED', x402.encodeRequirements(requirements));
-      res.status(402).json({ 
+      res.status(402).json({
         error: 'Payment required',
         amount: `$${(parseInt(amount) / 1_000_000).toFixed(2)} USDC`,
       });
       return;
     }
-    
+
     // Verify and settle payment
     try {
       const verifyResult = await x402.verifyPayment(paymentSignature);
-      
+
       if (!verifyResult.isValid) {
-        res.status(402).json({ 
+        res.status(402).json({
           error: 'Invalid payment',
           reason: verifyResult.invalidReason,
         });
         return;
       }
-      
+
       const settleResult = await x402.settlePayment(paymentSignature);
-      
+
       if (!settleResult.success) {
-        res.status(402).json({ 
+        res.status(402).json({
           error: 'Payment failed',
           reason: settleResult.errorReason,
         });
         return;
       }
-      
+
       // Payment successful - attach tx to request for logging
       (req as any).paymentTx = settleResult.transaction;
       next();
-      
+
     } catch (error: any) {
       console.error('Payment error:', error.message);
       res.status(500).json({ error: 'Payment processing failed' });
@@ -127,14 +124,14 @@ async function requirePayment(
 // ============================================================================
 
 // Free endpoint
-app.get('/api/health', (req, res) => {
+app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 // Paid endpoint - $0.05 USDC
 app.post(
   '/api/premium',
-  await requirePayment('50000', 'Premium API access'),
+  requirePayment('50000', 'Premium API access'),
   (req, res) => {
     res.json({
       success: true,
@@ -152,7 +149,7 @@ app.post(
 // Paid endpoint - $0.10 USDC
 app.post(
   '/api/super-premium',
-  await requirePayment('100000', 'Super Premium API access'),
+  requirePayment('100000', 'Super Premium API access'),
   (req, res) => {
     res.json({
       success: true,
@@ -171,8 +168,8 @@ app.post(
 // ============================================================================
 
 app.listen(PORT, () => {
-  console.log('🚀 x402 Server Example');
-  console.log('======================\n');
+  console.log('🚀 @dexterai/x402 Server Example');
+  console.log('================================\n');
   console.log(`Receiving payments at: ${PAY_TO}`);
   console.log(`Server running at: http://localhost:${PORT}\n`);
   console.log('Endpoints:');
@@ -182,4 +179,3 @@ app.listen(PORT, () => {
   console.log('\nTest with:');
   console.log(`  curl -X POST http://localhost:${PORT}/api/premium`);
 });
-
