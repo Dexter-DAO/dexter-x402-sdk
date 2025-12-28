@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2024-12-28
+
+### Added
+- **Token Pricing** - `createTokenPricing()` for accurate LLM pricing using tiktoken
+- Uses real OpenAI model rates (gpt-4o-mini, gpt-4o, o1, o3, etc.)
+- `MODEL_PRICING` - Complete pricing table for 20+ models across fast/standard/reasoning/premium tiers
+- `countTokens()` - Accurate token counting using OpenAI's tiktoken
+- `getAvailableModels()` - List all models sorted by tier and price
+- `isValidModel()` - Check if a model is supported
+- `formatTokenPricing()` - Display helper (e.g., "$0.15 per 1M tokens")
+
+### Changed
+- Dynamic pricing now has two variants:
+  - `createDynamicPricing()` - Character-based (simple, no deps)
+  - `createTokenPricing()` - Token-based (accurate, uses tiktoken)
+
 ## [1.1.0] - 2024-12-27
 
 ### Added

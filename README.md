@@ -233,6 +233,81 @@ The client SDK automatically forwards `X-Quote-Hash` on retry.
 
 ---
 
+## Token Pricing (LLM-Accurate)
+
+For accurate LLM pricing using actual token counts (not character estimates):
+
+```typescript
+import { createX402Server, createTokenPricing, MODEL_PRICING } from '@dexterai/x402/server';
+
+const server = createX402Server({ payTo: '...', network: '...' });
+const pricing = createTokenPricing({
+  model: 'gpt-4o-mini',  // Uses real OpenAI rates
+  // minUsd: 0.001,      // Optional floor
+  // maxUsd: 50.0,       // Optional ceiling
+});
+
+app.post('/api/chat', async (req, res) => {
+  const { prompt, systemPrompt } = req.body;
+  const paymentSig = req.headers['payment-signature'];
+
+  if (!paymentSig) {
+    const quote = pricing.calculate(prompt, systemPrompt);
+    const requirements = await server.buildRequirements({
+      amountAtomic: quote.amountAtomic,
+      resourceUrl: req.originalUrl,
+      description: `${quote.model}: ${quote.inputTokens.toLocaleString()} tokens`,
+    });
+    res.setHeader('PAYMENT-REQUIRED', server.encodeRequirements(requirements));
+    res.setHeader('X-Quote-Hash', quote.quoteHash);
+    return res.status(402).json({
+      inputTokens: quote.inputTokens,
+      usdAmount: quote.usdAmount,
+      model: quote.model,
+      tier: quote.tier,
+    });
+  }
+
+  // Validate quote hasn't changed
+  const quoteHash = req.headers['x-quote-hash'];
+  if (!pricing.validateQuote(prompt, quoteHash)) {
+    return res.status(400).json({ error: 'Prompt changed, re-quote required' });
+  }
+
+  const result = await server.settlePayment(paymentSig);
+  if (!result.success) return res.status(402).json({ error: result.errorReason });
+
+  const response = await openai.chat.completions.create({
+    model: pricing.config.model,
+    messages: [{ role: 'user', content: prompt }],
+    max_completion_tokens: pricing.modelInfo.maxTokens,
+  });
+
+  res.json({ 
+    response: response.choices[0].message.content,
+    transaction: result.transaction,
+  });
+});
+```
+
+### Available Models
+
+```typescript
+import { MODEL_PRICING, getAvailableModels } from '@dexterai/x402/server';
+
+// Get all models sorted by tier and price
+const models = getAvailableModels();
+// → [{ model: 'gpt-5-nano', inputRate: 0.05, tier: 'fast' }, ...]
+
+// Check pricing for a specific model
+MODEL_PRICING['gpt-4o-mini'];
+// → { input: 0.15, output: 0.6, maxTokens: 4096, tier: 'fast' }
+```
+
+**Supported tiers:** `fast`, `standard`, `reasoning`, `premium`
+
+---
+
 ## API Reference
 
 ### `createX402Client(options)`

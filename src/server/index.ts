@@ -54,9 +54,25 @@ export type {
 
 export { FacilitatorClient, type SupportedKind, type SupportedResponse } from './facilitator-client';
 
-// Dynamic pricing
+// Dynamic pricing (character-based)
 export { createDynamicPricing, formatPricing } from './dynamic-pricing';
 export type { DynamicPricingConfig, DynamicPricing, PriceQuote } from './dynamic-pricing';
+
+// Token pricing (LLM-accurate with tiktoken)
+export { 
+  createTokenPricing, 
+  countTokens, 
+  getAvailableModels, 
+  isValidModel, 
+  formatTokenPricing,
+  MODEL_PRICING,
+} from './token-pricing';
+export type { 
+  TokenPricingConfig, 
+  TokenPricing, 
+  TokenPriceQuote, 
+  ModelPricing,
+} from './token-pricing';
 
 // Re-export types for convenience
 export type { VerifyResponse, SettleResponse, PaymentRequired, PaymentAccept } from '../types';

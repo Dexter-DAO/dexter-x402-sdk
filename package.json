@@ -1,6 +1,6 @@
 {
   "name": "@dexterai/x402",
-  "version": "1.1.5",
+  "version": "1.2.0",
   "description": "Chain-agnostic x402 v2 SDK for Solana, Base, and EVM payments",
   "author": "Dexter",
   "license": "MIT",
@@ -51,7 +51,8 @@
   },
   "dependencies": {
     "@solana/spl-token": "^0.4.9",
-    "@solana/web3.js": "^1.98.0"
+    "@solana/web3.js": "^1.98.0",
+    "tiktoken": "^1.0.22"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
