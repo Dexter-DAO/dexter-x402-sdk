@@ -30,15 +30,17 @@ This SDK handles the entire flow automatically—you just call `fetch()` and pay
 
 ## Why This SDK?
 
-**Phantom wallet support on Solana mainnet.** The Dexter facilitator is the only x402 facilitator that handles Phantom's Lighthouse safety assertions. Other facilitators fail silently or reject Phantom transactions on mainnet. This SDK uses the Dexter facilitator by default.
+**Monetize any API in minutes.** Add payments to your server in ~10 lines. Clients pay automatically—no checkout pages, no subscriptions, no invoices. Just HTTP.
 
-**Multi-chain.** Solana and Base with the same API. Add wallets for both chains and the SDK picks the right one based on what the server accepts.
+**Dynamic pricing.** Charge based on usage: characters, tokens, records, pixels, API calls—whatever makes sense. Price scales with input, not fixed rates.
 
-**Built-in RPC.** Uses Dexter's RPC proxy by default—no need to configure Helius, QuickNode, or other providers. Just pass your wallet and go.
+**Token-accurate LLM pricing.** Built-in [tiktoken](https://github.com/openai/tiktoken) support prices AI requests by actual token count. Works with OpenAI models out of the box, or bring your own rates for Anthropic, Gemini, Mistral, or local models.
 
-**Pre-flight balance check.** Shows "Insufficient USDC balance" *before* the wallet popup, not after a failed transaction.
+**Full-stack.** Client SDK for browsers, server SDK for backends. React hooks, Express middleware patterns, facilitator client—everything you need.
 
-**React hook included.** `useX402Payment` with loading states, balances, and transaction tracking.
+**Multi-chain.** Solana and Base (Ethereum L2) with the same API. Add wallets for both and the SDK picks the right one automatically.
+
+**Works out of the box.** Built-in RPC proxy, pre-flight balance checks, automatic retry on 402. Uses the [Dexter facilitator](https://x402.dexter.cash) by default—the only x402 facilitator with full Phantom wallet support on Solana mainnet.
 
 ---
 
@@ -181,13 +183,19 @@ app.post('/protected', async (req, res) => {
 });
 ```
 
-> **Note:** The server SDK has not been battle-tested in production yet. The client SDK and React hook have been verified with real payments at [dexter.cash/sdk](https://dexter.cash/sdk).
+*Client SDK, React hook, and pricing utilities are production-verified at [dexter.cash/sdk](https://dexter.cash/sdk). `createX402Server` is a convenience wrapper not yet used in production.*
 
 ---
 
 ## Dynamic Pricing
 
-For LLM/AI endpoints where cost scales with input size:
+**Generic pricing for any use case** - charge by characters, bytes, API calls, or any unit you define. No external dependencies.
+
+Works for:
+- LLM/AI endpoints (by character count)
+- Image processing (by pixel count or file size)
+- Data APIs (by record count)
+- Any service where cost scales with input
 
 ```typescript
 import { createX402Server, createDynamicPricing } from '@dexterai/x402/server';
@@ -235,7 +243,7 @@ The client SDK automatically forwards `X-Quote-Hash` on retry.
 
 ## Token Pricing (LLM-Accurate)
 
-For accurate LLM pricing using actual token counts (not character estimates):
+**Accurate token-based pricing for LLMs.** Uses tiktoken for token counting. Supports OpenAI models out of the box, plus custom rates for Anthropic, Gemini, Mistral, or any model.
 
 ```typescript
 import { createX402Server, createTokenPricing, MODEL_PRICING } from '@dexterai/x402/server';
@@ -304,7 +312,37 @@ MODEL_PRICING['gpt-4o-mini'];
 // → { input: 0.15, output: 0.6, maxTokens: 4096, tier: 'fast' }
 ```
 
-**Supported tiers:** `fast`, `standard`, `reasoning`, `premium`
+**Supported tiers:** `fast`, `standard`, `reasoning`, `premium`, `custom`
+
+### Custom Models (Anthropic, Gemini, etc.)
+
+Not using OpenAI? Pass your own rates:
+
+```typescript
+// Anthropic Claude
+const pricing = createTokenPricing({
+  model: 'claude-3-sonnet',
+  inputRate: 3.0,    // $3.00 per 1M input tokens
+  outputRate: 15.0,  // $15.00 per 1M output tokens
+  maxTokens: 4096,
+});
+
+// Google Gemini
+const pricing = createTokenPricing({
+  model: 'gemini-1.5-pro',
+  inputRate: 1.25,
+  outputRate: 5.0,
+});
+
+// Custom/local model with custom tokenizer
+const pricing = createTokenPricing({
+  model: 'llama-3-70b',
+  inputRate: 0.50,
+  tokenizer: (text) => llamaTokenizer.encode(text).length,
+});
+```
+
+tiktoken's default encoding works well for most transformer models. Only use a custom tokenizer if your model has significantly different tokenization.
 
 ---
 

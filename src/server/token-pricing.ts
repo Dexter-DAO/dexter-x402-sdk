@@ -44,7 +44,7 @@ export interface ModelPricing {
   /** Default max output tokens for this model */
   maxTokens: number;
   /** Pricing tier */
-  tier: 'fast' | 'standard' | 'reasoning' | 'premium';
+  tier: 'fast' | 'standard' | 'reasoning' | 'premium' | 'custom';
 }
 
 /**
@@ -133,10 +133,45 @@ const DEFAULT_MODEL = 'gpt-4o-mini';
  */
 export interface TokenPricingConfig {
   /**
-   * Model to use for pricing.
-   * Must be a key in MODEL_PRICING or will fallback to gpt-4o-mini.
+   * Model name. Used for display and to look up built-in pricing.
+   * If not in MODEL_PRICING and no custom rates provided, falls back to gpt-4o-mini rates.
    */
   model?: string;
+
+  /**
+   * Custom input rate (USD per 1M tokens).
+   * Overrides built-in MODEL_PRICING for this model.
+   * Use this for Anthropic, Gemini, Mistral, or any custom model.
+   */
+  inputRate?: number;
+
+  /**
+   * Custom output rate (USD per 1M tokens).
+   * Optional - used for display/info purposes.
+   */
+  outputRate?: number;
+
+  /**
+   * Custom max output tokens.
+   * @default 4096
+   */
+  maxTokens?: number;
+
+  /**
+   * Custom tier label.
+   * @default 'custom'
+   */
+  tier?: 'fast' | 'standard' | 'reasoning' | 'premium' | 'custom';
+
+  /**
+   * Custom tokenizer function.
+   * If not provided, uses tiktoken (cl100k_base encoding).
+   * Use this for models with different tokenization (e.g., Llama, Mistral).
+   * 
+   * @example
+   * tokenizer: (text) => llamaTokenizer.encode(text).length
+   */
+  tokenizer?: (text: string) => number;
 
   /**
    * Minimum USD amount (floor).
@@ -254,11 +289,30 @@ function generateQuoteHash(prompt: string, model: string, rate: number, tokens: 
  * Create a token-based pricing calculator
  */
 export function createTokenPricing(config: TokenPricingConfig = {}): TokenPricing {
-  const model = config.model && MODEL_PRICING[config.model] ? config.model : DEFAULT_MODEL;
-  const modelInfo = MODEL_PRICING[model];
+  // Determine model name
+  const model = config.model ?? DEFAULT_MODEL;
+  
+  // Get built-in pricing if available, otherwise use custom or default
+  const builtInPricing = MODEL_PRICING[model];
+  
+  // Build effective model info (custom rates override built-in)
+  const modelInfo: ModelPricing = {
+    input: config.inputRate ?? builtInPricing?.input ?? MODEL_PRICING[DEFAULT_MODEL].input,
+    output: config.outputRate ?? builtInPricing?.output ?? MODEL_PRICING[DEFAULT_MODEL].output,
+    maxTokens: config.maxTokens ?? builtInPricing?.maxTokens ?? 4096,
+    tier: config.tier ?? builtInPricing?.tier ?? 'custom',
+  };
+
+  // Custom tokenizer or default tiktoken
+  const customTokenizer = config.tokenizer;
 
   const fullConfig: Required<TokenPricingConfig> = {
     model,
+    inputRate: modelInfo.input,
+    outputRate: modelInfo.output,
+    maxTokens: modelInfo.maxTokens,
+    tier: modelInfo.tier,
+    tokenizer: customTokenizer ?? ((text: string) => countTokens(text, model)),
     minUsd: config.minUsd ?? 0.001,
     maxUsd: config.maxUsd ?? 50.0,
     decimals: config.decimals ?? 6,
@@ -267,9 +321,12 @@ export function createTokenPricing(config: TokenPricingConfig = {}): TokenPricin
   const { minUsd, maxUsd, decimals } = fullConfig;
 
   /**
-   * Count tokens in text
+   * Count tokens in text (uses custom tokenizer if provided)
    */
   function countTokensInternal(input: string): number {
+    if (customTokenizer) {
+      return customTokenizer(input);
+    }
     return countTokens(input, model);
   }
 

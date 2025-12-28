@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2024-12-28
+
+### Added
+- **Custom model support** for `createTokenPricing()`:
+  - `inputRate` - Custom USD per 1M input tokens (for Anthropic, Gemini, Mistral, etc.)
+  - `outputRate` - Custom USD per 1M output tokens
+  - `maxTokens` - Custom max output tokens
+  - `tokenizer` - Custom tokenizer function for non-OpenAI models
+- `'custom'` tier for user-defined pricing
+
+### Changed
+- `createDynamicPricing()` documentation clarified: works for ANY pricing scenario, not just LLM
+- README now shows examples for Anthropic Claude, Google Gemini, and local models
+
 ## [1.2.0] - 2024-12-28
 
 ### Added
@@ -18,8 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Dynamic pricing now has two variants:
-  - `createDynamicPricing()` - Character-based (simple, no deps)
-  - `createTokenPricing()` - Token-based (accurate, uses tiktoken)
+  - `createDynamicPricing()` - Character-based (generic, no deps)
+  - `createTokenPricing()` - Token-based (LLM-accurate, uses tiktoken)
 
 ## [1.1.0] - 2024-12-27
 
