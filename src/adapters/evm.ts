@@ -28,9 +28,10 @@ const CHAIN_IDS: Record<string, number> = {
 
 /**
  * Default RPC URLs
+ * Base mainnet uses Dexter's RPC proxy for reliability and zero-config setup
  */
 const DEFAULT_RPC_URLS: Record<string, string> = {
-  [BASE_MAINNET]: 'https://mainnet.base.org',
+  [BASE_MAINNET]: 'https://api.dexter.cash/api/base/rpc',
   [BASE_SEPOLIA]: 'https://sepolia.base.org',
   [ETHEREUM_MAINNET]: 'https://eth.llamarpc.com',
   [ARBITRUM_ONE]: 'https://arb1.arbitrum.io/rpc',

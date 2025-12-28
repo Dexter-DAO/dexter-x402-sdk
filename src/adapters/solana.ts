@@ -33,9 +33,10 @@ export const SOLANA_TESTNET = 'solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z';
 
 /**
  * Default RPC URLs
+ * Mainnet uses Dexter's RPC proxy for reliability and zero-config setup
  */
 const DEFAULT_RPC_URLS: Record<string, string> = {
-  [SOLANA_MAINNET]: 'https://api.mainnet-beta.solana.com',
+  [SOLANA_MAINNET]: 'https://api.dexter.cash/api/solana/rpc',
   [SOLANA_DEVNET]: 'https://api.devnet.solana.com',
   [SOLANA_TESTNET]: 'https://api.testnet.solana.com',
 };

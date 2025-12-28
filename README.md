@@ -5,43 +5,44 @@
 <h1 align="center">@dexterai/x402</h1>
 
 <p align="center">
-  <strong>The x402 SDK that actually works.</strong>
+  <strong>x402 payments for Solana and Base. Works with Phantom.</strong>
 </p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@dexterai/x402"><img src="https://img.shields.io/npm/v/@dexterai/x402.svg" alt="npm"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E=18-brightgreen.svg" alt="Node"></a>
-  <a href="https://dexter.cash/sdk"><img src="https://img.shields.io/badge/🎮_Live_Demo-dexter.cash%2Fsdk-blueviolet" alt="Live Demo"></a>
+  <a href="https://dexter.cash/sdk"><img src="https://img.shields.io/badge/Live_Demo-dexter.cash%2Fsdk-blueviolet" alt="Live Demo"></a>
 </p>
 
 <p align="center">
-  <a href="https://dexter.cash/sdk"><strong>👉 Try it with real payments →</strong></a>
+  <a href="https://dexter.cash/sdk"><strong>Try it with real payments →</strong></a>
 </p>
 
 ---
 
-## ✨ Why This SDK?
+## What is x402?
 
-- **🔗 Multi-chain** — Solana and Base, same API
-- **⚡ x402 v2** — Full protocol support, verified working
-- **⚛️ React Hook** — `useX402Payment` with loading states, balances, and transaction tracking
-- **💰 Smart Balance Check** — Clear "insufficient funds" error *before* the wallet popup
-- **👻 Phantom Compatible** — Handles Lighthouse safety assertions automatically
-- **📦 Zero Config** — Wrap `fetch()`, payments just work
+x402 is a protocol for HTTP-native micropayments. When a server returns HTTP status `402 Payment Required`, it includes payment details in a `PAYMENT-REQUIRED` header. The client signs a payment transaction and retries the request with a `PAYMENT-SIGNATURE` header. The server verifies and settles the payment, then returns the protected content.
+
+This SDK handles the entire flow automatically—you just call `fetch()` and payments happen transparently.
 
 ---
 
-## 🎮 See It Working
+## Why This SDK?
 
-**Don't take our word for it.** Make a real payment yourself:
+**Phantom wallet support on Solana mainnet.** The Dexter facilitator is the only x402 facilitator that handles Phantom's Lighthouse safety assertions. Other facilitators fail silently or reject Phantom transactions on mainnet. This SDK uses the Dexter facilitator by default.
 
-**[→ dexter.cash/sdk](https://dexter.cash/sdk)**
+**Multi-chain.** Solana and Base with the same API. Add wallets for both chains and the SDK picks the right one based on what the server accepts.
 
-The demo uses this exact SDK. Solana and Base. Real USDC. Real transactions.
+**Built-in RPC.** Uses Dexter's RPC proxy by default—no need to configure Helius, QuickNode, or other providers. Just pass your wallet and go.
+
+**Pre-flight balance check.** Shows "Insufficient USDC balance" *before* the wallet popup, not after a failed transaction.
+
+**React hook included.** `useX402Payment` with loading states, balances, and transaction tracking.
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Install
 
@@ -59,14 +60,21 @@ const client = createX402Client({
     solana: solanaWallet,
     evm: evmWallet,
   },
-  rpcUrls: {
-    'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp': 'https://your-solana-rpc.com',
-    'eip155:8453': 'https://your-base-rpc.com',
-  },
 });
 
 // That's it. 402 responses are handled automatically.
 const response = await client.fetch('https://api.example.com/protected');
+```
+
+RPC URLs are optional—the SDK uses Dexter's RPC proxy by default. Override if needed:
+
+```typescript
+const client = createX402Client({
+  wallets: { solana: solanaWallet },
+  rpcUrls: {
+    'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp': 'https://your-rpc.com',
+  },
+});
 ```
 
 ### React
@@ -77,7 +85,6 @@ import { useX402Payment } from '@dexterai/x402/react';
 function PayButton() {
   const { fetch, isLoading, balances, transactionUrl } = useX402Payment({
     wallets: { solana: solanaWallet, evm: evmWallet },
-    rpcUrls: { /* your RPC endpoints */ },
   });
 
   return (
@@ -86,7 +93,7 @@ function PayButton() {
       <button onClick={() => fetch(url)} disabled={isLoading}>
         {isLoading ? 'Paying...' : 'Pay'}
       </button>
-      {transactionUrl && <a href={transactionUrl}>View Transaction ↗</a>}
+      {transactionUrl && <a href={transactionUrl}>View Transaction</a>}
     </div>
   );
 }
@@ -94,18 +101,18 @@ function PayButton() {
 
 ---
 
-## 🌐 Supported Networks
+## Supported Networks
 
 | Network | Identifier | Status |
 |---------|------------|--------|
-| Solana Mainnet | `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` | ✅ Verified |
-| Base Mainnet | `eip155:8453` | ✅ Verified |
+| Solana Mainnet | `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` | Verified |
+| Base Mainnet | `eip155:8453` | Verified |
 
 All networks use USDC.
 
 ---
 
-## 📦 Package Exports
+## Package Exports
 
 ```typescript
 // Client - browser & Node.js
@@ -114,7 +121,7 @@ import { createX402Client } from '@dexterai/x402/client';
 // React hook
 import { useX402Payment } from '@dexterai/x402/react';
 
-// Server helpers (see note below)
+// Server helpers
 import { createX402Server } from '@dexterai/x402/server';
 
 // Chain adapters (advanced)
@@ -126,7 +133,7 @@ import { toAtomicUnits, fromAtomicUnits } from '@dexterai/x402/utils';
 
 ---
 
-## 🛠️ Utilities
+## Utilities
 
 ```typescript
 import { toAtomicUnits, fromAtomicUnits } from '@dexterai/x402/utils';
@@ -142,7 +149,7 @@ fromAtomicUnits(1500000n, 6);  // 1.5
 
 ---
 
-## 🖥️ Server SDK
+## Server SDK
 
 ```typescript
 import { createX402Server } from '@dexterai/x402/server';
@@ -150,7 +157,6 @@ import { createX402Server } from '@dexterai/x402/server';
 const server = createX402Server({
   payTo: 'YourAddress...',
   network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
-  facilitatorUrl: 'https://x402.dexter.cash',
 });
 
 // In your route handler
@@ -175,11 +181,11 @@ app.post('/protected', async (req, res) => {
 });
 ```
 
-> ⚠️ **Note:** The server SDK has not been battle-tested in production yet. The client SDK and React hook have been verified with real payments at [dexter.cash/sdk](https://dexter.cash/sdk).
+> **Note:** The server SDK has not been battle-tested in production yet. The client SDK and React hook have been verified with real payments at [dexter.cash/sdk](https://dexter.cash/sdk).
 
 ---
 
-## 💸 Dynamic Pricing
+## Dynamic Pricing
 
 For LLM/AI endpoints where cost scales with input size:
 
@@ -227,18 +233,18 @@ The client SDK automatically forwards `X-Quote-Hash` on retry.
 
 ---
 
-## 📋 API Reference
+## API Reference
 
 ### `createX402Client(options)`
 
-| Option | Type | Description |
-|--------|------|-------------|
-| `wallet` | `SolanaWallet` | Single Solana wallet (legacy) |
-| `wallets` | `{ solana?, evm? }` | Multi-chain wallets |
-| `preferredNetwork` | `string` | Prefer this network when multiple options available |
-| `rpcUrls` | `Record<string, string>` | RPC endpoints per network (CAIP-2 format) |
-| `maxAmountAtomic` | `string` | Maximum payment cap |
-| `verbose` | `boolean` | Enable debug logging |
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `wallets` | `{ solana?, evm? }` | Yes | Multi-chain wallets |
+| `wallet` | `SolanaWallet` | No | Single Solana wallet (legacy) |
+| `preferredNetwork` | `string` | No | Prefer this network when multiple options available |
+| `rpcUrls` | `Record<string, string>` | No | RPC endpoints per network (defaults to Dexter proxy) |
+| `maxAmountAtomic` | `string` | No | Maximum payment cap |
+| `verbose` | `boolean` | No | Enable debug logging |
 
 ### `useX402Payment(options)`
 
@@ -258,18 +264,17 @@ Returns:
 
 ---
 
-## 🔧 Development
+## Development
 
 ```bash
 npm run build      # Build ESM + CJS
 npm run dev        # Watch mode
-npm run typecheck  # TypeScript
-npm test           # Run tests
+npm run typecheck  # TypeScript checks
 ```
 
 ---
 
-## 📄 License
+## License
 
 MIT — see [LICENSE](./LICENSE)
 

@@ -96,7 +96,8 @@ export function getDefaultRpcUrl(network: string): string {
     if (network.includes('testnet') || network === 'solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z') {
       return 'https://api.testnet.solana.com';
     }
-    return 'https://api.mainnet-beta.solana.com';
+    // Mainnet uses Dexter's RPC proxy
+    return 'https://api.dexter.cash/api/solana/rpc';
   }
 
   if (family === 'evm') {
@@ -104,22 +105,22 @@ export function getDefaultRpcUrl(network: string): string {
     if (network.startsWith('eip155:')) {
       const chainId = network.split(':')[1];
       switch (chainId) {
-        case '8453': return 'https://mainnet.base.org';
+        case '8453': return 'https://api.dexter.cash/api/base/rpc'; // Dexter proxy
         case '84532': return 'https://sepolia.base.org';
         case '1': return 'https://eth.llamarpc.com';
         case '42161': return 'https://arb1.arbitrum.io/rpc';
-        default: return 'https://mainnet.base.org';
+        default: return 'https://api.dexter.cash/api/base/rpc';
       }
     }
     // Legacy names
-    if (network === 'base') return 'https://mainnet.base.org';
+    if (network === 'base') return 'https://api.dexter.cash/api/base/rpc';
     if (network === 'ethereum') return 'https://eth.llamarpc.com';
     if (network === 'arbitrum') return 'https://arb1.arbitrum.io/rpc';
-    return 'https://mainnet.base.org';
+    return 'https://api.dexter.cash/api/base/rpc';
   }
 
-  // Unknown - return a generic
-  return 'https://api.mainnet-beta.solana.com';
+  // Unknown - return Dexter's Solana proxy
+  return 'https://api.dexter.cash/api/solana/rpc';
 }
 
 /**
