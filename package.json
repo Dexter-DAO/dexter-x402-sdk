@@ -1,6 +1,6 @@
 {
   "name": "@dexterai/x402",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "Chain-agnostic x402 v2 SDK for Solana, Base, and EVM payments",
   "author": "Dexter",
   "license": "MIT",
@@ -99,6 +99,6 @@
   },
   "homepage": "https://dexter.cash/sdk",
   "bugs": {
-    "url": "https://github.com/Dexter-DAO/x402-sdk/issues"
+    "url": "https://github.com/Dexter-DAO/dexter-x402-sdk/issues"
   }
 }
