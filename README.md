@@ -81,18 +81,32 @@ const client = createX402Client({
 
 ### React
 
+Works with [`@solana/wallet-adapter-react`](https://github.com/anza-xyz/wallet-adapter) and [`wagmi`](https://wagmi.sh/) out of the box:
+
 ```tsx
 import { useX402Payment } from '@dexterai/x402/react';
+import { useWallet } from '@solana/wallet-adapter-react';  // Solana
+import { useAccount } from 'wagmi';                        // EVM (Base)
 
 function PayButton() {
+  // Get wallets from your existing providers
+  const solanaWallet = useWallet();
+  const evmWallet = useAccount();
+
   const { fetch, isLoading, balances, transactionUrl } = useX402Payment({
-    wallets: { solana: solanaWallet, evm: evmWallet },
+    wallets: { 
+      solana: solanaWallet,  // Pass directly - SDK handles the interface
+      evm: evmWallet,
+    },
   });
 
   return (
     <div>
       <p>Balance: ${balances[0]?.balance.toFixed(2)}</p>
-      <button onClick={() => fetch(url)} disabled={isLoading}>
+      <button 
+        onClick={() => fetch('/api/protected')} 
+        disabled={isLoading || !solanaWallet.connected}
+      >
         {isLoading ? 'Paying...' : 'Pay'}
       </button>
       {transactionUrl && <a href={transactionUrl}>View Transaction</a>}
