@@ -87,9 +87,11 @@ export interface AcceptsExtra {
  * A single payment option in the accepts array
  */
 export interface PaymentAccept {
+  /** x402 version (1 or 2, defaults to 2 if not specified) */
+  x402Version?: 1 | 2;
   /** Payment scheme (always 'exact' for x402 v2) */
   scheme: 'exact';
-  /** CAIP-2 network identifier */
+  /** CAIP-2 network identifier (v1: 'solana', v2: 'solana:5eykt...') */
   network: string;
   /** Payment amount in atomic units (x402 spec field - REQUIRED) */
   maxAmountRequired: string;

@@ -307,7 +307,7 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     }
 
     const paymentSignature = {
-      x402Version: 2,
+      x402Version: accept.x402Version ?? 2,  // Echo version from 402 response, default to 2
       resource: requirements.resource,
       accepted: accept,
       payload,
