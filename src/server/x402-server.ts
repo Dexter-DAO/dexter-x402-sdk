@@ -192,7 +192,7 @@ export function createX402Server(config: X402ServerConfig): X402Server {
     return {
       scheme: 'exact',
       network,
-      maxAmountRequired: amountAtomic,
+      amount: amountAtomic,
       asset: asset.address,
       payTo,
       maxTimeoutSeconds: timeoutSeconds,

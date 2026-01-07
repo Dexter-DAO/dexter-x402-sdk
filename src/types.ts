@@ -94,9 +94,9 @@ export interface PaymentAccept {
   /** CAIP-2 network identifier (v1: 'solana', v2: 'solana:5eykt...') */
   network: string;
   /** Payment amount in atomic units (x402 spec field - REQUIRED) */
-  maxAmountRequired: string;
-  /** Alias for maxAmountRequired (for convenience) */
-  amount?: string;
+  amount: string;
+  /** Legacy alias (x402 v1) */
+  maxAmountRequired?: string;
   /** Token address */
   asset: string;
   /** Seller's address to receive payment */

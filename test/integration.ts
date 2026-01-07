@@ -73,16 +73,15 @@ async function runTests() {
     }
 
     const accept = requirements.accepts[0];
-    // x402 v2 spec uses maxAmountRequired
-    if (accept.maxAmountRequired !== '50000') {
-      throw new Error(`Wrong maxAmountRequired: ${accept.maxAmountRequired}`);
+    if (accept.amount !== '50000') {
+      throw new Error(`Wrong amount: ${accept.amount}`);
     }
     if (!accept.extra?.feePayer) {
       throw new Error('No feePayer in extra');
     }
 
     console.log(`   ✅ Requirements built correctly`);
-    console.log(`      maxAmountRequired: ${accept.maxAmountRequired}, FeePayer: ${accept.extra.feePayer.slice(0, 20)}...`);
+    console.log(`      amount: ${accept.amount}, FeePayer: ${accept.extra.feePayer.slice(0, 20)}...`);
     passed++;
   } catch (error) {
     console.log(`   ❌ Failed: ${error}`);
@@ -148,9 +147,8 @@ async function runTests() {
     if (decoded.x402Version !== 2) {
       throw new Error('Decoded x402Version wrong');
     }
-    // x402 v2 spec uses maxAmountRequired
-    if (decoded.accepts[0].maxAmountRequired !== '30000') {
-      throw new Error(`Decoded maxAmountRequired wrong: ${decoded.accepts[0].maxAmountRequired}`);
+    if (decoded.accepts[0].amount !== '30000') {
+      throw new Error(`Decoded amount wrong: ${decoded.accepts[0].amount}`);
     }
 
     console.log('   ✅ Encoding/decoding works correctly');
