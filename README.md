@@ -52,6 +52,21 @@ This SDK handles the entire flow automatically—you just call `fetch()` and pay
 npm install @dexterai/x402
 ```
 
+### Client (Node.js) — NEW!
+
+The simplest way to make x402 payments from scripts:
+
+```typescript
+import { wrapFetch } from '@dexterai/x402/client';
+
+const x402Fetch = wrapFetch(fetch, {
+  walletPrivateKey: process.env.SOLANA_PRIVATE_KEY,
+});
+
+// That's it. 402 responses are handled automatically.
+const response = await x402Fetch('https://api.example.com/protected');
+```
+
 ### Client (Browser)
 
 ```typescript
@@ -167,6 +182,40 @@ fromAtomicUnits(1500000n, 6);  // 1.5
 
 ## Server SDK
 
+### Express Middleware — NEW!
+
+One-liner payment protection for any Express endpoint:
+
+```typescript
+import express from 'express';
+import { x402Middleware } from '@dexterai/x402/server';
+
+const app = express();
+
+app.get('/api/protected',
+  x402Middleware({
+    payTo: 'YourSolanaAddress...',
+    amount: '0.01',  // $0.01 USD
+  }),
+  (req, res) => {
+    // This only runs after successful payment
+    res.json({ data: 'protected content' });
+  }
+);
+```
+
+Options:
+- `payTo` — Address to receive payments
+- `amount` — Price in USD (e.g., `'0.01'` for 1 cent)
+- `network` — CAIP-2 network (default: Solana mainnet)
+- `description` — Human-readable description
+- `facilitatorUrl` — Override facilitator (default: x402.dexter.cash)
+- `verbose` — Enable debug logging
+
+### Manual Server (Advanced)
+
+For more control over the payment flow:
+
 ```typescript
 import { createX402Server } from '@dexterai/x402/server';
 
@@ -196,8 +245,6 @@ app.post('/protected', async (req, res) => {
   res.json({ data: 'Your protected content' });
 });
 ```
-
-*Client SDK, React hook, and pricing utilities are production-verified at [dexter.cash/sdk](https://dexter.cash/sdk). `createX402Server` is a convenience wrapper not yet used in production.*
 
 ---
 

@@ -4,37 +4,48 @@
  * Server-side helpers for accepting x402 payments.
  * Works with any x402 v2 facilitator.
  *
- * @example
+ * @example Express Middleware (recommended)
+ * ```typescript
+ * import express from 'express';
+ * import { x402Middleware } from '@dexterai/x402/server';
+ *
+ * const app = express();
+ *
+ * // One-liner payment protection
+ * app.get('/api/protected',
+ *   x402Middleware({
+ *     payTo: 'YourSolanaAddress...',
+ *     amount: '0.01',  // $0.01 USD
+ *   }),
+ *   (req, res) => {
+ *     // This only runs after successful payment
+ *     res.json({ data: 'protected content' });
+ *   }
+ * );
+ * ```
+ *
+ * @example Manual Server (advanced)
  * ```typescript
  * import { createX402Server } from '@dexterai/x402/server';
  *
- * // Create server for Solana payments
- * const solanaServer = createX402Server({
+ * const server = createX402Server({
  *   payTo: 'YourSolanaAddress...',
  *   network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
  * });
  *
- * // Create server for Base payments
- * const baseServer = createX402Server({
- *   payTo: '0xYourEvmAddress...',
- *   network: 'eip155:8453',
- *   asset: { address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', decimals: 6 },
- * });
- *
- * // In your Express handler:
  * app.post('/protected', async (req, res) => {
  *   const paymentSig = req.headers['payment-signature'];
  *
  *   if (!paymentSig) {
- *     const requirements = await solanaServer.buildRequirements({
+ *     const requirements = await server.buildRequirements({
  *       amountAtomic: '50000',
  *       resourceUrl: req.originalUrl,
  *     });
- *     res.setHeader('PAYMENT-REQUIRED', solanaServer.encodeRequirements(requirements));
+ *     res.setHeader('PAYMENT-REQUIRED', server.encodeRequirements(requirements));
  *     return res.status(402).json({});
  *   }
  *
- *   const result = await solanaServer.settlePayment(paymentSig);
+ *   const result = await server.settlePayment(paymentSig);
  *   if (!result.success) {
  *     return res.status(402).json({ error: result.errorReason });
  *   }
@@ -51,6 +62,10 @@ export type {
   BuildRequirementsOptions,
   AssetConfig,
 } from './x402-server';
+
+// Express middleware
+export { x402Middleware } from './middleware';
+export type { X402MiddlewareConfig, X402Request } from './middleware';
 
 export { FacilitatorClient, type SupportedKind, type SupportedResponse } from './facilitator-client';
 
