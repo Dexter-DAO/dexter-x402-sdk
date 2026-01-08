@@ -134,26 +134,35 @@ function PayButton() {
 
 ## Supported Networks
 
-| Network | Identifier | Status |
-|---------|------------|--------|
-| Solana Mainnet | `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` | Verified |
-| Base Mainnet | `eip155:8453` | Verified |
+| Network | Identifier | Client | Server |
+|---------|------------|--------|--------|
+| Solana Mainnet | `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` | ✅ Verified | ✅ Verified |
+| Base Mainnet | `eip155:8453` | ✅ Verified | ✅ Verified |
 
-All networks use USDC.
+All networks use USDC. Both client and server SDKs are production-tested with real payments.
 
 ---
 
 ## Package Exports
 
 ```typescript
-// Client - browser & Node.js
+// Client - browser
 import { createX402Client } from '@dexterai/x402/client';
+
+// Client - Node.js (private key wallet)
+import { wrapFetch, createKeypairWallet } from '@dexterai/x402/client';
 
 // React hook
 import { useX402Payment } from '@dexterai/x402/react';
 
-// Server helpers
+// Server - Express middleware
+import { x402Middleware } from '@dexterai/x402/server';
+
+// Server - manual control
 import { createX402Server } from '@dexterai/x402/server';
+
+// Server - dynamic pricing
+import { createDynamicPricing, createTokenPricing } from '@dexterai/x402/server';
 
 // Chain adapters (advanced)
 import { createSolanaAdapter, createEvmAdapter } from '@dexterai/x402/adapters';
