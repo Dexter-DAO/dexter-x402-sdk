@@ -306,9 +306,42 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       payload = { transaction: signedTx.serialized };
     }
 
+    // Resolve relative resource URLs to absolute URLs
+    // Sellers may return path-only resources like "/api/foo" in their 402 response.
+    // We resolve against the original request URL so events have full URLs for discovery.
+    const originalUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    
+    // requirements.resource can be a string (legacy) or ResourceInfo object (v2)
+    // Preserve the original format, just resolve any relative URLs
+    let resolvedResource: unknown = requirements.resource;
+    if (typeof requirements.resource === 'string') {
+      // Legacy string format
+      try {
+        const resolvedUrl = new URL(requirements.resource, originalUrl).toString();
+        if (resolvedUrl !== requirements.resource) {
+          log('Resolved relative resource URL:', requirements.resource, '→', resolvedUrl);
+        }
+        resolvedResource = resolvedUrl;
+      } catch {
+        resolvedResource = requirements.resource;
+      }
+    } else if (requirements.resource && typeof requirements.resource === 'object' && 'url' in requirements.resource) {
+      // ResourceInfo object - resolve the url field
+      const resourceObj = requirements.resource as { url: string; [key: string]: unknown };
+      try {
+        const resolvedUrl = new URL(resourceObj.url, originalUrl).toString();
+        if (resolvedUrl !== resourceObj.url) {
+          log('Resolved relative resource URL:', resourceObj.url, '→', resolvedUrl);
+          resolvedResource = { ...resourceObj, url: resolvedUrl };
+        }
+      } catch {
+        // Keep original if URL resolution fails
+      }
+    }
+
     const paymentSignature = {
       x402Version: accept.x402Version ?? 2,  // Echo version from 402 response, default to 2
-      resource: requirements.resource,
+      resource: resolvedResource,
       accepted: accept,
       payload,
     };
