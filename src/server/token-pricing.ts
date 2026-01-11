@@ -3,6 +3,8 @@
  *
  * Accurate LLM pricing using tiktoken for token counting.
  * Uses real OpenAI model rates for precise cost calculation.
+ * 
+ * Pricing data is sourced from the Model Registry (model-registry.ts).
  *
  * @example
  * ```typescript
@@ -26,6 +28,7 @@
 
 import { createHash } from 'crypto';
 import { encoding_for_model, get_encoding, type TiktokenModel } from 'tiktoken';
+import { MODEL_PRICING_MAP } from './model-registry';
 
 // ============================================================================
 // Model Pricing Table
@@ -44,82 +47,18 @@ export interface ModelPricing {
   /** Default max output tokens for this model */
   maxTokens: number;
   /** Pricing tier */
-  tier: 'fast' | 'standard' | 'reasoning' | 'premium' | 'custom';
+  tier: 'fast' | 'standard' | 'reasoning' | 'premium' | 'specialized' | 'custom';
 }
 
 /**
  * OpenAI Model Pricing - USD per million tokens
- * Updated: December 2024
+ * 
+ * This is now sourced from the Model Registry (model-registry.ts).
+ * The registry is the single source of truth for all model information.
+ * 
+ * Updated: January 2026
  */
-export const MODEL_PRICING: Record<string, ModelPricing> = {
-  // === FAST TIER (cheapest, fastest) ===
-  'gpt-4o-mini': { 
-    input: 0.15, output: 0.6, cached: 0.075, 
-    maxTokens: 4096, tier: 'fast' 
-  },
-  'gpt-4.1-mini': { 
-    input: 0.4, output: 1.6, cached: 0.1, 
-    maxTokens: 4096, tier: 'fast' 
-  },
-  'gpt-4.1-nano': { 
-    input: 0.1, output: 0.4, cached: 0.025, 
-    maxTokens: 4096, tier: 'fast' 
-  },
-  'gpt-5-nano': { 
-    input: 0.05, output: 0.4, cached: 0.005, 
-    maxTokens: 4096, tier: 'fast' 
-  },
-  'gpt-5-mini': { 
-    input: 0.25, output: 2.0, cached: 0.025, 
-    maxTokens: 8192, tier: 'fast' 
-  },
-
-  // === STANDARD TIER (balanced) ===
-  'gpt-4o': { 
-    input: 2.5, output: 10.0, cached: 1.25, 
-    maxTokens: 4096, tier: 'standard' 
-  },
-  'gpt-4.1': { 
-    input: 2.0, output: 8.0, cached: 0.5, 
-    maxTokens: 8192, tier: 'standard' 
-  },
-  'gpt-5': { 
-    input: 1.25, output: 10.0, cached: 0.125, 
-    maxTokens: 8192, tier: 'standard' 
-  },
-
-  // === REASONING TIER (o-series) ===
-  'o1-mini': { 
-    input: 1.1, output: 4.4, cached: 0.55, 
-    maxTokens: 16384, tier: 'reasoning' 
-  },
-  'o3-mini': { 
-    input: 1.1, output: 4.4, cached: 0.55, 
-    maxTokens: 16384, tier: 'reasoning' 
-  },
-  'o4-mini': { 
-    input: 1.1, output: 4.4, cached: 0.275, 
-    maxTokens: 16384, tier: 'reasoning' 
-  },
-  'o3': { 
-    input: 2.0, output: 8.0, cached: 0.5, 
-    maxTokens: 32768, tier: 'reasoning' 
-  },
-  'o1': { 
-    input: 15.0, output: 60.0, cached: 7.5, 
-    maxTokens: 32768, tier: 'reasoning' 
-  },
-
-  // === PREMIUM TIER (expensive, specialized) ===
-  'o3-pro': { 
-    input: 20.0, output: 80.0, 
-    maxTokens: 32768, tier: 'premium' 
-  },
-  'o1-pro': { 
-    input: 150.0, output: 600.0, 
-    maxTokens: 32768, tier: 'premium' 
-  },
-};
+export const MODEL_PRICING: Record<string, ModelPricing> = MODEL_PRICING_MAP as Record<string, ModelPricing>;
 
 // Default model for fallback
 const DEFAULT_MODEL = 'gpt-4o-mini';
@@ -161,7 +100,7 @@ export interface TokenPricingConfig {
    * Custom tier label.
    * @default 'custom'
    */
-  tier?: 'fast' | 'standard' | 'reasoning' | 'premium' | 'custom';
+  tier?: 'fast' | 'standard' | 'reasoning' | 'premium' | 'specialized' | 'custom';
 
   /**
    * Custom tokenizer function.

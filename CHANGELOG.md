@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-01-11
+
+### Added
+- **Model Registry** - Comprehensive single source of truth for all OpenAI models (`model-registry.ts`)
+  - 25 models across 5 tiers: fast, standard, reasoning, premium, specialized
+  - Complete pricing data from OpenAI (January 2026)
+  - GPT-5 family: gpt-5-nano, gpt-5-mini, gpt-5, gpt-5.1, gpt-5.2, gpt-5-pro, gpt-5.2-pro
+  - Reasoning models: o1, o1-mini, o1-pro, o3, o3-mini, o3-pro, o4-mini
+  - Specialized: deep-research, computer-use-preview, realtime models
+- **Registry API**:
+  - `MODEL_REGISTRY` - Full model definitions with pricing, capabilities, and API parameters
+  - `getModel(id)` - Get model by ID (throws if not found)
+  - `findModel(id)` - Get model by ID (returns undefined if not found)
+  - `getModelsByTier(tier)` - Get all models in a tier
+  - `getModelsByFamily(family)` - Get models by family (gpt-5, o3, etc.)
+  - `getTextModels()` - Get all text-capable models for chat completions
+  - `getActiveModels()` - Get all non-deprecated models
+  - `getCheapestModel(minTier?)` - Find cheapest model meeting requirements
+  - `estimateCost(modelId, inputTokens, outputTokens)` - Calculate request cost
+- **Model Parameters** - Each model specifies API compatibility:
+  - `usesMaxCompletionTokens` - GPT-5/reasoning models require this instead of `max_tokens`
+  - `supportsTemperature` - GPT-5 models only support default (1)
+  - `supportsReasoningEffort` - For o-series models
+  - `supportsTools`, `supportsStructuredOutput`, `supportsStreaming`
+
+### Changed
+- `token-pricing.ts` now uses `MODEL_REGISTRY` as its data source (no more duplicate pricing)
+- `getAvailableModels()` returns models sorted by tier then price
+
+### Developer Tools
+- **Model Evaluation Harness** (`test/model-eval/`) - CLI for testing models
+  - Test prompts across multiple models simultaneously
+  - Compare response quality, timing, and costs
+  - Context injection from files (`--context`)
+  - Full output logging with metrics
+
+## [1.3.1] - 2025-01-10
+
+### Fixed
+- Minor type exports cleanup
+
+## [1.3.0] - 2025-01-09
+
+### Changed
+- Internal refactoring for model pricing
+
 ## [1.2.4] - 2024-12-30
 
 ### Fixed

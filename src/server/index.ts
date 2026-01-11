@@ -89,6 +89,31 @@ export type {
   ModelPricing,
 } from './token-pricing';
 
+// Model Registry - the single source of truth for all OpenAI models
+export {
+  MODEL_REGISTRY,
+  MODEL_PRICING_MAP,
+  getModel,
+  findModel,
+  isValidModelId,
+  getAvailableModelIds,
+  getModelsByTier,
+  getModelsByFamily,
+  getActiveModels,
+  getTextModels,
+  getCheapestModel,
+  estimateCost,
+  formatModelPricing,
+} from './model-registry';
+export type {
+  ModelTier,
+  ModelModality,
+  ModelApiType,
+  ModelPricing as RegistryModelPricing,
+  ModelParameters,
+  ModelDefinition,
+} from './model-registry';
+
 // Re-export types for convenience
 export type { VerifyResponse, SettleResponse, PaymentRequired, PaymentAccept } from '../types';
 export { DEXTER_FACILITATOR_URL, SOLANA_MAINNET_NETWORK, BASE_MAINNET_NETWORK, USDC_MINT, USDC_BASE } from '../types';
