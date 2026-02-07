@@ -40,7 +40,7 @@ This SDK handles the entire flow automatically—you just call `fetch()` and pay
 
 **Multi-chain.** Solana and Base (Ethereum L2) with the same API. Add wallets for both and the SDK picks the right one automatically.
 
-**Works out of the box.** Built-in RPC proxy, pre-flight balance checks, automatic retry on 402. Uses the [Dexter facilitator](https://x402.dexter.cash) by default—the only x402 facilitator with full Phantom wallet support on Solana mainnet.
+**Works out of the box.** Built-in RPC proxy, pre-flight balance checks, automatic retry on 402. Uses the [Dexter facilitator](https://x402.dexter.cash) by default—Solana's most feature-rich x402 facilitator.
 
 ---
 
