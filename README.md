@@ -24,7 +24,7 @@
 
 x402 is a protocol for HTTP-native micropayments. When a server returns HTTP status `402 Payment Required`, it includes payment details in a `PAYMENT-REQUIRED` header. The client signs a payment transaction and retries the request with a `PAYMENT-SIGNATURE` header. The server verifies and settles the payment, then returns the protected content.
 
-This SDK handles the entire flow automatically—you just call `fetch()` and payments happen transparently.
+This SDK handles the entire flow automatically—you just call `fetch()` and payments happen transparently. With **Access Pass** mode, buyers pay once and get unlimited access for a time window—no per-request signing needed.
 
 ---
 
@@ -35,6 +35,8 @@ This SDK handles the entire flow automatically—you just call `fetch()` and pay
 **Dynamic pricing.** Charge based on usage: characters, tokens, records, pixels, API calls—whatever makes sense. Price scales with input, not fixed rates.
 
 **Token-accurate LLM pricing.** Built-in [tiktoken](https://github.com/openai/tiktoken) support prices AI requests by actual token count. Works with OpenAI models out of the box, or bring your own rates for Anthropic, Gemini, Mistral, or local models.
+
+**Access Pass.** Pay once, get unlimited access for a time window. Buyers connect a wallet, make one payment, and receive a JWT token that works like an API key—no per-request signing, no private keys in code. The Stripe replacement for crypto-native APIs.
 
 **Full-stack.** Client SDK for browsers, server SDK for backends. React hooks, Express middleware patterns, facilitator client—everything you need.
 
@@ -158,11 +160,17 @@ import { useX402Payment } from '@dexterai/x402/react';
 // Server - Express middleware
 import { x402Middleware } from '@dexterai/x402/server';
 
+// Server - Access Pass (pay once, unlimited requests)
+import { x402AccessPass } from '@dexterai/x402/server';
+
 // Server - manual control
 import { createX402Server } from '@dexterai/x402/server';
 
 // Server - dynamic pricing
 import { createDynamicPricing, createTokenPricing } from '@dexterai/x402/server';
+
+// React - Access Pass hook
+import { useAccessPass } from '@dexterai/x402/react';
 
 // Chain adapters (advanced)
 import { createSolanaAdapter, createEvmAdapter } from '@dexterai/x402/adapters';
@@ -220,6 +228,96 @@ Options:
 - `description` — Human-readable description
 - `facilitatorUrl` — Override facilitator (default: x402.dexter.cash)
 - `verbose` — Enable debug logging
+
+### Access Pass — Pay Once, Unlimited Requests
+
+Replace API keys with time-limited access passes. Buyers make one payment and get a JWT token for unlimited requests during a time window.
+
+**Server:**
+
+```typescript
+import express from 'express';
+import { x402AccessPass } from '@dexterai/x402/server';
+
+const app = express();
+
+// Protect all /api routes with access pass
+app.use('/api', x402AccessPass({
+  payTo: 'YourSolanaAddress...',
+  tiers: {
+    '1h':  '0.50',   // $0.50 for 1 hour
+    '24h': '2.00',   // $2.00 for 24 hours
+  },
+  ratePerHour: '0.50',  // also accept custom durations
+}));
+
+app.get('/api/data', (req, res) => {
+  // Only runs with a valid access pass
+  res.json({ data: 'premium content' });
+});
+```
+
+**Client (Node.js):**
+
+```typescript
+import { wrapFetch } from '@dexterai/x402/client';
+
+const x402Fetch = wrapFetch(fetch, {
+  walletPrivateKey: process.env.SOLANA_PRIVATE_KEY,
+  accessPass: { preferTier: '1h', maxSpend: '1.00' },
+});
+
+// First call: auto-purchases a 1-hour pass ($0.50 USDC)
+const res1 = await x402Fetch('https://api.example.com/api/data');
+
+// All subsequent calls for the next hour: uses cached JWT, zero payment
+const res2 = await x402Fetch('https://api.example.com/api/data');
+const res3 = await x402Fetch('https://api.example.com/api/data');
+```
+
+**React:**
+
+```tsx
+import { useAccessPass } from '@dexterai/x402/react';
+
+function Dashboard() {
+  const { tiers, pass, isPassValid, purchasePass, fetch: apFetch } = useAccessPass({
+    wallets: { solana: solanaWallet },
+    resourceUrl: 'https://api.example.com',
+  });
+
+  return (
+    <div>
+      {!isPassValid && tiers?.map(t => (
+        <button key={t.id} onClick={() => purchasePass(t.id)}>
+          {t.label} — ${t.price}
+        </button>
+      ))}
+      {isPassValid && <p>Pass active! {pass?.remainingSeconds}s remaining</p>}
+      <button onClick={() => apFetch('/api/data')}>Fetch Data</button>
+    </div>
+  );
+}
+```
+
+**How it works:**
+1. Client requests a protected endpoint → Server returns `402` with `X-ACCESS-PASS-TIERS` header
+2. Client selects a tier and pays via x402 → Server verifies, settles, issues a JWT
+3. Server returns `200` with `ACCESS-PASS` header containing the JWT
+4. Client caches the JWT and includes it as `Authorization: Bearer <token>` on all subsequent requests
+5. Server validates the JWT locally (no facilitator call) → instant response
+
+Options:
+- `payTo` — Address to receive payments
+- `tiers` — Named duration tiers with prices (e.g., `{ '1h': '0.50' }`)
+- `ratePerHour` — Rate for custom durations (buyer sends `?duration=<seconds>`)
+- `network` — CAIP-2 network (default: Solana mainnet)
+- `secret` — HMAC secret for JWT signing (auto-generated if not provided)
+- `facilitatorUrl` — Override facilitator (default: x402.dexter.cash)
+
+**[Live demo →](https://dexter.cash/access-pass)**
+
+---
 
 ### Manual Server (Advanced)
 
@@ -429,6 +527,18 @@ tiktoken's default encoding works well for most transformer models. Only use a c
 | `maxAmountAtomic` | `string` | No | Maximum payment cap |
 | `verbose` | `boolean` | No | Enable debug logging |
 
+### `x402AccessPass(options)`
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `payTo` | `string` | Yes | Address to receive payments |
+| `tiers` | `Record<string, string>` | One of `tiers` or `ratePerHour` | Named tiers (e.g., `{ '1h': '0.50' }`) |
+| `ratePerHour` | `string` | One of `tiers` or `ratePerHour` | USD rate for custom durations |
+| `network` | `string` | No | CAIP-2 network (default: Solana mainnet) |
+| `secret` | `Buffer` | No | HMAC secret for JWT (auto-generated) |
+| `facilitatorUrl` | `string` | No | Facilitator URL (default: x402.dexter.cash) |
+| `verbose` | `boolean` | No | Enable debug logging |
+
 ### `useX402Payment(options)`
 
 Returns:
@@ -444,6 +554,27 @@ Returns:
 | `balances` | `Balance[]` | Token balances per chain |
 | `refreshBalances` | `function` | Manual refresh |
 | `reset` | `function` | Clear state |
+| `accessPass` | `object?` | Active pass state (tier, expiresAt, remainingSeconds) |
+
+### `useAccessPass(options)`
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `wallets` | `{ solana?, evm? }` | Yes | Multi-chain wallets |
+| `resourceUrl` | `string` | Yes | The x402 resource base URL |
+| `preferredNetwork` | `string` | No | Prefer this network |
+| `autoConnect` | `boolean` | No | Auto-fetch tiers on mount (default: true) |
+
+Returns:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `tiers` | `AccessPassTier[]?` | Available tiers from server |
+| `pass` | `object?` | Active pass (jwt, tier, expiresAt, remainingSeconds) |
+| `isPassValid` | `boolean` | Whether pass is active and not expired |
+| `purchasePass` | `function` | Buy a pass for a tier or custom duration |
+| `isPurchasing` | `boolean` | Purchase in progress |
+| `fetch` | `function` | Fetch with auto pass inclusion |
 
 ---
 
@@ -466,5 +597,6 @@ MIT — see [LICENSE](./LICENSE)
 <p align="center">
   <a href="https://x402.dexter.cash">Dexter Facilitator</a> · 
   <a href="https://dexter.cash/sdk">Live Demo</a> · 
+  <a href="https://dexter.cash/access-pass">Access Pass Demo</a> · 
   <a href="https://dexter.cash/onboard">Become a Seller</a>
 </p>
