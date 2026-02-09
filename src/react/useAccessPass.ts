@@ -209,6 +209,8 @@ export function useAccessPass(config: UseAccessPassConfig): UseAccessPassReturn 
 
       // Check for ACCESS-PASS header
       const jwt = res.headers.get('ACCESS-PASS');
+      log('ACCESS-PASS header:', jwt ? `found (${jwt.slice(0, 20)}...)` : 'NOT FOUND');
+      log('Response status:', res.status, 'headers:', [...res.headers.entries()].map(([k,v]) => `${k}: ${v.slice(0,30)}`).join(', '));
       if (jwt) {
         setPassJwt(jwt);
         try {

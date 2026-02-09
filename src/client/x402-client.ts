@@ -353,24 +353,15 @@ export function createX402Client(config: X402ClientConfig): X402Client {
 
     // Extract and cache the JWT from ACCESS-PASS header
     const accessPassJwt = passResponse.headers.get('ACCESS-PASS');
-    if (!accessPassJwt) {
-      // Server returned 200 but no pass token — might be a per-request response
-      return passResponse;
+    if (accessPassJwt) {
+      cachePass(url, accessPassJwt);
+      log('Access pass purchased and cached');
     }
 
-    cachePass(url, accessPassJwt);
-    log('Access pass purchased and cached');
-
-    // Now retry the original request with the pass
-    const retryResponse = await customFetch(input, {
-      ...init,
-      headers: {
-        ...(init?.headers || {}),
-        'Authorization': `Bearer ${accessPassJwt}`,
-      },
-    });
-
-    return retryResponse;
+    // Return the pass purchase response directly.
+    // The JWT is in the ACCESS-PASS header for the caller (hook) to read.
+    // The client's internal cache has the JWT for all future requests.
+    return passResponse;
   }
 
   /**
