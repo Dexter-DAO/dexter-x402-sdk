@@ -185,21 +185,24 @@ export function useAccessPass(config: UseAccessPassConfig): UseAccessPassReturn 
     accessPass: { enabled: true, autoRenew: true },
   }), [wallets, preferredNetwork, rpcUrls, verbose]);
 
-  // Compute pass validity
+  // Tick counter — increments every second to drive countdown
+  const [tick, setTick] = useState(0);
+
+  // Compute pass validity (recomputes every tick)
   const pass = useMemo(() => {
+    void tick; // Ensure tick is a dependency
     if (!passJwt || !passInfo) return null;
     const expiresAtMs = new Date(passInfo.expiresAt).getTime();
     const remaining = Math.max(0, Math.floor((expiresAtMs - Date.now()) / 1000));
     if (remaining <= 0) return null;
     return { jwt: passJwt, tier: passInfo.tier, expiresAt: passInfo.expiresAt, remainingSeconds: remaining };
-  }, [passJwt, passInfo]);
+  }, [passJwt, passInfo, tick]);
 
   const isPassValid = pass !== null && pass.remainingSeconds > 0;
 
-  // Refresh remaining time every second when pass is active
-  const [, setTick] = useState(0);
+  // Tick every second when pass is active
   useEffect(() => {
-    if (!isPassValid) return;
+    if (!passJwt || !passInfo) return;
     const interval = setInterval(() => setTick(t => t + 1), 1000);
     return () => clearInterval(interval);
   }, [isPassValid]);
