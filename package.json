@@ -1,6 +1,6 @@
 {
   "name": "@dexterai/x402",
-  "version": "1.5.3",
+  "version": "1.5.4",
   "description": "Chain-agnostic x402 v2 SDK for Solana, Base, and EVM payments",
   "author": "Dexter",
   "license": "MIT",
