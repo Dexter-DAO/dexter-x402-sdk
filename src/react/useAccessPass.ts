@@ -42,7 +42,7 @@
  * ```
  */
 
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { createX402Client } from '../client/x402-client';
 import type { WalletSet } from '../adapters/types';
 import type { AccessPassTier, AccessPassInfo } from '../types';
@@ -115,14 +115,49 @@ export function useAccessPass(config: UseAccessPassConfig): UseAccessPassReturn 
     verbose = false,
   } = config;
 
-  // State
+  // Persistence key for sessionStorage (scoped to resource URL)
+  const storageKey = `x402-access-pass:${resourceUrl}`;
+
+  // Restore pass from sessionStorage on mount
+  function loadPersistedPass(): { jwt: string; tier: string; expiresAt: string } | null {
+    if (typeof sessionStorage === 'undefined') return null;
+    try {
+      const stored = sessionStorage.getItem(storageKey);
+      if (!stored) return null;
+      const parsed = JSON.parse(stored) as { jwt: string; tier: string; expiresAt: string };
+      // Check expiration
+      if (new Date(parsed.expiresAt).getTime() <= Date.now()) {
+        sessionStorage.removeItem(storageKey);
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  function persistPass(jwt: string, tier: string, expiresAt: string): void {
+    if (typeof sessionStorage === 'undefined') return;
+    try {
+      sessionStorage.setItem(storageKey, JSON.stringify({ jwt, tier, expiresAt }));
+    } catch {}
+  }
+
+  // State — initialized from sessionStorage if available
+  const persisted = loadPersistedPass();
   const [tiers, setTiers] = useState<AccessPassTier[] | null>(null);
   const [customRatePerHour, setCustomRatePerHour] = useState<string | null>(null);
   const [isLoadingTiers, setIsLoadingTiers] = useState(false);
-  const [passJwt, setPassJwt] = useState<string | null>(null);
-  const [passInfo, setPassInfo] = useState<{ tier: string; expiresAt: string } | null>(null);
+  const [passJwt, setPassJwt] = useState<string | null>(persisted?.jwt || null);
+  const [passInfo, setPassInfo] = useState<{ tier: string; expiresAt: string } | null>(
+    persisted ? { tier: persisted.tier, expiresAt: persisted.expiresAt } : null,
+  );
   const [isPurchasing, setIsPurchasing] = useState(false);
   const [purchaseError, setPurchaseError] = useState<Error | null>(null);
+
+  // Ref to always have the latest JWT available in callbacks (avoids stale closures)
+  const passJwtRef = useRef<string | null>(passJwt);
+  useEffect(() => { passJwtRef.current = passJwt; }, [passJwt]);
 
   const log = useCallback((...args: unknown[]) => {
     if (verbose) console.log('[useAccessPass]', ...args);
@@ -209,28 +244,37 @@ export function useAccessPass(config: UseAccessPassConfig): UseAccessPassReturn 
 
       // Check for ACCESS-PASS header
       const jwt = res.headers.get('ACCESS-PASS');
-      log('ACCESS-PASS header:', jwt ? `found (${jwt.slice(0, 20)}...)` : 'NOT FOUND');
-      log('Response status:', res.status, 'headers:', [...res.headers.entries()].map(([k,v]) => `${k}: ${v.slice(0,30)}`).join(', '));
+      log('ACCESS-PASS header:', jwt ? 'found' : 'NOT FOUND');
       if (jwt) {
         setPassJwt(jwt);
+
+        // Decode pass info from response body or JWT payload
+        let passTier = tier || 'unknown';
+        let passExpiresAt = '';
+
         try {
           const body = await res.json() as { accessPass?: { tier?: string; expiresAt?: string } };
-          setPassInfo({
-            tier: body.accessPass?.tier || tier || 'unknown',
-            expiresAt: body.accessPass?.expiresAt || '',
-          });
+          passTier = body.accessPass?.tier || passTier;
+          passExpiresAt = body.accessPass?.expiresAt || '';
         } catch {
-          // Parse expiration from JWT
-          const parts = jwt.split('.');
-          if (parts.length === 3) {
-            const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
-            setPassInfo({
-              tier: payload.tier || tier || 'unknown',
-              expiresAt: new Date(payload.exp * 1000).toISOString(),
-            });
-          }
+          // Body already consumed or not JSON — decode from JWT
         }
-        log('Pass purchased:', tier);
+
+        // If no expiresAt from body, decode from JWT payload
+        if (!passExpiresAt) {
+          try {
+            const parts = jwt.split('.');
+            if (parts.length === 3) {
+              const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+              passTier = payload.tier || passTier;
+              passExpiresAt = new Date(payload.exp * 1000).toISOString();
+            }
+          } catch {}
+        }
+
+        setPassInfo({ tier: passTier, expiresAt: passExpiresAt });
+        persistPass(jwt, passTier, passExpiresAt);
+        log('Pass purchased and persisted:', passTier, passExpiresAt);
       }
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
@@ -241,23 +285,37 @@ export function useAccessPass(config: UseAccessPassConfig): UseAccessPassReturn 
     }
   }, [resourceUrl, client, log]);
 
-  // Fetch with pass
+  // Fetch with pass — uses ref to always have the latest JWT
   const fetchWithPass = useCallback(async (path: string, init?: RequestInit): Promise<Response> => {
     const url = path.startsWith('http') ? path : `${resourceUrl.replace(/\/$/, '')}${path.startsWith('/') ? '' : '/'}${path}`;
+    const currentJwt = passJwtRef.current;
 
-    if (isPassValid && pass) {
-      return fetch(url, {
-        ...init,
-        headers: {
-          ...(init?.headers || {}),
-          'Authorization': `Bearer ${pass.jwt}`,
-        },
-      });
+    if (currentJwt) {
+      // Check if JWT is still valid (not expired)
+      try {
+        const parts = currentJwt.split('.');
+        if (parts.length === 3) {
+          const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+          if (payload.exp && payload.exp > Date.now() / 1000) {
+            return fetch(url, {
+              ...init,
+              headers: {
+                ...(init?.headers || {}),
+                'Authorization': `Bearer ${currentJwt}`,
+              },
+            });
+          }
+        }
+      } catch {}
+      // JWT expired or invalid — clear it
+      setPassJwt(null);
+      setPassInfo(null);
+      try { sessionStorage.removeItem(storageKey); } catch {}
     }
 
-    // No pass — use the x402 client (will auto-purchase if configured)
+    // No valid pass — use the x402 client (will auto-purchase if configured)
     return client.fetch(url, init);
-  }, [resourceUrl, isPassValid, pass, client]);
+  }, [resourceUrl, client, storageKey]);
 
   return {
     tiers,
