@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-02-09
+
+### Fixed
+- **PAYMENT-RESPONSE header** — Server middleware now sets `PAYMENT-RESPONSE` header (base64-encoded settlement data) on 200 OK responses after successful payment, per the x402 v2 HTTP transport spec. Previously, settlement data was only attached to `req.x402` but not surfaced as a response header.
+- **`amount` field in 402 response** — The `accepts` array in payment requirements now includes both `amount` (v2 spec field) and `maxAmountRequired` (legacy field). Non-Dexter v2 clients that look for `amount` instead of `maxAmountRequired` will now find it.
+- **`x402Version` in facilitator requests** — The `FacilitatorClient` now sends `x402Version: 2` at the top level of `/verify` and `/settle` request bodies, matching the Coinbase reference implementation format.
+
+### Added
+- `test/v2-spec-compliance.ts` — Automated test suite validating all three v2 spec compliance fixes against a mock facilitator (6 assertions).
+
 ## [1.4.0] - 2026-01-11
 
 ### Added

@@ -129,6 +129,7 @@ export class FacilitatorClient {
       const paymentPayload = decodeBase64Json<PaymentSignature>(paymentSignatureHeader);
 
       const verifyPayload = {
+        x402Version: 2,
         paymentPayload,
         paymentRequirements: requirements,
       };
@@ -175,6 +176,7 @@ export class FacilitatorClient {
       const paymentPayload = decodeBase64Json<PaymentSignature>(paymentSignatureHeader);
 
       const settlePayload = {
+        x402Version: 2,
         paymentPayload,
         paymentRequirements: requirements,
       };

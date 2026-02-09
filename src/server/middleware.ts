@@ -249,6 +249,15 @@ export function x402Middleware(config: X402MiddlewareConfig): RequestHandler {
         network,
       };
 
+      // Set PAYMENT-RESPONSE header per x402 v2 spec
+      const paymentResponseData = {
+        success: true,
+        transaction: settleResult.transaction!,
+        network,
+        payer: verifyResult.payer ?? '',
+      };
+      res.setHeader('PAYMENT-RESPONSE', btoa(JSON.stringify(paymentResponseData)));
+
       // Continue to actual handler
       next();
     } catch (error) {
