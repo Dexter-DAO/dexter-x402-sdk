@@ -287,7 +287,11 @@ export function useAccessPass(config: UseAccessPassConfig): UseAccessPassReturn 
 
   // Fetch with pass — uses ref to always have the latest JWT
   const fetchWithPass = useCallback(async (path: string, init?: RequestInit): Promise<Response> => {
-    const url = path.startsWith('http') ? path : `${resourceUrl.replace(/\/$/, '')}${path.startsWith('/') ? '' : '/'}${path}`;
+    const url = !path || path === ''
+      ? resourceUrl
+      : path.startsWith('http')
+        ? path
+        : `${resourceUrl.replace(/\/$/, '')}${path.startsWith('/') ? '' : '/'}${path}`;
     const currentJwt = passJwtRef.current;
 
     if (currentJwt) {
