@@ -335,11 +335,13 @@ export function createX402Client(config: X402ClientConfig): X402Client {
 
     const paymentSignatureHeader = btoa(JSON.stringify(paymentSignature));
 
-    // Make payment request to purchase the pass
+    // Make payment request to purchase the pass (must be POST)
     const passResponse = await customFetch(passUrl, {
       ...init,
+      method: 'POST',
       headers: {
         ...(init?.headers || {}),
+        'Content-Type': 'application/json',
         'PAYMENT-SIGNATURE': paymentSignatureHeader,
       },
     });

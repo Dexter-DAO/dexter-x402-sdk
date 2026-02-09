@@ -205,7 +205,7 @@ export function useAccessPass(config: UseAccessPassConfig): UseAccessPassReturn 
       if (tier) url += (url.includes('?') ? '&' : '?') + `tier=${tier}`;
       else if (durationSeconds) url += (url.includes('?') ? '&' : '?') + `duration=${durationSeconds}`;
 
-      const res = await client.fetch(url);
+      const res = await client.fetch(url, { method: 'POST' });
 
       // Check for ACCESS-PASS header
       const jwt = res.headers.get('ACCESS-PASS');
