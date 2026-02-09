@@ -173,6 +173,76 @@ export interface SettleResponse {
 }
 
 // ============================================================================
+// Access Pass Types
+// ============================================================================
+
+/**
+ * A single access pass tier offered by a seller
+ */
+export interface AccessPassTier {
+  /** Tier ID (e.g., '1h', '24h') */
+  id: string;
+  /** Human-readable label (e.g., '1 hour') */
+  label: string;
+  /** Duration in seconds */
+  seconds: number;
+  /** Price in USD (e.g., '0.50') */
+  price: string;
+  /** Price in atomic units (e.g., '500000') */
+  priceAtomic: string;
+}
+
+/**
+ * Access pass info returned in X-ACCESS-PASS-TIERS header
+ */
+export interface AccessPassInfo {
+  /** Available tiers (if tier-based pricing) */
+  tiers?: AccessPassTier[];
+  /** Rate per hour in USD (if custom duration pricing) */
+  ratePerHour?: string;
+  /** Pass issuer identifier */
+  issuer?: string;
+}
+
+/**
+ * JWT claims inside an access pass token
+ */
+export interface AccessPassClaims {
+  /** Subject — always 'x402-access-pass' */
+  sub: string;
+  /** Tier ID or 'custom' */
+  tier: string;
+  /** Duration in seconds */
+  duration: number;
+  /** Issued at (unix seconds) */
+  iat: number;
+  /** Expires at (unix seconds) */
+  exp: number;
+  /** Payer wallet address */
+  payer: string;
+  /** Network used for payment */
+  network: string;
+  /** Issuer identifier */
+  iss: string;
+}
+
+/**
+ * Client-side access pass configuration
+ */
+export interface AccessPassClientConfig {
+  /** Enable access pass mode (default: true when this config is present) */
+  enabled?: boolean;
+  /** Preferred tier ID (e.g., '1h') — pick this tier if available */
+  preferTier?: string;
+  /** Preferred custom duration in seconds (e.g., 3600) */
+  preferDuration?: number;
+  /** Maximum amount willing to spend in USD (e.g., '2.00') */
+  maxSpend?: string;
+  /** Auto-renew expired passes (default: true) */
+  autoRenew?: boolean;
+}
+
+// ============================================================================
 // Error Types
 // ============================================================================
 
@@ -200,7 +270,12 @@ export type X402ErrorCode =
   | 'facilitator_verify_failed'
   | 'facilitator_settle_failed'
   | 'facilitator_request_failed'
-  | 'no_matching_requirement';
+  | 'no_matching_requirement'
+  // Access pass errors
+  | 'access_pass_expired'
+  | 'access_pass_invalid'
+  | 'access_pass_tier_not_found'
+  | 'access_pass_exceeds_max_spend';
 
 /**
  * Custom error class for x402 operations

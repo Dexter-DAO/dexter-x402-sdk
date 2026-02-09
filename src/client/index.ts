@@ -59,3 +59,6 @@ export {
 
 // Constants
 export { DEXTER_FACILITATOR_URL, USDC_MINT } from '../types';
+
+// Access pass types
+export type { AccessPassClientConfig, AccessPassTier, AccessPassInfo } from '../types';

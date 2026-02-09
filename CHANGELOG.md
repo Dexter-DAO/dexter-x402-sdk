@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-02-09
+
+### Added
+- **Access Pass** — New payment pattern: pay once, get a time-limited JWT for unlimited API requests. Works with both SVM and EVM.
+  - **Server**: `x402AccessPass` middleware (`@dexterai/x402/server`) — drop-in Express middleware with tier-based and custom duration pricing. Issues JWTs after x402 payment settlement. Validates passes on subsequent requests without touching the facilitator.
+  - **Client**: `accessPass` option on `wrapFetch` and `createX402Client` (`@dexterai/x402/client`) — auto-detects servers that offer access passes, purchases one, caches the JWT, and includes it on all subsequent requests. Auto-renews expired passes.
+  - **React**: `useAccessPass` hook (`@dexterai/x402/react`) — dedicated hook for managing the access pass lifecycle: tier discovery, pass purchase, token caching, countdown timer, and auto-fetch with pass.
+- New types: `AccessPassTier`, `AccessPassInfo`, `AccessPassClaims`, `AccessPassClientConfig`
+- New error codes: `access_pass_expired`, `access_pass_invalid`, `access_pass_tier_not_found`, `access_pass_exceeds_max_spend`
+- New HTTP headers: `X-ACCESS-PASS-TIERS` (server -> client on 402), `ACCESS-PASS` (server -> client on pass purchase)
+- `test/access-pass.ts` — 8-assertion test suite covering the full access pass lifecycle
+
 ## [1.4.1] - 2026-02-09
 
 ### Fixed

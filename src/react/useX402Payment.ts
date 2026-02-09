@@ -125,6 +125,21 @@ export interface UseX402PaymentReturn {
 
   /** Refresh balances manually */
   refreshBalances: () => Promise<void>;
+
+  /**
+   * Access pass state (null if server doesn't support access passes
+   * or no pass has been purchased in this session).
+   */
+  accessPass: {
+    /** Whether a valid, non-expired pass is active */
+    active: boolean;
+    /** Tier ID of the active pass */
+    tier: string | null;
+    /** ISO expiration timestamp */
+    expiresAt: string | null;
+    /** Seconds remaining on the pass */
+    remainingSeconds: number | null;
+  } | null;
 }
 
 // ============================================================================
@@ -340,5 +355,6 @@ export function useX402Payment(config: UseX402PaymentConfig): UseX402PaymentRetu
     isAnyWalletConnected,
     reset,
     refreshBalances,
+    accessPass: null, // Access pass state managed by useAccessPass hook for granular control
   };
 }

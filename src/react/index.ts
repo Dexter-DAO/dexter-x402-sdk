@@ -50,6 +50,11 @@ export type {
   ConnectedChains,
 } from './useX402Payment';
 
+// Access pass hook
+export { useAccessPass } from './useAccessPass';
+export type { UseAccessPassConfig, UseAccessPassReturn } from './useAccessPass';
+
 // Re-export useful types
 export type { BalanceInfo, WalletSet } from '../adapters/types';
 export { X402Error } from '../types';
+export type { AccessPassTier, AccessPassInfo, AccessPassClientConfig } from '../types';

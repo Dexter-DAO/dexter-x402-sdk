@@ -20,6 +20,7 @@
 
 import { createX402Client, type X402ClientConfig } from './x402-client';
 import { createKeypairWallet } from './keypair-wallet';
+import type { AccessPassClientConfig } from '../types';
 
 /**
  * Options for wrapFetch
@@ -65,6 +66,23 @@ export interface WrapFetchOptions {
    * Enable verbose logging
    */
   verbose?: boolean;
+
+  /**
+   * Access pass configuration.
+   * When provided, the client prefers purchasing time-limited passes
+   * over per-request payments. One payment grants unlimited requests.
+   *
+   * @example
+   * ```typescript
+   * const x402Fetch = wrapFetch(fetch, {
+   *   walletPrivateKey: process.env.SOLANA_PRIVATE_KEY!,
+   *   accessPass: { preferTier: '1h', maxSpend: '1.00' },
+   * });
+   * // First call: auto-buys 1-hour pass
+   * // All subsequent calls: uses cached pass (no payment)
+   * ```
+   */
+  accessPass?: AccessPassClientConfig;
 }
 
 /**
@@ -106,6 +124,7 @@ export function wrapFetch(
     rpcUrls,
     maxAmountAtomic,
     verbose,
+    accessPass,
   } = options;
 
   // Validate at least one wallet
@@ -134,6 +153,7 @@ export function wrapFetch(
     maxAmountAtomic,
     fetch: fetchImpl,
     verbose,
+    accessPass,
   };
 
   // Create client

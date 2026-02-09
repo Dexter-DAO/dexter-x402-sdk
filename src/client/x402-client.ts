@@ -26,6 +26,8 @@ import type { ChainAdapter, WalletSet } from '../adapters/types';
 import type {
   PaymentRequired,
   PaymentAccept,
+  AccessPassInfo,
+  AccessPassClientConfig,
 } from '../types';
 import { X402Error } from '../types';
 import { createSolanaAdapter, createEvmAdapter, isSolanaWallet, isEvmWallet } from '../adapters';
@@ -78,6 +80,13 @@ export interface X402ClientConfig {
    * Enable verbose logging
    */
   verbose?: boolean;
+
+  /**
+   * Access pass configuration.
+   * When present, the client will prefer purchasing time-limited access passes
+   * over per-request payments. One payment grants unlimited requests for a duration.
+   */
+  accessPass?: AccessPassClientConfig;
 }
 
 /**
@@ -113,11 +122,46 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     maxAmountAtomic,
     fetch: customFetch = globalThis.fetch,
     verbose = false,
+    accessPass: accessPassConfig,
   } = config;
 
   const log = verbose
     ? console.log.bind(console, '[x402]')
     : () => {};
+
+  // ── Access pass cache (host → { jwt, expiresAt }) ──
+  const passCache = new Map<string, { jwt: string; expiresAt: number }>();
+
+  function getCachedPass(url: string): string | null {
+    try {
+      const host = new URL(url).host;
+      const cached = passCache.get(host);
+      if (cached && cached.expiresAt > Date.now() / 1000 + 10) { // 10s buffer
+        return cached.jwt;
+      }
+      if (cached) {
+        passCache.delete(host); // Expired
+      }
+    } catch {}
+    return null;
+  }
+
+  function cachePass(url: string, jwt: string): void {
+    try {
+      const host = new URL(url).host;
+      // Decode expiration from JWT (middle part is base64url-encoded JSON)
+      const parts = jwt.split('.');
+      if (parts.length === 3) {
+        const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+        if (payload.exp) {
+          passCache.set(host, { jwt, expiresAt: payload.exp });
+          log('Access pass cached for', host, '| expires:', new Date(payload.exp * 1000).toISOString());
+        }
+      }
+    } catch {
+      log('Failed to cache access pass');
+    }
+  }
 
   // Build wallet set from legacy format if needed
   const wallets: WalletSet = walletSet || {};
@@ -178,15 +222,188 @@ export function createX402Client(config: X402ClientConfig): X402Client {
   }
 
   /**
-   * Main fetch function with x402 payment handling
+   * Purchase an access pass via x402 payment, cache the JWT, retry with it
+   */
+  async function purchaseAccessPass(
+    input: string | URL | Request,
+    init: RequestInit | undefined,
+    originalResponse: Response,
+    passInfo: AccessPassInfo,
+    url: string,
+  ): Promise<Response | null> {
+    // Determine which tier/duration to request
+    let tierQuery = '';
+
+    if (accessPassConfig?.preferTier && passInfo.tiers) {
+      const match = passInfo.tiers.find(t => t.id === accessPassConfig.preferTier);
+      if (match) {
+        // Check max spend
+        if (accessPassConfig.maxSpend && parseFloat(match.price) > parseFloat(accessPassConfig.maxSpend)) {
+          throw new X402Error('access_pass_exceeds_max_spend',
+            `Access pass tier "${match.id}" costs $${match.price}, exceeds max spend $${accessPassConfig.maxSpend}`);
+        }
+        tierQuery = `tier=${match.id}`;
+      }
+    } else if (accessPassConfig?.preferDuration && passInfo.ratePerHour) {
+      tierQuery = `duration=${accessPassConfig.preferDuration}`;
+    } else if (passInfo.tiers && passInfo.tiers.length > 0) {
+      // Pick cheapest tier
+      const cheapest = passInfo.tiers[0];
+      if (accessPassConfig?.maxSpend && parseFloat(cheapest.price) > parseFloat(accessPassConfig.maxSpend)) {
+        throw new X402Error('access_pass_exceeds_max_spend',
+          `Cheapest access pass costs $${cheapest.price}, exceeds max spend $${accessPassConfig?.maxSpend}`);
+      }
+      tierQuery = `tier=${cheapest.id}`;
+    }
+
+    // The pass purchase goes through normal x402 payment flow on the same URL
+    // We add the tier query param so the server knows which tier we want
+    const passUrl = tierQuery
+      ? (url.includes('?') ? `${url}&${tierQuery}` : `${url}?${tierQuery}`)
+      : url;
+
+    log('Purchasing access pass:', tierQuery || 'default tier');
+
+    // We need to do the full x402 payment flow for the pass purchase
+    // The 402 response we already have contains the PAYMENT-REQUIRED header
+    // So we can proceed directly to building the payment from it
+    const paymentRequiredHeader = originalResponse.headers.get('PAYMENT-REQUIRED');
+    if (!paymentRequiredHeader) return null;
+
+    let requirements: PaymentRequired;
+    try {
+      requirements = JSON.parse(atob(paymentRequiredHeader));
+    } catch {
+      return null;
+    }
+
+    const match = findPaymentOption(requirements.accepts);
+    if (!match) return null;
+
+    const { accept, adapter, wallet } = match;
+
+    // Validate fee payer (Solana)
+    if (adapter.name === 'Solana' && !accept.extra?.feePayer) return null;
+
+    const USDC_MINTS = [
+      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+      '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+      '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+    ];
+    const decimals = accept.extra?.decimals ?? (USDC_MINTS.includes(accept.asset) ? 6 : undefined);
+    if (typeof decimals !== 'number') return null;
+
+    const paymentAmount = accept.amount || accept.maxAmountRequired;
+    if (!paymentAmount) return null;
+
+    // Check balance
+    const rpcUrl = getRpcUrl(accept.network, adapter);
+    const balance = await adapter.getBalance(accept, wallet, rpcUrl);
+    const requiredAmount = Number(paymentAmount) / Math.pow(10, decimals);
+    if (balance < requiredAmount) {
+      throw new X402Error('insufficient_balance',
+        `Insufficient balance for access pass. Have $${balance.toFixed(4)}, need $${requiredAmount.toFixed(4)}`);
+    }
+
+    // Build and sign transaction
+    const signedTx = await adapter.buildTransaction(accept, wallet, rpcUrl);
+
+    // Build PAYMENT-SIGNATURE
+    let payload: Record<string, unknown>;
+    if (adapter.name === 'EVM') {
+      payload = JSON.parse(signedTx.serialized);
+    } else {
+      payload = { transaction: signedTx.serialized };
+    }
+
+    const originalUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    let resolvedResource: unknown = requirements.resource;
+    if (typeof requirements.resource === 'string') {
+      try { resolvedResource = new URL(requirements.resource, originalUrl).toString(); } catch {}
+    } else if (requirements.resource && typeof requirements.resource === 'object' && 'url' in requirements.resource) {
+      const rObj = requirements.resource as { url: string; [key: string]: unknown };
+      try { resolvedResource = { ...rObj, url: new URL(rObj.url, originalUrl).toString() }; } catch {}
+    }
+
+    const paymentSignature = {
+      x402Version: accept.x402Version ?? 2,
+      resource: resolvedResource,
+      accepted: accept,
+      payload,
+    };
+
+    const paymentSignatureHeader = btoa(JSON.stringify(paymentSignature));
+
+    // Make payment request to purchase the pass
+    const passResponse = await customFetch(passUrl, {
+      ...init,
+      headers: {
+        ...(init?.headers || {}),
+        'PAYMENT-SIGNATURE': paymentSignatureHeader,
+      },
+    });
+
+    if (!passResponse.ok) {
+      log('Pass purchase failed:', passResponse.status);
+      return null; // Fall back to per-request payment
+    }
+
+    // Extract and cache the JWT from ACCESS-PASS header
+    const accessPassJwt = passResponse.headers.get('ACCESS-PASS');
+    if (!accessPassJwt) {
+      // Server returned 200 but no pass token — might be a per-request response
+      return passResponse;
+    }
+
+    cachePass(url, accessPassJwt);
+    log('Access pass purchased and cached');
+
+    // Now retry the original request with the pass
+    const retryResponse = await customFetch(input, {
+      ...init,
+      headers: {
+        ...(init?.headers || {}),
+        'Authorization': `Bearer ${accessPassJwt}`,
+      },
+    });
+
+    return retryResponse;
+  }
+
+  /**
+   * Main fetch function with x402 payment handling + access pass support
    */
   async function x402Fetch(
     input: string | URL | Request,
     init?: RequestInit
   ): Promise<Response> {
-    log('Making request:', input);
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    log('Making request:', url);
 
-    // Make initial request
+    // ── Access pass: try cached pass first ──
+    if (accessPassConfig) {
+      const cachedJwt = getCachedPass(url);
+      if (cachedJwt) {
+        log('Using cached access pass');
+        const passResponse = await customFetch(input, {
+          ...init,
+          headers: {
+            ...(init?.headers || {}),
+            'Authorization': `Bearer ${cachedJwt}`,
+          },
+        });
+        // If the pass worked (not 401/402), return the response
+        if (passResponse.status !== 401 && passResponse.status !== 402) {
+          return passResponse;
+        }
+        // Pass rejected (expired/invalid) — clear cache and fall through to payment
+        log('Cached pass rejected (status', passResponse.status, '), purchasing new pass');
+        try { passCache.delete(new URL(url).host); } catch {}
+      }
+    }
+
+    // Make initial request (without pass)
     const response = await customFetch(input, init);
 
     // If not 402, return as-is
@@ -195,6 +412,19 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     }
 
     log('Received 402 Payment Required');
+
+    // ── Access pass: check if server offers passes and we want one ──
+    const passTiersHeader = response.headers.get('X-ACCESS-PASS-TIERS');
+    if (accessPassConfig && passTiersHeader) {
+      log('Server offers access passes, purchasing...');
+      try {
+        const passInfo: AccessPassInfo = JSON.parse(atob(passTiersHeader));
+        const passResponse = await purchaseAccessPass(input, init, response, passInfo, url);
+        if (passResponse) return passResponse;
+      } catch (e) {
+        log('Access pass purchase failed, falling back to per-request payment:', e);
+      }
+    }
 
     // Parse PAYMENT-REQUIRED header
     const paymentRequiredHeader = response.headers.get('PAYMENT-REQUIRED');

@@ -67,6 +67,10 @@ export type {
 export { x402Middleware } from './middleware';
 export type { X402MiddlewareConfig, X402Request } from './middleware';
 
+// Access pass middleware
+export { x402AccessPass } from './access-pass';
+export type { X402AccessPassConfig, X402AccessPassRequest } from './access-pass';
+
 export { FacilitatorClient, type SupportedKind, type SupportedResponse } from './facilitator-client';
 
 // Dynamic pricing (character-based)
@@ -115,5 +119,5 @@ export type {
 } from './model-registry';
 
 // Re-export types for convenience
-export type { VerifyResponse, SettleResponse, PaymentRequired, PaymentAccept } from '../types';
+export type { VerifyResponse, SettleResponse, PaymentRequired, PaymentAccept, AccessPassTier, AccessPassInfo, AccessPassClaims, AccessPassClientConfig } from '../types';
 export { DEXTER_FACILITATOR_URL, SOLANA_MAINNET_NETWORK, BASE_MAINNET_NETWORK, USDC_MINT, USDC_BASE } from '../types';
