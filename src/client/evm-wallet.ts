@@ -12,7 +12,7 @@
  * import { createX402Client, createEvmKeypairWallet } from '@dexterai/x402/client';
  *
  * // From hex private key (with or without 0x prefix)
- * const wallet = createEvmKeypairWallet('0xabc123...');
+ * const wallet = await createEvmKeypairWallet('0xabc123...');
  *
  * const client = createX402Client({
  *   wallets: { evm: wallet },
@@ -31,13 +31,16 @@ import type { EvmWallet } from '../adapters/evm';
  * which is chain-agnostic -- works for Base, Ethereum, Arbitrum, and
  * any EVM chain without hardcoding a specific network.
  *
+ * This function is async because viem is loaded via dynamic `import()`
+ * to ensure compatibility with both ESM and CJS consumers.
+ *
  * @param privateKey - Hex-encoded private key (with or without 0x prefix)
  * @returns Wallet interface compatible with createX402Client's `wallets.evm`
  * @throws If viem is not installed or the private key is invalid
  *
  * @example From environment variable
  * ```typescript
- * const wallet = createEvmKeypairWallet(process.env.BASE_PRIVATE_KEY!);
+ * const wallet = await createEvmKeypairWallet(process.env.BASE_PRIVATE_KEY!);
  * ```
  *
  * @example With createX402Client
@@ -45,7 +48,7 @@ import type { EvmWallet } from '../adapters/evm';
  * const client = createX402Client({
  *   wallets: {
  *     solana: createKeypairWallet(process.env.SOLANA_KEY!),
- *     evm: createEvmKeypairWallet(process.env.BASE_KEY!),
+ *     evm: await createEvmKeypairWallet(process.env.BASE_KEY!),
  *   },
  * });
  * ```
@@ -58,11 +61,14 @@ import type { EvmWallet } from '../adapters/evm';
  * // wrapFetch calls createEvmKeypairWallet internally
  * ```
  */
-export function createEvmKeypairWallet(privateKey: string): EvmWallet {
-  // viem is an optional peer dependency
+export async function createEvmKeypairWallet(privateKey: string): Promise<EvmWallet> {
+  // Dynamic import -- works in both ESM and CJS, and viem 2.x is ESM-only.
+  // The module path is a variable so TypeScript doesn't try to resolve the
+  // types at build time (viem is an optional peer dependency).
   let privateKeyToAccount: (key: `0x${string}`) => any;
   try {
-    const viemAccounts = require('viem/accounts');
+    const viemAccountsPath = 'viem/accounts';
+    const viemAccounts: any = await import(viemAccountsPath);
     privateKeyToAccount = viemAccounts.privateKeyToAccount;
   } catch {
     throw new Error(

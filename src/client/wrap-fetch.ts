@@ -140,12 +140,14 @@ export function wrapFetch(
     wallets.solana = createKeypairWallet(walletPrivateKey);
   }
 
+  // EVM wallet init is async (viem is ESM-only, must use dynamic import).
+  // We start it eagerly here and await it in the returned fetch function
+  // so wrapFetch itself stays synchronous.
+  let evmReady: Promise<void> | null = null;
   if (evmPrivateKey) {
-    try {
-      wallets.evm = createEvmKeypairWallet(evmPrivateKey);
-    } catch (e: any) {
-      console.warn(`[x402] ${e.message}`);
-    }
+    evmReady = createEvmKeypairWallet(evmPrivateKey)
+      .then(w => { wallets.evm = w; })
+      .catch(e => { console.warn(`[x402] ${e.message}`); });
   }
 
   // Create client config
@@ -161,7 +163,18 @@ export function wrapFetch(
 
   // Create client
   const client = createX402Client(clientConfig);
+  const clientFetch = client.fetch.bind(client);
 
-  // Return wrapped fetch
-  return client.fetch.bind(client);
+  // If EVM wallet is initializing, wrap fetch to await it before first call
+  if (evmReady) {
+    return (async (
+      input: string | URL | Request,
+      init?: RequestInit
+    ): Promise<Response> => {
+      await evmReady;
+      return clientFetch(input, init);
+    }) as typeof globalThis.fetch;
+  }
+
+  return clientFetch;
 }

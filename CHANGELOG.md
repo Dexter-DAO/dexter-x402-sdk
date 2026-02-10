@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.5] - 2026-02-10
+
+### Fixed
+- **`wrapFetch` + `createEvmKeypairWallet` ESM compatibility** — v1.6.4 used `require('viem/accounts')` which fails in ESM consumers because viem 2.x is ESM-only. Replaced with `await import('viem/accounts')` (dynamic import). `createEvmKeypairWallet` is now async; `wrapFetch` starts the import eagerly and awaits it before the first fetch call, keeping its own signature synchronous.
+
 ## [1.6.4] - 2026-02-10
 
 ### Fixed
