@@ -47,6 +47,8 @@ export type { WrapFetchOptions } from './wrap-fetch';
 export { createKeypairWallet, isKeypairWallet } from './keypair-wallet';
 export type { KeypairWallet } from './keypair-wallet';
 
+export { createEvmKeypairWallet, isEvmKeypairWallet } from './evm-wallet';
+
 // Re-export types and adapters for convenience
 export type { ChainAdapter, WalletSet } from '../adapters/types';
 export { X402Error } from '../types';

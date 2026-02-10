@@ -20,6 +20,7 @@
 
 import { createX402Client, type X402ClientConfig } from './x402-client';
 import { createKeypairWallet } from './keypair-wallet';
+import { createEvmKeypairWallet } from './evm-wallet';
 import type { AccessPassClientConfig } from '../types';
 
 /**
@@ -139,10 +140,12 @@ export function wrapFetch(
     wallets.solana = createKeypairWallet(walletPrivateKey);
   }
 
-  // Note: EVM private key support would require creating an EVM wallet adapter
-  // For now, we only support Solana in wrapFetch
   if (evmPrivateKey) {
-    console.warn('[x402] EVM private key support in wrapFetch is not yet implemented. Use createX402Client with a viem wallet instead.');
+    try {
+      wallets.evm = createEvmKeypairWallet(evmPrivateKey);
+    } catch (e: any) {
+      console.warn(`[x402] ${e.message}`);
+    }
   }
 
   // Create client config
