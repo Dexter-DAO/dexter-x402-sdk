@@ -27,7 +27,7 @@
 
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import { createX402Server, type BuildRequirementsOptions } from './x402-server';
-import { toAtomicUnits } from '../utils';
+import { toAtomicUnits, encodeBase64Json } from '../utils';
 
 /**
  * Middleware configuration
@@ -256,7 +256,7 @@ export function x402Middleware(config: X402MiddlewareConfig): RequestHandler {
         network,
         payer: verifyResult.payer ?? '',
       };
-      res.setHeader('PAYMENT-RESPONSE', btoa(JSON.stringify(paymentResponseData)));
+      res.setHeader('PAYMENT-RESPONSE', encodeBase64Json(paymentResponseData));
 
       // Continue to actual handler
       next();

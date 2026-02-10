@@ -197,15 +197,50 @@ export function getExplorerUrl(txSignature: string, network: string): string {
 // ============================================================================
 
 /**
- * Encode an object as base64 JSON
+ * Unicode-safe base64 encode a string.
+ * Works in both Node.js and browsers, handling characters above U+00FF
+ * that would cause btoa() to throw InvalidCharacterError.
  */
-export function encodeBase64Json(obj: unknown): string {
-  return btoa(JSON.stringify(obj));
+function safeBase64Encode(str: string): string {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(str, 'utf-8').toString('base64');
+  }
+  // Browser fallback: encode UTF-8 bytes via TextEncoder
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
 }
 
 /**
- * Decode base64 JSON to object
+ * Unicode-safe base64 decode a string.
+ * Works in both Node.js and browsers.
+ */
+function safeBase64Decode(encoded: string): string {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(encoded, 'base64').toString('utf-8');
+  }
+  // Browser fallback: decode via atob then UTF-8
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+/**
+ * Encode an object as base64 JSON (Unicode-safe)
+ */
+export function encodeBase64Json(obj: unknown): string {
+  return safeBase64Encode(JSON.stringify(obj));
+}
+
+/**
+ * Decode base64 JSON to object (Unicode-safe)
  */
 export function decodeBase64Json<T>(encoded: string): T {
-  return JSON.parse(atob(encoded)) as T;
+  return JSON.parse(safeBase64Decode(encoded)) as T;
 }

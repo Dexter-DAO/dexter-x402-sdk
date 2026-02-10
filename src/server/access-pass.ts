@@ -35,7 +35,7 @@
 
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import { createX402Server } from './x402-server';
-import { toAtomicUnits } from '../utils';
+import { toAtomicUnits, encodeBase64Json } from '../utils';
 import type { AccessPassTier, AccessPassInfo, AccessPassClaims } from '../types';
 import crypto from 'crypto';
 
@@ -244,7 +244,7 @@ export function x402AccessPass(config: X402AccessPassConfig): RequestHandler {
     ratePerHour: ratePerHour || undefined,
     issuer,
   };
-  const passInfoEncoded = btoa(JSON.stringify(passInfo));
+  const passInfoEncoded = encodeBase64Json(passInfo);
 
   /**
    * Calculate price for a custom duration in seconds
@@ -377,7 +377,7 @@ export function x402AccessPass(config: X402AccessPassConfig): RequestHandler {
           network,
           payer: verifyResult.payer ?? '',
         };
-        res.setHeader('PAYMENT-RESPONSE', btoa(JSON.stringify(paymentResponseData)));
+        res.setHeader('PAYMENT-RESPONSE', encodeBase64Json(paymentResponseData));
 
         // Set ACCESS-PASS header with the JWT
         res.setHeader('ACCESS-PASS', jwt);

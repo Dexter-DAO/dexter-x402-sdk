@@ -50,6 +50,7 @@ import {
   DEXTER_FACILITATOR_URL,
 } from '../types';
 import { FacilitatorClient, type SupportedKind } from './facilitator-client';
+import { encodeBase64Json } from '../utils';
 
 // ============================================================================
 // Types
@@ -231,7 +232,7 @@ export function createX402Server(config: X402ServerConfig): X402Server {
    * Encode requirements for PAYMENT-REQUIRED header
    */
   function encodeRequirements(requirements: PaymentRequired): string {
-    return btoa(JSON.stringify(requirements));
+    return encodeBase64Json(requirements);
   }
 
   /**
