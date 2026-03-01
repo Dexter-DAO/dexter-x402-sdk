@@ -1,7 +1,7 @@
 {
   "name": "@dexterai/x402",
-  "version": "1.6.5",
-  "description": "Chain-agnostic x402 v2 SDK for Solana, Base, and EVM payments",
+  "version": "1.7.1",
+  "description": "Full-stack x402 SDK - add paid API monetization to any endpoint. Express middleware, React hooks, Access Pass, dynamic pricing. Solana, Base, Polygon, Arbitrum, Optimism, Avalanche.",
   "author": "Dexter",
   "license": "MIT",
   "type": "module",
@@ -55,12 +55,14 @@
     "tiktoken": "^1.0.22"
   },
   "devDependencies": {
+    "@types/aws-lambda": "^8.10.161",
     "@types/express": "^5.0.6",
     "@types/node": "^22.10.0",
     "@types/react": "^18.0.0",
     "bs58": "^6.0.0",
     "ethers": "^6.13.0",
     "react": "^18.0.0",
+    "stripe": "^20.3.1",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
@@ -68,6 +70,7 @@
   "peerDependencies": {
     "@solana/wallet-adapter-base": "^0.9.0",
     "react": "^18.0.0 || ^19.0.0",
+    "stripe": "^20.0.0",
     "viem": "^2.0.0"
   },
   "peerDependenciesMeta": {
@@ -75,6 +78,9 @@
       "optional": true
     },
     "react": {
+      "optional": true
+    },
+    "stripe": {
       "optional": true
     },
     "viem": {
@@ -93,13 +99,21 @@
     "payments",
     "dexter",
     "web3",
-    "crypto"
+    "crypto",
+    "stripe",
+    "machine-payments",
+    "agent-payments",
+    "opendexter",
+    "marketplace",
+    "ai-agents",
+    "monetize",
+    "api-payments"
   ],
   "repository": {
     "type": "git",
     "url": "https://github.com/Dexter-DAO/dexter-x402-sdk"
   },
-  "homepage": "https://dexter.cash/sdk",
+  "homepage": "https://dexter.cash/opendexter",
   "bugs": {
     "url": "https://github.com/Dexter-DAO/dexter-x402-sdk/issues"
   }

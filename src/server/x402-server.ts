@@ -43,6 +43,8 @@ import type {
   AcceptsExtra,
   VerifyResponse,
   SettleResponse,
+  PayToContext,
+  PayToProvider,
 } from '../types';
 import {
   SOLANA_MAINNET_NETWORK,
@@ -70,8 +72,12 @@ export interface AssetConfig {
  * Server configuration
  */
 export interface X402ServerConfig {
-  /** Address to receive payments */
-  payTo: string;
+  /**
+   * Address to receive payments, or a dynamic provider function.
+   * Use a string for static wallet addresses.
+   * Use a PayToProvider (e.g., stripePayTo) for per-request addresses.
+   */
+  payTo: string | PayToProvider;
   /** Facilitator URL (defaults to Dexter) */
   facilitatorUrl?: string;
   /** CAIP-2 network identifier */
@@ -159,6 +165,16 @@ export function createX402Server(config: X402ServerConfig): X402Server {
   let cachedExtra: SupportedKind['extra'] | null = null;
 
   /**
+   * Resolve payTo to a concrete address.
+   * For static strings, returns immediately.
+   * For providers (e.g. Stripe), calls the function with context.
+   */
+  async function resolvePayTo(context?: PayToContext): Promise<string> {
+    if (typeof payTo === 'string') return payTo;
+    return payTo(context || {});
+  }
+
+  /**
    * Get extra data from facilitator (cached)
    */
   async function getNetworkExtra(): Promise<AcceptsExtra> {
@@ -180,9 +196,12 @@ export function createX402Server(config: X402ServerConfig): X402Server {
   }
 
   /**
-   * Build a PaymentAccept structure
+   * Build a PaymentAccept with a pre-resolved address (internal helper)
    */
-  async function getPaymentAccept(options: BuildRequirementsOptions): Promise<PaymentAccept> {
+  async function buildPaymentAccept(
+    resolvedPayTo: string,
+    options: BuildRequirementsOptions,
+  ): Promise<PaymentAccept> {
     const {
       amountAtomic,
       timeoutSeconds = defaultTimeoutSeconds,
@@ -196,10 +215,21 @@ export function createX402Server(config: X402ServerConfig): X402Server {
       amount: amountAtomic,
       maxAmountRequired: amountAtomic,
       asset: asset.address,
-      payTo,
+      payTo: resolvedPayTo,
       maxTimeoutSeconds: timeoutSeconds,
       extra,
     };
+  }
+
+  /**
+   * Build a PaymentAccept structure (resolves payTo dynamically)
+   */
+  async function getPaymentAccept(options: BuildRequirementsOptions): Promise<PaymentAccept> {
+    const address = await resolvePayTo({
+      amountAtomic: options.amountAtomic,
+      resourceUrl: options.resourceUrl,
+    });
+    return buildPaymentAccept(address, options);
   }
 
   /**
@@ -249,34 +279,35 @@ export function createX402Server(config: X402ServerConfig): X402Server {
   }
 
   /**
-   * Verify payment with facilitator
+   * Verify payment with facilitator.
+   * When payTo is dynamic, resolves the address from the payment header.
    */
   async function verifyPayment(
     paymentSignatureHeader: string,
     requirements?: PaymentAccept
   ): Promise<VerifyResponse> {
-    // If requirements not provided, build default
-    const req = requirements || await getPaymentAccept({
-      amountAtomic: '0',
-      resourceUrl: '',
-    });
+    if (!requirements) {
+      const address = await resolvePayTo({ paymentHeader: paymentSignatureHeader });
+      requirements = await buildPaymentAccept(address, { amountAtomic: '0', resourceUrl: '' });
+    }
 
-    return facilitator.verifyPayment(paymentSignatureHeader, req);
+    return facilitator.verifyPayment(paymentSignatureHeader, requirements);
   }
 
   /**
-   * Settle payment via facilitator
+   * Settle payment via facilitator.
+   * When payTo is dynamic, resolves the address from the payment header.
    */
   async function settlePayment(
     paymentSignatureHeader: string,
     requirements?: PaymentAccept
   ): Promise<SettleResponse> {
-    const req = requirements || await getPaymentAccept({
-      amountAtomic: '0',
-      resourceUrl: '',
-    });
+    if (!requirements) {
+      const address = await resolvePayTo({ paymentHeader: paymentSignatureHeader });
+      requirements = await buildPaymentAccept(address, { amountAtomic: '0', resourceUrl: '' });
+    }
 
-    return facilitator.settlePayment(paymentSignatureHeader, req);
+    return facilitator.settlePayment(paymentSignatureHeader, requirements);
   }
 
   return {

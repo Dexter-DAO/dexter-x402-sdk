@@ -122,6 +122,10 @@ export type {
   ModelDefinition,
 } from './model-registry';
 
+// Stripe machine payments
+export { stripePayTo } from './stripe-payto';
+export type { StripePayToConfig } from './stripe-payto';
+
 // Re-export types for convenience
-export type { VerifyResponse, SettleResponse, PaymentRequired, PaymentAccept, AccessPassTier, AccessPassInfo, AccessPassClaims, AccessPassClientConfig } from '../types';
+export type { VerifyResponse, SettleResponse, PaymentRequired, PaymentAccept, PayToContext, PayToProvider, PayToProviderDefaults, AccessPassTier, AccessPassInfo, AccessPassClaims, AccessPassClientConfig } from '../types';
 export { DEXTER_FACILITATOR_URL, SOLANA_MAINNET_NETWORK, BASE_MAINNET_NETWORK, USDC_MINT, USDC_BASE } from '../types';

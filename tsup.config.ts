@@ -23,5 +23,7 @@ export default defineConfig({
     // React (optional)
     'react',
     'react-dom',
+    // Stripe (optional - only needed for stripePayTo)
+    'stripe',
   ],
 });

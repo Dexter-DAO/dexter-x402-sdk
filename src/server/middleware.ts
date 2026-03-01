@@ -26,6 +26,7 @@
  */
 
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
+import type { PayToProvider } from '../types';
 import { createX402Server, type BuildRequirementsOptions } from './x402-server';
 import { toAtomicUnits, encodeBase64Json } from '../utils';
 
@@ -34,9 +35,22 @@ import { toAtomicUnits, encodeBase64Json } from '../utils';
  */
 export interface X402MiddlewareConfig {
   /**
-   * Address to receive payments (Solana pubkey or EVM address)
+   * Address to receive payments, or a dynamic provider function.
+   *
+   * - **Static address**: Pass a Solana pubkey or EVM address string.
+   * - **Stripe**: Use `stripePayTo(process.env.STRIPE_SECRET_KEY)` to generate
+   *   per-request deposit addresses. Payments land in your Stripe Dashboard.
+   *
+   * @example
+   * ```typescript
+   * // Static address
+   * payTo: '0xYourAddress...'
+   *
+   * // Stripe machine payments
+   * payTo: stripePayTo(process.env.STRIPE_SECRET_KEY)
+   * ```
    */
-  payTo: string;
+  payTo: string | PayToProvider;
 
   /**
    * Payment amount in USD (e.g., '0.01' for 1 cent)
@@ -143,9 +157,7 @@ export function x402Middleware(config: X402MiddlewareConfig): RequestHandler {
   const {
     payTo,
     amount,
-    network = DEFAULT_NETWORK,
     asset,
-    facilitatorUrl,
     description,
     resourceUrl: staticResourceUrl,
     mimeType,
@@ -155,6 +167,11 @@ export function x402Middleware(config: X402MiddlewareConfig): RequestHandler {
     getAmount,
     getDescription,
   } = config;
+
+  // Read auto-configuration defaults from the provider (e.g., stripePayTo sets Base + Dexter facilitator)
+  const providerDefaults = typeof payTo !== 'string' ? payTo._x402Defaults : undefined;
+  const network = config.network ?? providerDefaults?.network ?? DEFAULT_NETWORK;
+  const facilitatorUrl = config.facilitatorUrl ?? providerDefaults?.facilitatorUrl;
 
   const log = verbose
     ? console.log.bind(console, '[x402:middleware]')

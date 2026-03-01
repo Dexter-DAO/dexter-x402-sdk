@@ -39,6 +39,51 @@ export const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 export const DEXTER_FACILITATOR_URL = 'https://x402.dexter.cash';
 
 // ============================================================================
+// PayTo Provider Types (for dynamic address resolution, e.g. Stripe)
+// ============================================================================
+
+/**
+ * Context passed to a PayToProvider function.
+ * Contains request-scoped information for dynamic address resolution.
+ */
+export interface PayToContext {
+  /** The PAYMENT-SIGNATURE header value (present on retry/verify, undefined on initial 402) */
+  paymentHeader?: string;
+  /** Amount in atomic units (e.g., '10000' for 0.01 USDC) */
+  amountAtomic?: string;
+  /** The resource URL being accessed */
+  resourceUrl?: string;
+}
+
+/**
+ * Optional defaults a PayToProvider can advertise for auto-configuration.
+ * Attached as `_x402Defaults` on the provider function.
+ */
+export interface PayToProviderDefaults {
+  /** Default CAIP-2 network (e.g., 'eip155:8453' for Base) */
+  network?: string;
+  /** Default facilitator URL */
+  facilitatorUrl?: string;
+}
+
+/**
+ * A function that dynamically resolves a payment address.
+ * Used for providers like Stripe that generate per-request deposit addresses.
+ *
+ * @example
+ * ```typescript
+ * import { stripePayTo } from '@dexterai/x402/server';
+ *
+ * const provider = stripePayTo(process.env.STRIPE_SECRET_KEY);
+ * const address = await provider({ amountAtomic: '10000' });
+ * ```
+ */
+export type PayToProvider = ((context: PayToContext) => Promise<string>) & {
+  /** Auto-configuration defaults (set by provider factories like stripePayTo) */
+  _x402Defaults?: PayToProviderDefaults;
+};
+
+// ============================================================================
 // Payment Types
 // ============================================================================
 

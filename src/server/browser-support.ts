@@ -256,11 +256,12 @@ if (btn) {
       payload = btoa(payload);
 
       // 6. Build payment-signature header (x402 v2 format)
+      // Solana: payload must be { transaction: base64Tx } per SDK spec
       const paymentSignature = {
         x402Version: accept.x402Version ?? 2,
         resource: requirements.resource,
         accepted: accept,
-        payload,
+        payload: { transaction: payload },
       };
       const paymentHeader = btoa(JSON.stringify(paymentSignature));
 
