@@ -1,17 +1,18 @@
 <p align="center">
-  <img src="./assets/dexter-wordmark.svg" alt="Dexter" width="360">
+  <img src="https://raw.githubusercontent.com/Dexter-DAO/dexter-x402-sdk/main/assets/dexter-wordmark.svg" alt="Dexter" width="360">
 </p>
 
 <h1 align="center">@dexterai/x402</h1>
 
 <p align="center">
-  <strong>x402 payments for Solana and Base. Works with Phantom.</strong>
+  <strong>Full-stack x402 SDK. Add paid API monetization to any endpoint. Solana, Base, and 4 more chains.</strong>
 </p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@dexterai/x402"><img src="https://img.shields.io/npm/v/@dexterai/x402.svg" alt="npm"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E=18-brightgreen.svg" alt="Node"></a>
   <a href="https://dexter.cash/sdk"><img src="https://img.shields.io/badge/Live_Demo-dexter.cash%2Fsdk-blueviolet" alt="Live Demo"></a>
+  <a href="https://dexter.cash/opendexter"><img src="https://img.shields.io/badge/Marketplace-5%2C000%2B_APIs-success" alt="Marketplace"></a>
 </p>
 
 <p align="center">
@@ -43,6 +44,21 @@ This SDK handles the entire flow automatically—you just call `fetch()` and pay
 **Multi-chain.** Solana and Base (Ethereum L2) with the same API. Add wallets for both and the SDK picks the right one automatically.
 
 **Works out of the box.** Built-in RPC proxy, pre-flight balance checks, automatic retry on 402. Uses the [Dexter facilitator](https://x402.dexter.cash) by default—Solana's most feature-rich x402 facilitator.
+
+---
+
+## Automatic Marketplace Discovery
+
+When someone pays for your API through the Dexter facilitator, your endpoint is **automatically discovered and listed** in the [OpenDexter Marketplace](https://dexter.cash/opendexter) — a searchable directory of 5,000+ paid APIs used by AI agents.
+
+No registration step needed. The flow:
+
+1. You add `x402Middleware` to your endpoint (see Quick Start below)
+2. An agent pays for your API → the facilitator processes the settlement
+3. Your endpoint is auto-discovered, AI-named, and quality-verified
+4. Agents find it via `x402_search` in any MCP client (ChatGPT, Claude, Cursor, etc.)
+
+Quality-verified endpoints (score 75+) get promoted in search results. The verification bot tests your endpoint automatically — no action required on your part.
 
 ---
 
@@ -596,6 +612,7 @@ MIT — see [LICENSE](./LICENSE)
 
 <p align="center">
   <a href="https://x402.dexter.cash">Dexter Facilitator</a> · 
+  <a href="https://dexter.cash/opendexter">OpenDexter Marketplace</a> · 
   <a href="https://dexter.cash/sdk">Live Demo</a> · 
   <a href="https://dexter.cash/access-pass">Access Pass Demo</a> · 
   <a href="https://dexter.cash/onboard">Become a Seller</a>
