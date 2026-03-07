@@ -530,6 +530,23 @@ tiktoken's default encoding works well for most transformer models. Only use a c
 
 ---
 
+## Sponsored Access (v1.7.2)
+
+**Server middleware** accepts `sponsoredAccess: true` in its config. When enabled, it reads `extensions["sponsored-access"]` from the facilitator's settlement response and injects `_x402_sponsored` into the JSON response body so agents can see recommendations.
+
+```typescript
+app.use(x402Middleware({
+  facilitatorUrl: "https://x402.dexter.cash",
+  sponsoredAccess: true,  // opt-in to recommendation injection
+}));
+```
+
+**Client SDK** decodes the `PAYMENT-RESPONSE` header from x402 responses and attaches the full settlement receipt (including extensions) as `response._x402` for programmatic access.
+
+**Types:** `SettleResponse` now includes an optional `extensions` field.
+
+---
+
 ## API Reference
 
 ### `createX402Client(options)`

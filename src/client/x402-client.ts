@@ -601,6 +601,20 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       );
     }
 
+    // Decode PAYMENT-RESPONSE header and attach to response for programmatic access
+    const paymentResponseHeader = retryResponse.headers.get('PAYMENT-RESPONSE');
+    if (paymentResponseHeader) {
+      try {
+        const receipt = JSON.parse(atob(paymentResponseHeader));
+        (retryResponse as any)._x402 = receipt;
+        if (receipt.extensions) {
+          log('Settlement extensions:', Object.keys(receipt.extensions).join(', '));
+        }
+      } catch {
+        // Non-critical: receipt decoding failed
+      }
+    }
+
     return retryResponse;
   }
 

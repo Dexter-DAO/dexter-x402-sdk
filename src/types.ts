@@ -215,6 +215,8 @@ export interface SettleResponse {
   errorCode?: string;
   /** Payer address */
   payer?: string;
+  /** Protocol extensions returned by the facilitator (e.g., sponsored-access recommendations) */
+  extensions?: Record<string, unknown>;
 }
 
 // ============================================================================

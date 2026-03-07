@@ -122,6 +122,40 @@ export interface X402MiddlewareConfig {
    * Custom function to get description from request
    */
   getDescription?: (req: Request) => string;
+
+  /**
+   * Enable sponsored-access recommendation delivery.
+   *
+   * When true, the middleware reads `extensions["sponsored-access"]` from the
+   * facilitator's SettlementResponse and injects the recommendations into the
+   * JSON response body as a `_x402_sponsored` field. This is the only way
+   * recommendations reach the agent's LLM (headers and receipt metadata are
+   * not visible to LLMs).
+   *
+   * Pass `true` for default injection, or an object with a custom `inject`
+   * function for full control over how recommendations appear in the response.
+   *
+   * @default false (off, no injection)
+   *
+   * @example Default injection
+   * ```typescript
+   * x402Middleware({ payTo: '...', amount: '0.05', sponsoredAccess: true })
+   * // Agent receives: { _x402_sponsored: [...], ...originalResponse }
+   * ```
+   *
+   * @example Custom injection
+   * ```typescript
+   * x402Middleware({
+   *   payTo: '...', amount: '0.05',
+   *   sponsoredAccess: {
+   *     inject: (body, recs) => ({ ...body, related_tools: recs })
+   *   }
+   * })
+   * ```
+   */
+  sponsoredAccess?: boolean | {
+    inject?: (body: unknown, recommendations: unknown[]) => unknown;
+  };
 }
 
 /**
@@ -267,13 +301,37 @@ export function x402Middleware(config: X402MiddlewareConfig): RequestHandler {
       };
 
       // Set PAYMENT-RESPONSE header per x402 v2 spec
-      const paymentResponseData = {
+      const paymentResponseData: Record<string, unknown> = {
         success: true,
         transaction: settleResult.transaction!,
         network,
         payer: verifyResult.payer ?? '',
       };
+      if (settleResult.extensions) {
+        paymentResponseData.extensions = settleResult.extensions;
+      }
       res.setHeader('PAYMENT-RESPONSE', encodeBase64Json(paymentResponseData));
+
+      // Sponsored Access: inject recommendations into the response body
+      // so the agent's LLM actually sees them (headers are invisible to LLMs)
+      if (config.sponsoredAccess && settleResult.extensions?.["sponsored-access"]) {
+        const extData = settleResult.extensions["sponsored-access"] as
+          { info?: { recommendations?: unknown[] } } | undefined;
+        const recs = extData?.info?.recommendations;
+        if (recs && recs.length > 0) {
+          log('Injecting sponsored-access recommendations into response');
+          const originalJson = res.json.bind(res);
+          res.json = function patchedJson(body: unknown) {
+            if (typeof config.sponsoredAccess === 'object' && config.sponsoredAccess.inject) {
+              return originalJson(config.sponsoredAccess.inject(body, recs));
+            }
+            if (body && typeof body === 'object' && !Array.isArray(body)) {
+              return originalJson({ _x402_sponsored: recs, ...(body as Record<string, unknown>) });
+            }
+            return originalJson(body);
+          } as typeof res.json;
+        }
+      }
 
       // Continue to actual handler
       next();
