@@ -152,12 +152,37 @@ function PayButton() {
 
 ## Supported Networks
 
-| Network | Identifier | Client | Server |
-|---------|------------|--------|--------|
-| Solana Mainnet | `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` | ✅ Verified | ✅ Verified |
-| Base Mainnet | `eip155:8453` | ✅ Verified | ✅ Verified |
+All networks supported by the [Dexter facilitator](https://x402.dexter.cash/supported). USDC on every chain.
 
-All networks use USDC. Both client and server SDKs are production-tested with real payments.
+**Mainnets:**
+
+| Network | CAIP-2 | Status |
+|---------|--------|--------|
+| Solana | `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` | Production |
+| Base | `eip155:8453` | Production |
+| Polygon | `eip155:137` | Production |
+| Arbitrum | `eip155:42161` | Production |
+| Optimism | `eip155:10` | Production |
+| Avalanche | `eip155:43114` | Production |
+| SKALE Europa | `eip155:1187947933` | Production (zero gas) |
+
+**Testnets:**
+
+| Network | CAIP-2 |
+|---------|--------|
+| Solana Devnet | `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1` |
+| Base Sepolia | `eip155:84532` |
+| SKALE Sepolia | `eip155:324705682` |
+
+Accept payments on multiple chains simultaneously:
+
+```typescript
+app.get('/api/data', x402Middleware({
+  payTo: '0xYourAddress',
+  amount: '0.01',
+  network: ['eip155:8453', 'eip155:137', 'eip155:42161', 'eip155:10'],
+}));
+```
 
 ---
 
