@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Multi-network middleware** — `x402Middleware` now accepts `network: string | string[]` and `payTo: Record<string, string | PayToProvider>` with glob matching (`eip155:*`, `solana:*`, `*`). Endpoints can accept payments on all chains simultaneously. The client picks whichever chain it has a wallet for.
-- **Full chain parity with facilitator** — EVM adapter now supports all 10 networks from the Dexter facilitator: Base, Polygon, Arbitrum, Optimism, Avalanche, SKALE Europa (mainnet + testnet), and Base Sepolia. Ethereum mainnet is deprecated (not in facilitator).
+- **Full chain parity with facilitator** — EVM adapter now supports all 10 networks from the Dexter facilitator: Base, Polygon, Arbitrum, Optimism, Avalanche, SKALE Base (mainnet + testnet), and Base Sepolia. Ethereum mainnet is deprecated (not in facilitator).
 - **Resilient facilitator client** — `FacilitatorClient` now retries on 5xx and network errors with exponential backoff (3 attempts, 500ms/1s/2s). All requests have a 10s timeout. Both limits are configurable via `FacilitatorClientConfig`.
 - **`getPaymentReceipt(response)`** — Typed helper (backed by `WeakMap`) replaces the `(response as any)._x402` pattern. Exported from `@dexterai/x402/client`.
 - **`@dexterai/x402-ads-types`** — Added as an optional peer dependency for typed sponsored-access extensions. No inlining; single source of truth.

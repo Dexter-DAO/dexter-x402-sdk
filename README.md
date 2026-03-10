@@ -164,7 +164,7 @@ All networks supported by the [Dexter facilitator](https://x402.dexter.cash/supp
 | Arbitrum | `eip155:42161` | Production |
 | Optimism | `eip155:10` | Production |
 | Avalanche | `eip155:43114` | Production |
-| SKALE Europa | `eip155:1187947933` | Production (zero gas) |
+| SKALE Base | `eip155:1187947933` | Production (zero gas) |
 
 **Testnets:**
 
