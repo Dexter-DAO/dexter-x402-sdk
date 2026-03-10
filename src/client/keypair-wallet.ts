@@ -57,21 +57,29 @@ export interface KeypairWallet {
  * const wallet = createKeypairWallet(process.env.SOLANA_PRIVATE_KEY!);
  * ```
  */
-export function createKeypairWallet(
+export async function createKeypairWallet(
   privateKey: string | number[] | Uint8Array
-): KeypairWallet {
+): Promise<KeypairWallet> {
   let keypair: Keypair;
 
   if (typeof privateKey === 'string') {
-    // Base58 encoded private key
-    // bs58 v6+ uses default export
-    const bs58 = require('bs58');
-    const decode = bs58.decode || bs58.default?.decode;
-    if (!decode) {
-      throw new Error('bs58 module not found or incompatible version');
+    // Base58 encoded private key — dynamic import for ESM compatibility.
+    // bs58 v5 uses named `decode`; v6+ uses `default.decode`.
+    let bs58Decode: (input: string) => Uint8Array;
+    try {
+      const mod: Record<string, unknown> = await import('bs58');
+      const resolve = (mod.decode ?? (mod.default as Record<string, unknown>)?.decode) as
+        ((input: string) => Uint8Array) | undefined;
+      if (!resolve) throw new Error('decode not found');
+      bs58Decode = resolve;
+    } catch (e) {
+      throw new Error(
+        'The "bs58" package is required for base58 private keys. ' +
+        'Install it with: npm install bs58',
+      );
     }
     try {
-      const decoded = decode(privateKey);
+      const decoded = bs58Decode(privateKey);
       keypair = Keypair.fromSecretKey(decoded);
     } catch (e) {
       // Maybe it's a JSON array string?

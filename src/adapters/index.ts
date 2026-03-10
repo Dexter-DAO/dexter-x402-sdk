@@ -18,6 +18,9 @@
  * ```
  */
 
+import { createSolanaAdapter as _createSolanaAdapter } from './solana';
+import { createEvmAdapter as _createEvmAdapter } from './evm';
+
 // Types
 export type {
   ChainAdapter,
@@ -55,11 +58,9 @@ export type { EvmWallet } from './evm';
  * Create all default adapters
  */
 export function createDefaultAdapters(verbose = false) {
-  const { createSolanaAdapter } = require('./solana');
-  const { createEvmAdapter } = require('./evm');
   return [
-    createSolanaAdapter({ verbose }),
-    createEvmAdapter({ verbose }),
+    _createSolanaAdapter({ verbose }),
+    _createEvmAdapter({ verbose }),
   ];
 }
 

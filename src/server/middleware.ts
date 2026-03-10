@@ -75,7 +75,7 @@ export interface X402MiddlewareConfig {
 
   /**
    * x402 facilitator URL
-   * @default 'https://x402-facilitator.dexter.cash'
+   * @default 'https://x402.dexter.cash'
    */
   facilitatorUrl?: string;
 

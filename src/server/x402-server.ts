@@ -52,7 +52,23 @@ import {
   DEXTER_FACILITATOR_URL,
 } from '../types';
 import { FacilitatorClient, type SupportedKind } from './facilitator-client';
-import { encodeBase64Json } from '../utils';
+import { encodeBase64Json, decodeBase64Json } from '../utils';
+
+/**
+ * Best-effort extraction of amount from a PAYMENT-SIGNATURE header.
+ * Used as a fallback when the requirements cache misses (e.g., server restart
+ * between initial 402 and retry). Returns the accepted amount or undefined.
+ */
+function extractAmountFromHeader(paymentSignatureHeader: string): string | undefined {
+  try {
+    const decoded = decodeBase64Json<{
+      accepted?: { amount?: string; maxAmountRequired?: string };
+    }>(paymentSignatureHeader);
+    return decoded?.accepted?.amount ?? decoded?.accepted?.maxAmountRequired;
+  } catch {
+    return undefined;
+  }
+}
 
 // ============================================================================
 // Types
@@ -164,6 +180,37 @@ export function createX402Server(config: X402ServerConfig): X402Server {
   // Cache for network extra data
   let cachedExtra: SupportedKind['extra'] | null = null;
 
+  // Requirements cache: payTo address -> PaymentAccept + expiry.
+  // Populated by buildRequirements/getPaymentAccept, consumed by verify/settle.
+  // Prevents the bug where verify/settle fabricates requirements with amount '0'.
+  // Parallels the SettlementCache pattern from coinbase/x402.
+  const requirementsCache = new Map<string, { accept: PaymentAccept; expiresAt: number }>();
+  const CACHE_PRUNE_INTERVAL = 30_000;
+  let lastPrune = Date.now();
+
+  function cacheRequirements(accept: PaymentAccept): void {
+    const ttl = (accept.maxTimeoutSeconds || defaultTimeoutSeconds) * 1000;
+    requirementsCache.set(accept.payTo, { accept, expiresAt: Date.now() + ttl });
+
+    if (Date.now() - lastPrune > CACHE_PRUNE_INTERVAL) {
+      const now = Date.now();
+      for (const [key, entry] of requirementsCache) {
+        if (entry.expiresAt < now) requirementsCache.delete(key);
+      }
+      lastPrune = now;
+    }
+  }
+
+  function getCachedRequirements(address: string): PaymentAccept | undefined {
+    const entry = requirementsCache.get(address);
+    if (!entry) return undefined;
+    if (entry.expiresAt < Date.now()) {
+      requirementsCache.delete(address);
+      return undefined;
+    }
+    return entry.accept;
+  }
+
   /**
    * Resolve payTo to a concrete address.
    * For static strings, returns immediately.
@@ -209,7 +256,7 @@ export function createX402Server(config: X402ServerConfig): X402Server {
 
     const extra = await getNetworkExtra();
 
-    return {
+    const accept: PaymentAccept = {
       scheme: 'exact',
       network,
       amount: amountAtomic,
@@ -219,6 +266,9 @@ export function createX402Server(config: X402ServerConfig): X402Server {
       maxTimeoutSeconds: timeoutSeconds,
       extra,
     };
+
+    cacheRequirements(accept);
+    return accept;
   }
 
   /**
@@ -280,7 +330,8 @@ export function createX402Server(config: X402ServerConfig): X402Server {
 
   /**
    * Verify payment with facilitator.
-   * When payTo is dynamic, resolves the address from the payment header.
+   * Resolves requirements from cache (populated by buildRequirements),
+   * falling back to the payment header for the payTo address.
    */
   async function verifyPayment(
     paymentSignatureHeader: string,
@@ -288,7 +339,14 @@ export function createX402Server(config: X402ServerConfig): X402Server {
   ): Promise<VerifyResponse> {
     if (!requirements) {
       const address = await resolvePayTo({ paymentHeader: paymentSignatureHeader });
-      requirements = await buildPaymentAccept(address, { amountAtomic: '0', resourceUrl: '' });
+      requirements = getCachedRequirements(address);
+      if (!requirements) {
+        // Fallback: rebuild with amount from payment header if possible
+        requirements = await buildPaymentAccept(address, {
+          amountAtomic: extractAmountFromHeader(paymentSignatureHeader) ?? '0',
+          resourceUrl: '',
+        });
+      }
     }
 
     return facilitator.verifyPayment(paymentSignatureHeader, requirements);
@@ -296,7 +354,8 @@ export function createX402Server(config: X402ServerConfig): X402Server {
 
   /**
    * Settle payment via facilitator.
-   * When payTo is dynamic, resolves the address from the payment header.
+   * Resolves requirements from cache (populated by buildRequirements),
+   * falling back to the payment header for the payTo address.
    */
   async function settlePayment(
     paymentSignatureHeader: string,
@@ -304,7 +363,13 @@ export function createX402Server(config: X402ServerConfig): X402Server {
   ): Promise<SettleResponse> {
     if (!requirements) {
       const address = await resolvePayTo({ paymentHeader: paymentSignatureHeader });
-      requirements = await buildPaymentAccept(address, { amountAtomic: '0', resourceUrl: '' });
+      requirements = getCachedRequirements(address);
+      if (!requirements) {
+        requirements = await buildPaymentAccept(address, {
+          amountAtomic: extractAmountFromHeader(paymentSignatureHeader) ?? '0',
+          resourceUrl: '',
+        });
+      }
     }
 
     return facilitator.settlePayment(paymentSignatureHeader, requirements);

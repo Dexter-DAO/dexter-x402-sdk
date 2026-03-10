@@ -53,7 +53,7 @@ export interface X402AccessPassConfig {
   /** CAIP-2 network identifier @default 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp' */
   network?: string;
 
-  /** x402 facilitator URL @default 'https://x402-facilitator.dexter.cash' */
+  /** x402 facilitator URL @default 'https://x402.dexter.cash' */
   facilitatorUrl?: string;
 
   /** Asset config @default USDC on specified network */

@@ -48,7 +48,7 @@ export interface WrapFetchOptions {
 
   /**
    * Facilitator URL
-   * @default 'https://x402-facilitator.dexter.cash'
+   * @default 'https://x402.dexter.cash'
    */
   facilitatorUrl?: string;
 
@@ -121,7 +121,6 @@ export function wrapFetch(
     walletPrivateKey,
     evmPrivateKey,
     preferredNetwork,
-    // facilitatorUrl is reserved for future use when we add facilitator selection
     rpcUrls,
     maxAmountAtomic,
     verbose,
@@ -133,22 +132,28 @@ export function wrapFetch(
     throw new Error('At least one wallet private key is required (walletPrivateKey or evmPrivateKey)');
   }
 
-  // Build wallet set
+  // Build wallet set — both wallet factories are async (dynamic imports for ESM).
+  // We start them eagerly and await before the first fetch call.
   const wallets: { solana?: unknown; evm?: unknown } = {};
+  const walletInits: Promise<void>[] = [];
 
   if (walletPrivateKey) {
-    wallets.solana = createKeypairWallet(walletPrivateKey);
+    walletInits.push(
+      createKeypairWallet(walletPrivateKey)
+        .then(w => { wallets.solana = w; })
+        .catch(e => { console.warn(`[x402] Solana wallet init failed: ${e.message}`); }),
+    );
   }
 
-  // EVM wallet init is async (viem is ESM-only, must use dynamic import).
-  // We start it eagerly here and await it in the returned fetch function
-  // so wrapFetch itself stays synchronous.
-  let evmReady: Promise<void> | null = null;
   if (evmPrivateKey) {
-    evmReady = createEvmKeypairWallet(evmPrivateKey)
-      .then(w => { wallets.evm = w; })
-      .catch(e => { console.warn(`[x402] ${e.message}`); });
+    walletInits.push(
+      createEvmKeypairWallet(evmPrivateKey)
+        .then(w => { wallets.evm = w; })
+        .catch(e => { console.warn(`[x402] EVM wallet init failed: ${e.message}`); }),
+    );
   }
+
+  const walletsReady = walletInits.length > 0 ? Promise.all(walletInits) : null;
 
   // Create client config
   const clientConfig: X402ClientConfig = {
@@ -165,13 +170,12 @@ export function wrapFetch(
   const client = createX402Client(clientConfig);
   const clientFetch = client.fetch.bind(client);
 
-  // If EVM wallet is initializing, wrap fetch to await it before first call
-  if (evmReady) {
+  if (walletsReady) {
     return (async (
       input: string | URL | Request,
       init?: RequestInit
     ): Promise<Response> => {
-      await evmReady;
+      await walletsReady;
       return clientFetch(input, init);
     }) as typeof globalThis.fetch;
   }
