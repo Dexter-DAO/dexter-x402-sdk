@@ -6,6 +6,7 @@
  * - /verify - Verify a payment signature before processing
  * - /settle - Submit the payment for execution
  *
+ * Includes retry with exponential backoff and request timeouts.
  * Works with any x402 v2 facilitator (Dexter or others).
  */
 
@@ -34,6 +35,40 @@ export interface SupportedKind {
  */
 export interface SupportedResponse {
   kinds: SupportedKind[];
+  extensions?: string[];
+  signers?: Record<string, string[]>;
+}
+
+/**
+ * Configuration for retry and timeout behavior
+ */
+export interface FacilitatorClientConfig {
+  /** Request timeout in milliseconds @default 10000 */
+  timeoutMs?: number;
+  /** Maximum retry attempts for verify/settle @default 3 */
+  maxRetries?: number;
+  /** Base delay between retries in milliseconds (doubles each attempt) @default 500 */
+  retryBaseMs?: number;
+}
+
+// Retryable: network errors and 5xx responses
+function isRetryable(error: unknown): boolean {
+  if (error instanceof TypeError) return true; // fetch network errors
+  if (error && typeof error === 'object' && 'status' in error) {
+    const status = (error as { status: number }).status;
+    return status >= 500 && status < 600;
+  }
+  return false;
+}
+
+class HttpError extends Error {
+  status: number;
+  body: string;
+  constructor(status: number, body: string) {
+    super(`HTTP ${status}`);
+    this.status = status;
+    this.body = body;
+  }
 }
 
 /**
@@ -43,15 +78,62 @@ export class FacilitatorClient {
   private facilitatorUrl: string;
   private cachedSupported: SupportedResponse | null = null;
   private cacheTime: number = 0;
-  private readonly CACHE_TTL_MS = 60_000; // 1 minute cache
+  private readonly CACHE_TTL_MS = 60_000;
+  private readonly timeoutMs: number;
+  private readonly maxRetries: number;
+  private readonly retryBaseMs: number;
 
-  constructor(facilitatorUrl: string = DEXTER_FACILITATOR_URL) {
-    this.facilitatorUrl = facilitatorUrl.replace(/\/$/, ''); // Remove trailing slash
+  constructor(
+    facilitatorUrl: string = DEXTER_FACILITATOR_URL,
+    config?: FacilitatorClientConfig,
+  ) {
+    this.facilitatorUrl = facilitatorUrl.replace(/\/$/, '');
+    this.timeoutMs = config?.timeoutMs ?? 10_000;
+    this.maxRetries = config?.maxRetries ?? 3;
+    this.retryBaseMs = config?.retryBaseMs ?? 500;
+  }
+
+  private async fetchWithTimeout(
+    url: string,
+    init?: RequestInit,
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      return await fetch(url, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async fetchWithRetry(
+    url: string,
+    init?: RequestInit,
+  ): Promise<Response> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+      try {
+        const response = await this.fetchWithTimeout(url, init);
+        if (!response.ok && response.status >= 500) {
+          throw new HttpError(response.status, await response.text());
+        }
+        return response;
+      } catch (error) {
+        lastError = error;
+        if (attempt < this.maxRetries - 1 && isRetryable(error)) {
+          const delay = this.retryBaseMs * Math.pow(2, attempt);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw lastError;
   }
 
   /**
-   * Get supported payment kinds from the facilitator
-   * Results are cached for 1 minute to reduce network calls
+   * Get supported payment kinds from the facilitator.
+   * Results are cached for 1 minute to reduce network calls.
    */
   async getSupported(): Promise<SupportedResponse> {
     const now = Date.now();
@@ -59,7 +141,7 @@ export class FacilitatorClient {
       return this.cachedSupported;
     }
 
-    const response = await fetch(`${this.facilitatorUrl}/supported`);
+    const response = await this.fetchWithTimeout(`${this.facilitatorUrl}/supported`);
     if (!response.ok) {
       throw new Error(`Facilitator /supported returned ${response.status}`);
     }
@@ -71,24 +153,16 @@ export class FacilitatorClient {
 
   /**
    * Get the fee payer address for a specific network
-   *
-   * @param network - CAIP-2 network identifier
-   * @returns Fee payer address
    */
   async getFeePayer(network: string): Promise<string> {
     const supported = await this.getSupported();
-
-    // Find matching network support (exact match or v2)
     const kind = supported.kinds.find(
-      (k) =>
-        k.x402Version === 2 &&
-        k.scheme === 'exact' &&
-        k.network === network
+      (k) => k.x402Version === 2 && k.scheme === 'exact' && k.network === network,
     );
 
     if (!kind?.extra?.feePayer) {
       throw new Error(
-        `Facilitator does not support network "${network}" with scheme "exact", or feePayer not provided`
+        `Facilitator does not support network "${network}" with scheme "exact", or feePayer not provided`,
       );
     }
 
@@ -97,54 +171,37 @@ export class FacilitatorClient {
 
   /**
    * Get extra data for a network (feePayer, decimals, EIP-712 data, etc.)
-   *
-   * @param network - CAIP-2 network identifier
-   * @returns Extra data from /supported
    */
   async getNetworkExtra(network: string): Promise<SupportedKind['extra']> {
     const supported = await this.getSupported();
-
     const kind = supported.kinds.find(
-      (k) =>
-        k.x402Version === 2 &&
-        k.scheme === 'exact' &&
-        k.network === network
+      (k) => k.x402Version === 2 && k.scheme === 'exact' && k.network === network,
     );
-
     return kind?.extra;
   }
 
   /**
-   * Verify a payment with the facilitator
-   *
-   * @param paymentSignatureHeader - Base64-encoded PAYMENT-SIGNATURE header value
-   * @param requirements - The payment requirements that were sent to the client
-   * @returns Verification response
+   * Verify a payment with the facilitator.
+   * Retries on 5xx and network errors with exponential backoff.
    */
   async verifyPayment(
     paymentSignatureHeader: string,
-    requirements: PaymentAccept
+    requirements: PaymentAccept,
   ): Promise<VerifyResponse> {
     try {
       const paymentPayload = decodeBase64Json<PaymentSignature>(paymentSignatureHeader);
 
-      const verifyPayload = {
-        x402Version: 2,
-        paymentPayload,
-        paymentRequirements: requirements,
-      };
-
-      const response = await fetch(`${this.facilitatorUrl}/verify`, {
+      const response = await this.fetchWithRetry(`${this.facilitatorUrl}/verify`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(verifyPayload),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          x402Version: 2,
+          paymentPayload,
+          paymentRequirements: requirements,
+        }),
       });
 
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`Facilitator /verify returned ${response.status}:`, errorText);
         return {
           isValid: false,
           invalidReason: `facilitator_error_${response.status}`,
@@ -153,45 +210,40 @@ export class FacilitatorClient {
 
       return (await response.json()) as VerifyResponse;
     } catch (error) {
-      console.error('Payment verification failed:', error);
-      return {
-        isValid: false,
-        invalidReason: error instanceof Error ? error.message : 'unexpected_verify_error',
-      };
+      const reason = error instanceof HttpError
+        ? `facilitator_error_${error.status}`
+        : error instanceof Error && error.name === 'AbortError'
+          ? 'facilitator_timeout'
+          : error instanceof Error
+            ? error.message
+            : 'unexpected_verify_error';
+
+      return { isValid: false, invalidReason: reason };
     }
   }
 
   /**
-   * Settle a payment with the facilitator
-   *
-   * @param paymentSignatureHeader - Base64-encoded PAYMENT-SIGNATURE header value
-   * @param requirements - The payment requirements that were sent to the client
-   * @returns Settlement response with transaction signature on success
+   * Settle a payment with the facilitator.
+   * Retries on 5xx and network errors with exponential backoff.
    */
   async settlePayment(
     paymentSignatureHeader: string,
-    requirements: PaymentAccept
+    requirements: PaymentAccept,
   ): Promise<SettleResponse> {
     try {
       const paymentPayload = decodeBase64Json<PaymentSignature>(paymentSignatureHeader);
 
-      const settlePayload = {
-        x402Version: 2,
-        paymentPayload,
-        paymentRequirements: requirements,
-      };
-
-      const response = await fetch(`${this.facilitatorUrl}/settle`, {
+      const response = await this.fetchWithRetry(`${this.facilitatorUrl}/settle`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(settlePayload),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          x402Version: 2,
+          paymentPayload,
+          paymentRequirements: requirements,
+        }),
       });
 
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`Facilitator /settle returned ${response.status}:`, errorText);
         return {
           success: false,
           network: requirements.network,
@@ -200,16 +252,20 @@ export class FacilitatorClient {
       }
 
       const result = (await response.json()) as SettleResponse;
-      return {
-        ...result,
-        network: requirements.network,
-      };
+      return { ...result, network: requirements.network };
     } catch (error) {
-      console.error('Payment settlement failed:', error);
+      const reason = error instanceof HttpError
+        ? `facilitator_error_${error.status}`
+        : error instanceof Error && error.name === 'AbortError'
+          ? 'facilitator_timeout'
+          : error instanceof Error
+            ? error.message
+            : 'unexpected_settle_error';
+
       return {
         success: false,
         network: requirements.network,
-        errorReason: error instanceof Error ? error.message : 'unexpected_settle_error',
+        errorReason: reason,
       };
     }
   }
