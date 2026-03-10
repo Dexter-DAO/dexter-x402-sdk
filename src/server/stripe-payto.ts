@@ -217,5 +217,9 @@ export function stripePayTo(
     facilitatorUrl: 'https://x402.dexter.cash',
   };
 
+  // Guard: Stripe only supports Base networks. Throw early if misconfigured
+  // with multi-network middleware on non-Base chains.
+  (provider as any)._stripeNetwork = caip2Network;
+
   return provider;
 }

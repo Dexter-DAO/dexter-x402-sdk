@@ -191,11 +191,16 @@ export function x402AccessPass(config: X402AccessPassConfig): RequestHandler {
     facilitatorUrl,
     tiers: tierPrices,
     ratePerHour,
-    secret = crypto.randomBytes(32),
+    secret: explicitSecret,
     issuer = 'x402-access-pass',
     verbose = false,
     description,
   } = config;
+
+  const secret = explicitSecret ?? crypto.randomBytes(32);
+  if (!explicitSecret) {
+    console.warn('[x402:access-pass] No secret provided — access passes will be invalidated on server restart. Set `secret` for production use.');
+  }
 
   // Validate config
   if (!tierPrices && !ratePerHour) {

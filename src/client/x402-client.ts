@@ -30,7 +30,7 @@ import type {
   AccessPassClientConfig,
 } from '../types';
 import { X402Error } from '../types';
-import { createSolanaAdapter, createEvmAdapter, isSolanaWallet, isEvmWallet } from '../adapters';
+import { createSolanaAdapter, createEvmAdapter, isSolanaWallet, isEvmWallet, isKnownUSDC } from '../adapters';
 
 // Typed payment receipt — replaces the (response as any)._x402 pattern.
 // Uses a WeakMap so we don't mutate the Response object.
@@ -314,13 +314,7 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     // Validate fee payer (Solana)
     if (adapter.name === 'Solana' && !accept.extra?.feePayer) return null;
 
-    const USDC_MINTS = [
-      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-      '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
-      '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-      '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
-    ];
-    const decimals = accept.extra?.decimals ?? (USDC_MINTS.includes(accept.asset) ? 6 : undefined);
+    const decimals = accept.extra?.decimals ?? (isKnownUSDC(accept.asset) ? 6 : undefined);
     if (typeof decimals !== 'number') return null;
 
     const paymentAmount = accept.amount || accept.maxAmountRequired;
@@ -497,14 +491,8 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       );
     }
 
-    // Get decimals: from extra, or default to 6 for USDC
-    const USDC_MINTS = [
-      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // Solana mainnet
-      '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU', // Solana devnet
-      '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // Base mainnet
-      '0x036CbD53842c5426634e7929541eC2318f3dCF7e', // Base sepolia
-    ];
-    const decimals = accept.extra?.decimals ?? (USDC_MINTS.includes(accept.asset) ? 6 : undefined);
+    // Get decimals: from extra, or default to 6 for known USDC addresses
+    const decimals = accept.extra?.decimals ?? (isKnownUSDC(accept.asset) ? 6 : undefined);
     if (typeof decimals !== 'number') {
       throw new X402Error(
         'missing_decimals',

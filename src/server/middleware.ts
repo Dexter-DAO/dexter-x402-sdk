@@ -262,6 +262,18 @@ export function x402Middleware(config: X402MiddlewareConfig): RequestHandler {
   const servers = new Map<string, ReturnType<typeof createX402Server>>();
   for (const net of configuredNetworks) {
     const netPayTo = resolvePayToForNetwork(payTo, net);
+
+    // Guard: Stripe payTo only supports Base — throw early if misconfigured
+    if (typeof netPayTo === 'function' && (netPayTo as any)._stripeNetwork) {
+      const stripeNet = (netPayTo as any)._stripeNetwork as string;
+      if (net !== stripeNet) {
+        throw new Error(
+          `stripePayTo is configured for "${stripeNet}" but middleware includes network "${net}". ` +
+          `Stripe only supports Base deposit addresses. Use a static payTo for other chains.`
+        );
+      }
+    }
+
     servers.set(net, createX402Server({
       payTo: netPayTo,
       network: net,

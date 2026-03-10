@@ -70,7 +70,7 @@ Quality-verified endpoints (score 75+) get promoted in search results. The verif
 npm install @dexterai/x402
 ```
 
-### Client (Node.js) — NEW!
+### Client (Node.js)
 
 The simplest way to make x402 payments from scripts:
 
@@ -83,6 +83,20 @@ const x402Fetch = wrapFetch(fetch, {
 
 // That's it. 402 responses are handled automatically.
 const response = await x402Fetch('https://api.example.com/protected');
+```
+
+Check the payment receipt:
+
+```typescript
+import { wrapFetch, getPaymentReceipt } from '@dexterai/x402/client';
+
+const x402Fetch = wrapFetch(fetch, { walletPrivateKey: process.env.SOLANA_PRIVATE_KEY });
+const response = await x402Fetch('https://api.example.com/protected');
+
+const receipt = getPaymentReceipt(response);
+if (receipt) {
+  console.log('Paid:', receipt.transaction, 'on', receipt.network);
+}
 ```
 
 ### Client (Browser)
@@ -177,10 +191,21 @@ All networks supported by the [Dexter facilitator](https://x402.dexter.cash/supp
 Accept payments on multiple chains simultaneously:
 
 ```typescript
+// Same address across EVM chains
 app.get('/api/data', x402Middleware({
   payTo: '0xYourAddress',
   amount: '0.01',
   network: ['eip155:8453', 'eip155:137', 'eip155:42161', 'eip155:10'],
+}));
+
+// Different addresses per chain family
+app.get('/api/data', x402Middleware({
+  payTo: {
+    'solana:*': 'YourSolanaAddress...',
+    'eip155:*': '0xYourEvmAddress...',
+  },
+  amount: '0.01',
+  network: ['solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', 'eip155:8453', 'eip155:137'],
 }));
 ```
 

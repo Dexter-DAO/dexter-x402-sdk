@@ -16,7 +16,7 @@
  */
 
 import express from 'express';
-import { createX402Server, SOLANA_MAINNET_NETWORK, USDC_MINT } from '../src/server';
+import { x402Middleware } from '../src/server';
 
 // ============================================================================
 // Configuration
@@ -26,32 +26,11 @@ const PORT = process.env.PORT || 3000;
 const PAY_TO = process.env.X402_PAY_TO;
 
 if (!PAY_TO) {
-  console.error('❌ Missing X402_PAY_TO environment variable');
+  console.error('Missing X402_PAY_TO environment variable');
   console.error('   Export your Solana wallet address to receive payments:');
   console.error('   export X402_PAY_TO="YourSolanaWalletAddress"');
   process.exit(1);
 }
-
-// ============================================================================
-// x402 Server Setup
-// ============================================================================
-
-const x402 = createX402Server({
-  // Dexter's public facilitator (handles fee sponsorship + settlement)
-  facilitatorUrl: 'https://x402.dexter.cash',
-
-  // Solana mainnet
-  network: SOLANA_MAINNET_NETWORK,
-
-  // Your wallet to receive payments
-  payTo: PAY_TO,
-
-  // USDC on Solana
-  asset: {
-    address: USDC_MINT,
-    decimals: 6
-  },
-});
 
 // ============================================================================
 // Express App
@@ -60,106 +39,37 @@ const x402 = createX402Server({
 const app = express();
 app.use(express.json());
 
-// Middleware factory for requiring payment
-function requirePayment(amount: string, description: string) {
-  return async (
-    req: express.Request,
-    res: express.Response,
-    next: express.NextFunction
-  ) => {
-    // Check for payment signature
-    const paymentSignature = req.headers['payment-signature'] as string;
-
-    if (!paymentSignature) {
-      // No payment - return 402 with requirements
-      const requirements = await x402.buildRequirements({
-        amountAtomic: amount,
-        resourceUrl: req.originalUrl,
-        description,
-      });
-
-      res.setHeader('PAYMENT-REQUIRED', x402.encodeRequirements(requirements));
-      res.status(402).json({
-        error: 'Payment required',
-        amount: `$${(parseInt(amount) / 1_000_000).toFixed(2)} USDC`,
-      });
-      return;
-    }
-
-    // Verify and settle payment
-    try {
-      const verifyResult = await x402.verifyPayment(paymentSignature);
-
-      if (!verifyResult.isValid) {
-        res.status(402).json({
-          error: 'Invalid payment',
-          reason: verifyResult.invalidReason,
-        });
-        return;
-      }
-
-      const settleResult = await x402.settlePayment(paymentSignature);
-
-      if (!settleResult.success) {
-        res.status(402).json({
-          error: 'Payment failed',
-          reason: settleResult.errorReason,
-        });
-        return;
-      }
-
-      // Payment successful - attach tx to request for logging
-      (req as any).paymentTx = settleResult.transaction;
-      next();
-
-    } catch (error: any) {
-      console.error('Payment error:', error.message);
-      res.status(500).json({ error: 'Payment processing failed' });
-    }
-  };
-}
-
-// ============================================================================
-// Routes
-// ============================================================================
-
 // Free endpoint
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Paid endpoint - $0.05 USDC
-app.post(
-  '/api/premium',
-  requirePayment('50000', 'Premium API access'),
+// Paid endpoint - $0.01 USDC (one-liner protection)
+app.get('/api/basic',
+  x402Middleware({ payTo: PAY_TO, amount: '0.01', description: 'Basic API access' }),
   (req, res) => {
-    res.json({
-      success: true,
-      message: 'Thank you for your payment!',
-      paymentTx: (req as any).paymentTx,
-      data: {
-        // Your premium content here
-        secret: 'This is premium content only paying users can see.',
-        timestamp: new Date().toISOString(),
-      },
-    });
+    res.json({ data: 'Basic content', transaction: (req as any).x402?.transaction });
   }
 );
 
-// Paid endpoint - $0.10 USDC
-app.post(
-  '/api/super-premium',
-  requirePayment('100000', 'Super Premium API access'),
+// Paid endpoint - $0.05 USDC
+app.post('/api/premium',
+  x402Middleware({ payTo: PAY_TO, amount: '0.05', description: 'Premium API access' }),
   (req, res) => {
-    res.json({
-      success: true,
-      message: 'Thank you for your premium payment!',
-      paymentTx: (req as any).paymentTx,
-      data: {
-        secret: 'This is SUPER premium content!',
-        timestamp: new Date().toISOString(),
-      },
-    });
+    res.json({ data: 'Premium content', transaction: (req as any).x402?.transaction });
+  }
+);
+
+// Multi-chain endpoint - accept on Solana + Base + Polygon
+app.get('/api/multi-chain',
+  x402Middleware({
+    payTo: PAY_TO,
+    amount: '0.01',
+    network: ['solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', 'eip155:8453', 'eip155:137'],
+    description: 'Multi-chain API access',
+  }),
+  (req, res) => {
+    res.json({ data: 'Paid on any chain', network: (req as any).x402?.network });
   }
 );
 
@@ -168,14 +78,13 @@ app.post(
 // ============================================================================
 
 app.listen(PORT, () => {
-  console.log('🚀 @dexterai/x402 Server Example');
-  console.log('================================\n');
+  console.log(`@dexterai/x402 Server Example`);
   console.log(`Receiving payments at: ${PAY_TO}`);
   console.log(`Server running at: http://localhost:${PORT}\n`);
   console.log('Endpoints:');
-  console.log('  GET  /api/health        - Free (health check)');
-  console.log('  POST /api/premium       - $0.05 USDC');
-  console.log('  POST /api/super-premium - $0.10 USDC');
-  console.log('\nTest with:');
-  console.log(`  curl -X POST http://localhost:${PORT}/api/premium`);
+  console.log('  GET  /api/health       - Free');
+  console.log('  GET  /api/basic        - $0.01 USDC');
+  console.log('  POST /api/premium      - $0.05 USDC');
+  console.log('  GET  /api/multi-chain  - $0.01 USDC (Solana/Base/Polygon)');
+  console.log(`\nTest: curl http://localhost:${PORT}/api/basic`);
 });

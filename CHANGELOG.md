@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.8.0] - 2026-03-10
 
+### Breaking
+- **`createKeypairWallet` is now async** — Returns `Promise<KeypairWallet>` instead of `KeypairWallet`. You must `await` the result: `const wallet = await createKeypairWallet(key)`. This change was required for ESM compatibility (`require('bs58')` → `await import('bs58')`). `wrapFetch` handles this automatically — only direct callers are affected.
+
 ### Fixed
 - **Verify/settle amount bug** — Server was passing `amountAtomic: '0'` to the facilitator when verifying or settling payments with dynamic payTo (e.g., Stripe). Added an in-memory requirements cache that preserves the correct amount between the initial 402 response and the retry with payment. Falls back to extracting the amount from the payment header if the cache misses.
 - **ESM compatibility** — Replaced `require()` calls in `adapters/index.ts` and `keypair-wallet.ts` with ESM-compatible static imports and `await import()`. The package is `"type": "module"` and now works correctly in strict ESM environments.
+- **XSS in browser paywall** — HTML-escape all interpolated values (description, price, requestUrl) in the browser paywall page to prevent injection from malicious payment requirement fields.
+- **USDC decimal inference** — Client now recognizes USDC on all supported chains (Polygon, Arbitrum, Optimism, Avalanche, SKALE) for decimal inference, not just Solana and Base. Uses a shared `isKnownUSDC()` helper instead of hardcoded lists.
 - **Wrong facilitator URL in JSDoc** — Fixed `@default` annotations in middleware, wrap-fetch, and access-pass that said `x402-facilitator.dexter.cash` (wrong) instead of `x402.dexter.cash` (correct).
 - **Stripe type safety** — Stripe client, PaymentIntent response, and crypto options are now typed via `import('stripe')` instead of `any`.
 

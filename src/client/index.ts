@@ -29,7 +29,7 @@
  * ```typescript
  * import { createX402Client, createKeypairWallet } from '@dexterai/x402/client';
  *
- * const wallet = createKeypairWallet(process.env.SOLANA_PRIVATE_KEY!);
+ * const wallet = await createKeypairWallet(process.env.SOLANA_PRIVATE_KEY!);
  * const client = createX402Client({ wallets: { solana: wallet } });
  *
  * const response = await client.fetch('https://api.example.com/protected');
