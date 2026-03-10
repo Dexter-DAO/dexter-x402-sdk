@@ -35,22 +35,26 @@ import { toAtomicUnits, encodeBase64Json } from '../utils';
  */
 export interface X402MiddlewareConfig {
   /**
-   * Address to receive payments, or a dynamic provider function.
+   * Address to receive payments, or a dynamic provider function, or
+   * a map of network-specific addresses for multi-chain support.
    *
    * - **Static address**: Pass a Solana pubkey or EVM address string.
-   * - **Stripe**: Use `stripePayTo(process.env.STRIPE_SECRET_KEY)` to generate
-   *   per-request deposit addresses. Payments land in your Stripe Dashboard.
+   * - **Stripe**: Use `stripePayTo(process.env.STRIPE_SECRET_KEY)` for Base.
+   * - **Multi-chain map**: Keys are CAIP-2 networks or globs (`eip155:*`, `*`).
    *
    * @example
    * ```typescript
-   * // Static address
+   * // Single address (works on one network)
    * payTo: '0xYourAddress...'
    *
-   * // Stripe machine payments
-   * payTo: stripePayTo(process.env.STRIPE_SECRET_KEY)
+   * // Stripe on Base, direct wallet on other chains
+   * payTo: { 'eip155:8453': stripePayTo(key), '*': '0xYourAddress...' }
+   *
+   * // Solana + EVM
+   * payTo: { 'solana:*': 'SolAddr', 'eip155:*': '0xEvmAddr' }
    * ```
    */
-  payTo: string | PayToProvider;
+  payTo: string | PayToProvider | Record<string, string | PayToProvider>;
 
   /**
    * Payment amount in USD (e.g., '0.01' for 1 cent)
@@ -59,10 +63,22 @@ export interface X402MiddlewareConfig {
   amount: string;
 
   /**
-   * CAIP-2 network identifier
+   * CAIP-2 network identifier(s).
+   * Pass an array to accept payments on multiple chains simultaneously.
+   * The client picks whichever chain it has a wallet for.
+   *
    * @default 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp' (Solana mainnet)
+   *
+   * @example
+   * ```typescript
+   * // Single network
+   * network: 'eip155:8453'
+   *
+   * // Multiple EVM chains (same payTo address works for all)
+   * network: ['eip155:8453', 'eip155:137', 'eip155:42161']
+   * ```
    */
-  network?: string;
+  network?: string | string[];
 
   /**
    * Asset to accept
@@ -187,6 +203,30 @@ const USDC_DECIMALS = 6;
  * @param config - Middleware configuration
  * @returns Express middleware function
  */
+/**
+ * Resolve a payTo value for a specific network from the config.
+ * Supports: string, PayToProvider, or Record with glob matching.
+ */
+function resolvePayToForNetwork(
+  payTo: string | PayToProvider | Record<string, string | PayToProvider>,
+  network: string,
+): string | PayToProvider {
+  if (typeof payTo === 'string' || typeof payTo === 'function') return payTo;
+
+  // Exact match first
+  if (network in payTo) return payTo[network];
+
+  // Prefix glob: 'eip155:*' matches 'eip155:8453'
+  const prefix = network.split(':')[0];
+  const globKey = `${prefix}:*`;
+  if (globKey in payTo) return payTo[globKey];
+
+  // Default fallback
+  if ('*' in payTo) return payTo['*'];
+
+  throw new Error(`No payTo configured for network "${network}"`);
+}
+
 export function x402Middleware(config: X402MiddlewareConfig): RequestHandler {
   const {
     payTo,
@@ -202,23 +242,37 @@ export function x402Middleware(config: X402MiddlewareConfig): RequestHandler {
     getDescription,
   } = config;
 
-  // Read auto-configuration defaults from the provider (e.g., stripePayTo sets Base + Dexter facilitator)
-  const providerDefaults = typeof payTo !== 'string' ? payTo._x402Defaults : undefined;
-  const network = config.network ?? providerDefaults?.network ?? DEFAULT_NETWORK;
-  const facilitatorUrl = config.facilitatorUrl ?? providerDefaults?.facilitatorUrl;
-
   const log = verbose
     ? console.log.bind(console, '[x402:middleware]')
     : () => {};
 
-  // Create server instance (reused across requests)
-  const server = createX402Server({
-    payTo,
-    network,
-    asset,
-    facilitatorUrl,
-    defaultTimeoutSeconds: timeoutSeconds,
-  });
+  // Resolve networks: single string, array, or inferred from provider defaults
+  const singleProviderDefaults = (typeof payTo === 'function') ? payTo._x402Defaults : undefined;
+  const facilitatorUrl = config.facilitatorUrl ?? singleProviderDefaults?.facilitatorUrl;
+
+  const configuredNetworks: string[] = (() => {
+    if (config.network) {
+      return Array.isArray(config.network) ? config.network : [config.network];
+    }
+    if (singleProviderDefaults?.network) return [singleProviderDefaults.network];
+    return [DEFAULT_NETWORK];
+  })();
+
+  // Create one server per network (reused across requests)
+  const servers = new Map<string, ReturnType<typeof createX402Server>>();
+  for (const net of configuredNetworks) {
+    const netPayTo = resolvePayToForNetwork(payTo, net);
+    servers.set(net, createX402Server({
+      payTo: netPayTo,
+      network: net,
+      asset,
+      facilitatorUrl,
+      defaultTimeoutSeconds: timeoutSeconds,
+    }));
+  }
+
+  // Primary server for verify/settle when we can't determine network from header
+  const primaryServer = servers.get(configuredNetworks[0])!;
 
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -250,8 +304,24 @@ export function x402Middleware(config: X402MiddlewareConfig): RequestHandler {
           timeoutSeconds,
         };
 
-        const requirements = await server.buildRequirements(requirementsOptions);
-        const encoded = server.encodeRequirements(requirements);
+        // Build requirements from all network servers and merge accepts arrays
+        const allAccepts: import('../types').PaymentAccept[] = [];
+        let requirements: import('../types').PaymentRequired | null = null;
+        for (const [, srv] of servers) {
+          try {
+            const reqs = await srv.buildRequirements(requirementsOptions);
+            allAccepts.push(...reqs.accepts);
+            if (!requirements) requirements = reqs;
+          } catch (e) {
+            log('Failed to build requirements for a network:', e);
+          }
+        }
+        if (!requirements || allAccepts.length === 0) {
+          res.status(500).json({ error: 'Failed to build payment requirements' });
+          return;
+        }
+        requirements = { ...requirements, accepts: allAccepts };
+        const encoded = primaryServer.encodeRequirements(requirements);
 
         res.setHeader('PAYMENT-REQUIRED', encoded);
         res.status(402).json({
@@ -262,11 +332,22 @@ export function x402Middleware(config: X402MiddlewareConfig): RequestHandler {
         return;
       }
 
-      // Payment signature present - verify and settle
+      // Payment signature present - verify and settle.
+      // Determine which network server to use from the payment header.
       log('Payment signature received, verifying...');
 
-      // Verify payment
-      const verifyResult = await server.verifyPayment(paymentSignature);
+      let targetServer = primaryServer;
+      try {
+        const decoded = JSON.parse(Buffer.from(paymentSignature, 'base64').toString());
+        const paymentNetwork = decoded?.accepted?.network as string | undefined;
+        if (paymentNetwork && servers.has(paymentNetwork)) {
+          targetServer = servers.get(paymentNetwork)!;
+        }
+      } catch {
+        // Fall through to primary server
+      }
+
+      const verifyResult = await targetServer.verifyPayment(paymentSignature);
       
       if (!verifyResult.isValid) {
         log('Payment verification failed:', verifyResult.invalidReason);
@@ -279,8 +360,7 @@ export function x402Middleware(config: X402MiddlewareConfig): RequestHandler {
 
       log('Payment verified, settling...');
 
-      // Settle payment
-      const settleResult = await server.settlePayment(paymentSignature);
+      const settleResult = await targetServer.settlePayment(paymentSignature);
 
       if (!settleResult.success) {
         log('Payment settlement failed:', settleResult.errorReason);
@@ -293,18 +373,20 @@ export function x402Middleware(config: X402MiddlewareConfig): RequestHandler {
 
       log('Payment settled:', settleResult.transaction);
 
+      const settledNetwork = settleResult.network || configuredNetworks[0];
+
       // Attach payment info to request
       (req as X402Request).x402 = {
         transaction: settleResult.transaction!,
         payer: verifyResult.payer ?? '',
-        network,
+        network: settledNetwork,
       };
 
       // Set PAYMENT-RESPONSE header per x402 v2 spec
       const paymentResponseData: Record<string, unknown> = {
         success: true,
         transaction: settleResult.transaction!,
-        network,
+        network: settledNetwork,
         payer: verifyResult.payer ?? '',
       };
       if (settleResult.extensions) {
