@@ -32,6 +32,35 @@ import type {
 import { X402Error } from '../types';
 import { createSolanaAdapter, createEvmAdapter, isSolanaWallet, isEvmWallet } from '../adapters';
 
+// Typed payment receipt — replaces the (response as any)._x402 pattern.
+// Uses a WeakMap so we don't mutate the Response object.
+const receiptStore = new WeakMap<Response, PaymentReceipt>();
+
+/**
+ * Payment receipt attached to a successful x402 response.
+ * Access via `getPaymentReceipt(response)`.
+ */
+export interface PaymentReceipt {
+  /** Whether settlement succeeded */
+  success?: boolean;
+  /** Transaction signature/hash */
+  transaction?: string;
+  /** CAIP-2 network */
+  network?: string;
+  /** Payer address */
+  payer?: string;
+  /** Protocol extensions (e.g., sponsored-access recommendations) */
+  extensions?: Record<string, unknown>;
+}
+
+/**
+ * Get the x402 payment receipt from a response, or undefined if none.
+ * Typed alternative to the legacy `(response as any)._x402` pattern.
+ */
+export function getPaymentReceipt(response: Response): PaymentReceipt | undefined {
+  return receiptStore.get(response);
+}
+
 /**
  * Client configuration
  */
@@ -601,12 +630,14 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       );
     }
 
-    // Decode PAYMENT-RESPONSE header and attach to response for programmatic access
+    // Decode PAYMENT-RESPONSE header and store as typed receipt
     const paymentResponseHeader = retryResponse.headers.get('PAYMENT-RESPONSE');
     if (paymentResponseHeader) {
       try {
-        const receipt = JSON.parse(atob(paymentResponseHeader));
-        (retryResponse as any)._x402 = receipt;
+        const receipt: PaymentReceipt = JSON.parse(atob(paymentResponseHeader));
+        receiptStore.set(retryResponse, receipt);
+        // Backwards compat: keep the legacy property for existing consumers
+        (retryResponse as unknown as Record<string, unknown>)['_x402'] = receipt;
         if (receipt.extensions) {
           log('Settlement extensions:', Object.keys(receipt.extensions).join(', '));
         }

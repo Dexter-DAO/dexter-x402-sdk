@@ -37,8 +37,8 @@
  */
 
 // Main client
-export { createX402Client } from './x402-client';
-export type { X402ClientConfig, X402Client } from './x402-client';
+export { createX402Client, getPaymentReceipt } from './x402-client';
+export type { X402ClientConfig, X402Client, PaymentReceipt } from './x402-client';
 
 // Node.js helpers
 export { wrapFetch } from './wrap-fetch';

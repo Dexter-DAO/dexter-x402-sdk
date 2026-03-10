@@ -49,8 +49,14 @@ export {
   isEvmWallet,
   BASE_MAINNET,
   BASE_SEPOLIA,
-  ETHEREUM_MAINNET,
   ARBITRUM_ONE,
+  POLYGON,
+  OPTIMISM,
+  AVALANCHE,
+  SKALE_BASE,
+  SKALE_BASE_SEPOLIA,
+  ETHEREUM_MAINNET,
+  USDC_ADDRESSES,
 } from './evm';
 export type { EvmWallet } from './evm';
 

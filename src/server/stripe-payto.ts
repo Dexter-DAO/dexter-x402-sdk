@@ -102,17 +102,17 @@ export function stripePayTo(
   const caip2Network = CAIP2_NETWORKS[networkName] ?? 'eip155:8453';
   const apiVersion = config.apiVersion ?? '2026-01-28.clover';
 
-  // Lazy-loaded Stripe client (avoids import errors when stripe isn't installed)
-  let stripeClient: any = null;
+  // Lazy-loaded Stripe client (avoids import errors when stripe isn't installed).
+  // Typed via import('stripe') so we get real Stripe SDK types.
+  let stripeClient: import('stripe').default | null = null;
 
-  async function getStripe(): Promise<any> {
+  async function getStripe(): Promise<import('stripe').default> {
     if (stripeClient) return stripeClient;
 
     try {
-      // Dynamic import so stripe is not required at bundle time
       const { default: Stripe } = await import('stripe');
       stripeClient = new Stripe(config.secretKey, {
-        apiVersion: apiVersion as any,
+        apiVersion: apiVersion as import('stripe').Stripe.LatestApiVersion,
         appInfo: {
           name: '@dexterai/x402',
           url: 'https://dexter.cash/sdk',
@@ -166,23 +166,28 @@ export function stripePayTo(
     const amountAtomic = context.amountAtomic ? parseInt(context.amountAtomic, 10) : 10000;
     const amountInCents = Math.max(1, Math.round(amountAtomic / Math.pow(10, USDC_DECIMALS - 2)));
 
+    // Stripe's crypto payment types aren't fully in the base SDK typedefs yet.
+    // We pass the create params through a Record to avoid type errors on
+    // crypto-specific fields (payment_method_types, payment_method_options).
     const paymentIntent = await stripe.paymentIntents.create({
       amount: amountInCents,
       currency: 'usd',
       payment_method_types: ['crypto'],
-      payment_method_data: {
-        type: 'crypto',
-      },
+      payment_method_data: { type: 'crypto' },
       payment_method_options: {
-        crypto: {
-          mode: 'custom',
-        },
-      },
+        crypto: { mode: 'custom' },
+      } as Record<string, unknown>,
       confirm: true,
     });
 
-    // Extract the deposit address from the PaymentIntent's next_action
-    const nextAction = paymentIntent.next_action as any;
+    // Extract the deposit address from the PaymentIntent's next_action.
+    // Stripe's crypto deposit types aren't in the base SDK yet, so we use
+    // a structural cast for the crypto-specific fields.
+    const nextAction = paymentIntent.next_action as {
+      crypto_collect_deposit_details?: {
+        deposit_addresses?: Record<string, { address?: string }>;
+      };
+    } | null;
     if (!nextAction?.crypto_collect_deposit_details) {
       throw new Error(
         'Stripe PaymentIntent did not return crypto deposit details. ' +

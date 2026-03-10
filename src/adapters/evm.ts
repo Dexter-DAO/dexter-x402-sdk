@@ -9,12 +9,20 @@ import type { ChainAdapter, AdapterConfig, SignedTransaction } from './types';
 import type { PaymentAccept } from '../types';
 
 /**
- * CAIP-2 network identifiers for EVM chains
+ * CAIP-2 network identifiers for EVM chains.
+ * Mirrors dexter-facilitator/src/config/chains.ts — update both when adding chains.
  */
 export const BASE_MAINNET = 'eip155:8453';
 export const BASE_SEPOLIA = 'eip155:84532';
-export const ETHEREUM_MAINNET = 'eip155:1';
 export const ARBITRUM_ONE = 'eip155:42161';
+export const POLYGON = 'eip155:137';
+export const OPTIMISM = 'eip155:10';
+export const AVALANCHE = 'eip155:43114';
+export const SKALE_BASE = 'eip155:1187947933';
+export const SKALE_BASE_SEPOLIA = 'eip155:324705682';
+
+/** @deprecated Not supported by the Dexter facilitator. Use BASE_MAINNET for EVM payments. */
+export const ETHEREUM_MAINNET = 'eip155:1';
 
 /**
  * Chain IDs by CAIP-2 network
@@ -22,28 +30,46 @@ export const ARBITRUM_ONE = 'eip155:42161';
 const CHAIN_IDS: Record<string, number> = {
   [BASE_MAINNET]: 8453,
   [BASE_SEPOLIA]: 84532,
-  [ETHEREUM_MAINNET]: 1,
   [ARBITRUM_ONE]: 42161,
+  [POLYGON]: 137,
+  [OPTIMISM]: 10,
+  [AVALANCHE]: 43114,
+  [SKALE_BASE]: 1187947933,
+  [SKALE_BASE_SEPOLIA]: 324705682,
+  [ETHEREUM_MAINNET]: 1,
 };
 
 /**
- * Default RPC URLs
- * Base mainnet uses Dexter's RPC proxy for reliability and zero-config setup
+ * Default RPC URLs.
+ * Base mainnet uses Dexter's RPC proxy for reliability and zero-config setup.
+ * Source of truth: dexter-facilitator/src/config/chains.ts
  */
 const DEFAULT_RPC_URLS: Record<string, string> = {
   [BASE_MAINNET]: 'https://api.dexter.cash/api/base/rpc',
   [BASE_SEPOLIA]: 'https://sepolia.base.org',
-  [ETHEREUM_MAINNET]: 'https://eth.llamarpc.com',
   [ARBITRUM_ONE]: 'https://arb1.arbitrum.io/rpc',
+  [POLYGON]: 'https://polygon-rpc.com',
+  [OPTIMISM]: 'https://mainnet.optimism.io',
+  [AVALANCHE]: 'https://api.avax.network/ext/bc/C/rpc',
+  [SKALE_BASE]: 'https://skale-base.skalenodes.com/v1/base',
+  [SKALE_BASE_SEPOLIA]: 'https://base-sepolia-testnet.skalenodes.com/v1/jubilant-horrible-ancha',
+  [ETHEREUM_MAINNET]: 'https://eth.llamarpc.com',
 };
 
 /**
- * USDC addresses by chain (for reference)
+ * USDC contract addresses by chain.
+ * Source of truth: dexter-facilitator/src/config/chains.ts
  */
 export const USDC_ADDRESSES: Record<string, string> = {
   [BASE_MAINNET]: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-  [ETHEREUM_MAINNET]: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+  [BASE_SEPOLIA]: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
   [ARBITRUM_ONE]: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
+  [POLYGON]: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
+  [OPTIMISM]: '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85',
+  [AVALANCHE]: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E',
+  [SKALE_BASE]: '0x85889c8c714505E0c94b30fcfcF64fE3Ac8FCb20',
+  [SKALE_BASE_SEPOLIA]: '0x2e08028E3C4c2356572E096d8EF835cD5C6030bD',
+  [ETHEREUM_MAINNET]: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
 };
 
 /**
