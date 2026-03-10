@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-03-10
+
+### Fixed
+- **Verify/settle amount bug** — Server was passing `amountAtomic: '0'` to the facilitator when verifying or settling payments with dynamic payTo (e.g., Stripe). Added an in-memory requirements cache that preserves the correct amount between the initial 402 response and the retry with payment. Falls back to extracting the amount from the payment header if the cache misses.
+- **ESM compatibility** — Replaced `require()` calls in `adapters/index.ts` and `keypair-wallet.ts` with ESM-compatible static imports and `await import()`. The package is `"type": "module"` and now works correctly in strict ESM environments.
+- **Wrong facilitator URL in JSDoc** — Fixed `@default` annotations in middleware, wrap-fetch, and access-pass that said `x402-facilitator.dexter.cash` (wrong) instead of `x402.dexter.cash` (correct).
+- **Stripe type safety** — Stripe client, PaymentIntent response, and crypto options are now typed via `import('stripe')` instead of `any`.
+
+### Added
+- **Multi-network middleware** — `x402Middleware` now accepts `network: string | string[]` and `payTo: Record<string, string | PayToProvider>` with glob matching (`eip155:*`, `solana:*`, `*`). Endpoints can accept payments on all chains simultaneously. The client picks whichever chain it has a wallet for.
+- **Full chain parity with facilitator** — EVM adapter now supports all 10 networks from the Dexter facilitator: Base, Polygon, Arbitrum, Optimism, Avalanche, SKALE Europa (mainnet + testnet), and Base Sepolia. Ethereum mainnet is deprecated (not in facilitator).
+- **Resilient facilitator client** — `FacilitatorClient` now retries on 5xx and network errors with exponential backoff (3 attempts, 500ms/1s/2s). All requests have a 10s timeout. Both limits are configurable via `FacilitatorClientConfig`.
+- **`getPaymentReceipt(response)`** — Typed helper (backed by `WeakMap`) replaces the `(response as any)._x402` pattern. Exported from `@dexterai/x402/client`.
+- **`@dexterai/x402-ads-types`** — Added as an optional peer dependency for typed sponsored-access extensions. No inlining; single source of truth.
+- **New chain constants** — Exported `POLYGON`, `OPTIMISM`, `AVALANCHE`, `SKALE_BASE`, `SKALE_BASE_SEPOLIA`, `USDC_ADDRESSES` from `@dexterai/x402/adapters`.
+
+## [1.7.2] - 2026-02-28
+
+### Added
+- **Sponsored access support** — Server middleware accepts `sponsoredAccess: true` config. Reads `extensions["sponsored-access"]` from the facilitator's settlement response and injects `_x402_sponsored` into the JSON response body.
+- `SettleResponse.extensions` field for protocol extensions
+
+## [1.7.1] - 2026-02-25
+
+### Fixed
+- Added `@types/aws-lambda` to fix DTS build errors
+- Updated npm metadata and package description
+
+## [1.7.0] - 2026-02-20
+
+### Added
+- OpenDexter marketplace auto-discovery section in README
+- Updated header with marketplace links
+
+## [1.6.6] - 2026-02-12
+
+### Fixed
+- Unicode-safe base64 encoding for server-side `btoa`/`atob`
+
 ## [1.6.5] - 2026-02-10
 
 ### Fixed
