@@ -23,10 +23,15 @@ export interface GenericWallet {
 }
 
 /**
- * Result of building and signing a transaction
+ * Result of building and signing a transaction.
+ *
+ * **Internal adapter return type.** The client remaps these fields before
+ * sending to the facilitator — the wire payload uses `payload.transaction`
+ * (Solana) or `payload.authorization + payload.signature` (EVM), not
+ * `serialized` directly.  See {@link ../client/x402-client.ts} for the mapping.
  */
 export interface SignedTransaction {
-  /** Base64 or hex encoded transaction ready for payload */
+  /** Base64 (Solana) or JSON-stringified (EVM) transaction — internal only, not the wire field name */
   serialized: string;
   /** Transaction signature/hash if available before broadcast */
   signature?: string;
