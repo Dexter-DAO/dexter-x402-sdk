@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.2] - 2026-03-11
+
+### Fixed
+- **`getFeePayer()` throws on EVM networks** — `FacilitatorClient.getFeePayer()` required a `feePayer` field that only exists for SVM networks. Now returns `undefined` for EVM instead of throwing. Only throws if the network isn't supported at all.
+
+## [1.8.1] - 2026-03-11
+
+### Fixed
+- **Server SDK crashes on EVM networks** — `createX402Server()` threw "Facilitator does not provide feePayer" when used with any EVM network (Base, Polygon, SKALE, etc.) because `getNetworkExtra()` unconditionally required a `feePayer` field from the facilitator's `/supported` response. That field only exists for Solana. The check is now SVM-only; EVM networks pass through `decimals` and EIP-712 fields without it.
+
 ## [1.8.0] - 2026-03-10
 
 ### Breaking
