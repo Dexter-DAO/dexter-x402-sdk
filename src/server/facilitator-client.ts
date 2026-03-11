@@ -154,19 +154,19 @@ export class FacilitatorClient {
   /**
    * Get the fee payer address for a specific network
    */
-  async getFeePayer(network: string): Promise<string> {
+  async getFeePayer(network: string): Promise<string | undefined> {
     const supported = await this.getSupported();
     const kind = supported.kinds.find(
       (k) => k.x402Version === 2 && k.scheme === 'exact' && k.network === network,
     );
 
-    if (!kind?.extra?.feePayer) {
+    if (!kind) {
       throw new Error(
-        `Facilitator does not support network "${network}" with scheme "exact", or feePayer not provided`,
+        `Facilitator does not support network "${network}" with scheme "exact"`,
       );
     }
 
-    return kind.extra.feePayer;
+    return kind.extra?.feePayer;
   }
 
   /**
