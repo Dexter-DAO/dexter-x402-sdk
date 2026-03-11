@@ -229,16 +229,17 @@ export function createX402Server(config: X402ServerConfig): X402Server {
       cachedExtra = await facilitator.getNetworkExtra(network);
     }
 
-    if (!cachedExtra?.feePayer) {
+    const isSvm = network.startsWith('solana:');
+
+    if (isSvm && !cachedExtra?.feePayer) {
       throw new Error(`Facilitator does not provide feePayer for network "${network}"`);
     }
 
     return {
-      feePayer: cachedExtra.feePayer,
-      decimals: cachedExtra.decimals ?? asset.decimals,
-      // Include any additional EIP-712 data for EVM chains
-      name: cachedExtra.name,
-      version: cachedExtra.version,
+      ...(cachedExtra?.feePayer ? { feePayer: cachedExtra.feePayer } : {}),
+      decimals: cachedExtra?.decimals ?? asset.decimals,
+      name: cachedExtra?.name,
+      version: cachedExtra?.version,
     };
   }
 
