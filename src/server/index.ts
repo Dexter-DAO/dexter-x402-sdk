@@ -68,7 +68,7 @@ export { x402Middleware } from './middleware';
 export type { X402MiddlewareConfig, X402Request } from './middleware';
 
 // Browser support -- renders HTML paywall for browser 402 responses
-export { x402BrowserSupport } from './browser-support';
+export { x402BrowserSupport, escapeHtml } from './browser-support';
 export type { X402BrowserSupportConfig } from './browser-support';
 
 // Access pass middleware

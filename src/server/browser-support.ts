@@ -44,7 +44,7 @@ export interface X402BrowserSupportConfig {
 }
 
 /** Escape HTML to prevent XSS from untrusted payment requirement fields */
-function esc(s: string): string {
+export function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
@@ -346,7 +346,7 @@ function generatePaywallHtml(
       : '';
 
   const endpointSection = config.showEndpoint
-    ? `<div class="endpoint"><code>${esc(method)} ${esc(requestUrl)}</code></div>`
+    ? `<div class="endpoint"><code>${escapeHtml(method)} ${escapeHtml(requestUrl)}</code></div>`
     : '';
 
   return `<!DOCTYPE html>
@@ -354,16 +354,16 @@ function generatePaywallHtml(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(config.title)} — ${esc(price)} USDC</title>
+<title>${escapeHtml(config.title)} — ${escapeHtml(price)} USDC</title>
 <style>${DEXTER_STYLES}${PAY_BUTTON_STYLES}</style>
 </head>
 <body>
 <div class="card">
   <div class="crest">${DEXTER_CREST_SVG}</div>
-  <h1>${esc(config.title)}</h1>
-  <p class="desc">${esc(description)}</p>
-  <div class="price">${USDC_ICON_SVG}<span id="price-value">${esc(price)}</span></div>
-  <div class="chain">${esc(chainName)}${chainName ? ' network' : ''}</div>
+  <h1>${escapeHtml(config.title)}</h1>
+  <p class="desc">${escapeHtml(description)}</p>
+  <div class="price">${USDC_ICON_SVG}<span id="price-value">${escapeHtml(price)}</span></div>
+  <div class="chain">${escapeHtml(chainName)}${chainName ? ' network' : ''}</div>
   ${endpointSection}
 
   <div id="pay-section" class="pay-section" style="display:none">

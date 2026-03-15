@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.3] - 2026-03-15
+
+### Added
+- **52 unit tests** (up from 6) covering dynamic pricing HMAC validation, amount conversion edge cases, network detection, XSS escaping, USDC detection across all chains, v2 type compliance, sponsored access helpers, and X402Error behavior.
+- **`escapeHtml()` exported** from `@dexterai/x402/server` — the XSS escape function is now public and tested for consumers who render payment data in HTML.
+
 ## [1.9.2] - 2026-03-15
 
 ### Breaking
