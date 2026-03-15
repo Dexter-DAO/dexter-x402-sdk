@@ -15,7 +15,7 @@ describe('isKnownUSDC', () => {
   });
 
   it('recognizes all EVM USDC addresses from the registry', () => {
-    for (const [chain, addr] of Object.entries(USDC_ADDRESSES)) {
+    for (const addr of Object.values(USDC_ADDRESSES)) {
       expect(isKnownUSDC(addr)).toBe(true);
     }
   });
