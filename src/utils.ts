@@ -58,6 +58,16 @@ export function fromAtomicUnits(
  */
 export type ChainFamily = 'solana' | 'evm' | 'unknown';
 
+/** Check if a CAIP-2 network identifier is a Solana network */
+export function isSolanaNetwork(network: string): boolean {
+  return network.startsWith('solana:') || network === 'solana';
+}
+
+/** Check if a CAIP-2 network identifier is an EVM network */
+export function isEvmNetwork(network: string): boolean {
+  return network.startsWith('eip155:') || ['base', 'ethereum', 'arbitrum'].includes(network);
+}
+
 /**
  * Get the chain family from a CAIP-2 network identifier
  *
@@ -71,12 +81,8 @@ export type ChainFamily = 'solana' | 'evm' | 'unknown';
  * ```
  */
 export function getChainFamily(network: string): ChainFamily {
-  if (network.startsWith('solana:') || network === 'solana') {
-    return 'solana';
-  }
-  if (network.startsWith('eip155:') || ['base', 'ethereum', 'arbitrum'].includes(network)) {
-    return 'evm';
-  }
+  if (isSolanaNetwork(network)) return 'solana';
+  if (isEvmNetwork(network)) return 'evm';
   return 'unknown';
 }
 

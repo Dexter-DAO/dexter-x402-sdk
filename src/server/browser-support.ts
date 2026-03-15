@@ -446,6 +446,8 @@ export function x402BrowserSupport(config: X402BrowserSupportConfig = {}): Reque
             rpcUrl,
             bodyStr,
           );
+          res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src *; img-src data:; frame-ancestors 'none'");
+          res.setHeader('X-Content-Type-Options', 'nosniff');
           res.status(402).type('html').send(html);
           return res;
         }

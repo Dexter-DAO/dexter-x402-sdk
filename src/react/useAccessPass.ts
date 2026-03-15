@@ -4,6 +4,11 @@
  * Dedicated hook for managing the access pass lifecycle:
  * tier discovery, pass purchase, token caching, and auto-fetch with pass.
  *
+ * **Storage:** Access pass JWTs are stored in `sessionStorage` (cleared on browser close).
+ * This means passes don't persist across tabs or sessions. The JWT is accessible to
+ * any JavaScript on the page — ensure your site is free of XSS vulnerabilities.
+ * The server re-verifies the JWT signature on every request regardless.
+ *
  * @example
  * ```tsx
  * import { useAccessPass } from '@dexterai/x402/react';

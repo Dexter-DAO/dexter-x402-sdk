@@ -116,6 +116,25 @@ export interface X402ClientConfig {
    * over per-request payments. One payment grants unlimited requests for a duration.
    */
   accessPass?: AccessPassClientConfig;
+
+  /**
+   * Called before signing a payment. Return true to proceed, false to reject.
+   * Use for budget controls, confirmation prompts, or logging.
+   *
+   * @example
+   * ```typescript
+   * const client = createX402Client({
+   *   wallets,
+   *   onPaymentRequired: async (requirements) => {
+   *     const amount = Number(requirements.amount) / 1e6;
+   *     if (amount > 1.0) return false; // Reject payments over $1
+   *     console.log(`Paying $${amount} on ${requirements.network}`);
+   *     return true;
+   *   },
+   * });
+   * ```
+   */
+  onPaymentRequired?: (requirements: PaymentAccept) => boolean | Promise<boolean>;
 }
 
 /**
@@ -152,6 +171,7 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     fetch: customFetch = globalThis.fetch,
     verbose = false,
     accessPass: accessPassConfig,
+    onPaymentRequired,
   } = config;
 
   const log = verbose
@@ -321,13 +341,18 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     const paymentAmount = accept.amount ?? accept.maxAmountRequired;
     if (!paymentAmount) return null;
 
-    // Check balance
+    // Check balance (skip on RPC failure — let the chain reject if insufficient)
     const rpcUrl = getRpcUrl(accept.network, adapter);
-    const balance = await adapter.getBalance(accept, wallet, rpcUrl);
-    const requiredAmount = Number(paymentAmount) / Math.pow(10, decimals);
-    if (balance < requiredAmount) {
-      throw new X402Error('insufficient_balance',
-        `Insufficient balance for access pass. Have $${balance.toFixed(4)}, need $${requiredAmount.toFixed(4)}`);
+    try {
+      const balance = await adapter.getBalance(accept, wallet, rpcUrl);
+      const requiredAmount = Number(paymentAmount) / Math.pow(10, decimals);
+      if (balance < requiredAmount) {
+        throw new X402Error('insufficient_balance',
+          `Insufficient balance for access pass. Have $${balance.toFixed(4)}, need $${requiredAmount.toFixed(4)}`);
+      }
+    } catch (err) {
+      if (err instanceof X402Error) throw err; // Re-throw insufficient_balance
+      // RPC errors: skip pre-check, attempt the transaction anyway
     }
 
     // Build and sign transaction
@@ -344,10 +369,20 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     const originalUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     let resolvedResource: unknown = requirements.resource;
     if (typeof requirements.resource === 'string') {
-      try { resolvedResource = new URL(requirements.resource, originalUrl).toString(); } catch {}
+      try {
+        const resolved = new URL(requirements.resource, originalUrl);
+        if (['http:', 'https:'].includes(resolved.protocol)) {
+          resolvedResource = resolved.toString();
+        }
+      } catch {}
     } else if (requirements.resource && typeof requirements.resource === 'object' && 'url' in requirements.resource) {
       const rObj = requirements.resource as { url: string; [key: string]: unknown };
-      try { resolvedResource = { ...rObj, url: new URL(rObj.url, originalUrl).toString() }; } catch {}
+      try {
+        const resolved = new URL(rObj.url, originalUrl);
+        if (['http:', 'https:'].includes(resolved.protocol)) {
+          resolvedResource = { ...rObj, url: resolved.toString() };
+        }
+      } catch {}
     }
 
     const paymentSignature = {
@@ -515,20 +550,33 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       );
     }
 
-    // Check balance before signing
+    // Check balance before signing (skip on RPC failure — let the chain reject if insufficient)
     const rpcUrl = getRpcUrl(accept.network, adapter);
     log('Checking balance...');
-    const balance = await adapter.getBalance(accept, wallet, rpcUrl);
-    const requiredAmount = Number(paymentAmount) / Math.pow(10, decimals);
-    
-    if (balance < requiredAmount) {
-      const network = adapter.name === 'EVM' ? 'Base' : 'Solana';
-      throw new X402Error(
-        'insufficient_balance',
-        `Insufficient USDC balance on ${network}. Have $${balance.toFixed(4)}, need $${requiredAmount.toFixed(4)}`
-      );
+    try {
+      const balance = await adapter.getBalance(accept, wallet, rpcUrl);
+      const requiredAmount = Number(paymentAmount) / Math.pow(10, decimals);
+
+      if (balance < requiredAmount) {
+        const network = adapter.name === 'EVM' ? 'Base' : 'Solana';
+        throw new X402Error(
+          'insufficient_balance',
+          `Insufficient USDC balance on ${network}. Have $${balance.toFixed(4)}, need $${requiredAmount.toFixed(4)}`
+        );
+      }
+      log(`Balance OK: $${balance.toFixed(4)} >= $${requiredAmount.toFixed(4)}`);
+    } catch (err) {
+      if (err instanceof X402Error) throw err;
+      log('Balance check failed (RPC error), proceeding with transaction attempt');
     }
-    log(`Balance OK: $${balance.toFixed(4)} >= $${requiredAmount.toFixed(4)}`);
+
+    // Pre-payment inspection hook — let caller approve or reject
+    if (onPaymentRequired) {
+      const approved = await onPaymentRequired(accept);
+      if (!approved) {
+        throw new X402Error('payment_rejected', 'Payment rejected by onPaymentRequired callback');
+      }
+    }
 
     // Build and sign transaction
     log('Building transaction...');

@@ -84,21 +84,23 @@ const USDC_DECIMALS = 6;
  * When the agent sends USDC to that address, Stripe auto-captures the payment.
  * Payments appear in your Stripe Dashboard like any other transaction.
  *
+ * **Important: Stripe crypto deposits only support Base (mainnet and Sepolia).**
+ * This provider cannot be used with Solana, Polygon, Arbitrum, or other networks.
+ * For multi-chain endpoints, use `stripePayTo` for Base and a static address for other chains:
+ *
+ * ```typescript
+ * x402Middleware({
+ *   payTo: {
+ *     'eip155:8453': stripePayTo('sk_...'),      // Base → Stripe
+ *     'solana:*': 'YourSolanaAddress...',         // Solana → direct
+ *     'eip155:*': '0xYourEvmAddress...',          // Other EVM → direct
+ *   },
+ *   network: ['eip155:8453', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', 'eip155:137'],
+ * })
+ * ```
+ *
  * @param secretKeyOrConfig - Stripe secret key string, or full config object
  * @returns A PayToProvider function with auto-configuration defaults
- *
- * @example Minimal usage
- * ```typescript
- * const provider = stripePayTo('sk_test_...');
- * ```
- *
- * @example With config
- * ```typescript
- * const provider = stripePayTo({
- *   secretKey: 'sk_test_...',
- *   network: 'base-sepolia',  // testnet
- * });
- * ```
  */
 export function stripePayTo(
   secretKeyOrConfig: string | StripePayToConfig,

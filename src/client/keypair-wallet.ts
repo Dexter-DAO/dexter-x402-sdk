@@ -24,6 +24,9 @@
 
 import { Keypair, VersionedTransaction, Transaction } from '@solana/web3.js';
 
+/** Symbol key for the underlying Keypair — prevents accidental exposure via console.log or JSON.stringify */
+const KEYPAIR_SYMBOL = Symbol.for('x402:keypair');
+
 /**
  * Keypair wallet interface (compatible with SDK's SolanaWallet)
  */
@@ -32,9 +35,22 @@ export interface KeypairWallet {
   publicKey: { toBase58(): string };
   /** Sign a transaction */
   signTransaction<T extends Transaction | VersionedTransaction>(tx: T): Promise<T>;
-  /** Get the underlying keypair (for advanced use) */
+  /**
+   * Get the underlying Keypair. Accessed via Symbol to prevent accidental
+   * exposure through console.log, JSON.stringify, or Object.keys.
+   *
+   * @example
+   * ```typescript
+   * import { KEYPAIR_SYMBOL } from '@dexterai/x402/client';
+   * const kp = wallet[KEYPAIR_SYMBOL];
+   * ```
+   */
+  [KEYPAIR_SYMBOL]: Keypair;
+  /** @deprecated Use wallet[KEYPAIR_SYMBOL] instead — this will be removed in a future major version */
   keypair: Keypair;
 }
+
+export { KEYPAIR_SYMBOL };
 
 /**
  * Create a wallet from a Solana private key
@@ -124,7 +140,8 @@ export async function createKeypairWallet(
       }
       throw new Error('Unknown transaction type');
     },
-    keypair,
+    [KEYPAIR_SYMBOL]: keypair,
+    keypair, // deprecated — kept for backwards compat
   };
 }
 

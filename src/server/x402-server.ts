@@ -52,7 +52,7 @@ import {
   DEXTER_FACILITATOR_URL,
 } from '../types';
 import { FacilitatorClient, type SupportedKind } from './facilitator-client';
-import { encodeBase64Json, decodeBase64Json } from '../utils';
+import { encodeBase64Json, decodeBase64Json, isSolanaNetwork } from '../utils';
 
 /**
  * Best-effort extraction of amount from a PAYMENT-SIGNATURE header.
@@ -229,7 +229,7 @@ export function createX402Server(config: X402ServerConfig): X402Server {
       cachedExtra = await facilitator.getNetworkExtra(network);
     }
 
-    const isSvm = network.startsWith('solana:');
+    const isSvm = isSolanaNetwork(network);
 
     if (isSvm && !cachedExtra?.feePayer) {
       throw new Error(`Facilitator does not provide feePayer for network "${network}"`);

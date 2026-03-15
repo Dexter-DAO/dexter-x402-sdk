@@ -214,16 +214,24 @@ export class EvmAdapter implements ChainAdapter {
         }),
       });
 
+      if (!response.ok) {
+        throw new Error(`RPC request failed: ${response.status}`);
+      }
+
       const result = (await response.json()) as { error?: unknown; result?: string };
-      if (result.error || !result.result) {
+      if (result.error) {
+        throw new Error(`RPC error: ${JSON.stringify(result.error)}`);
+      }
+      if (!result.result || result.result === '0x') {
         return 0;
       }
 
       const balance = BigInt(result.result);
       const decimals = accept.extra?.decimals ?? 6;
       return Number(balance) / Math.pow(10, decimals);
-    } catch {
-      return 0;
+    } catch (err) {
+      // Re-throw RPC/network errors so caller can distinguish from zero balance
+      throw err;
     }
   }
 

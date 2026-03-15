@@ -177,6 +177,30 @@ export interface X402MiddlewareConfig {
     /** Called when sponsored recommendations are matched for a settlement. */
     onMatch?: (recommendations: SponsoredRecommendation[], settlement: { transaction: string; network: string; payer: string }) => void;
   };
+
+  /**
+   * Called after a payment is successfully settled.
+   * Use for logging, analytics, webhooks, or side effects.
+   * Errors in this callback do not affect the response.
+   *
+   * @example
+   * ```typescript
+   * x402Middleware({
+   *   payTo: '...', amount: '0.01',
+   *   onSettlement: (info) => {
+   *     console.log(`Payment: ${info.transaction} from ${info.payer} on ${info.network}`);
+   *   },
+   * })
+   * ```
+   */
+  onSettlement?: (info: { transaction: string; network: string; payer: string; resourceUrl: string }) => void | Promise<void>;
+
+  /**
+   * Called when payment verification fails.
+   * Use for monitoring suspicious activity or debugging payment issues.
+   * Errors in this callback do not affect the response.
+   */
+  onVerifyFailed?: (info: { reason?: string; resourceUrl: string }) => void | Promise<void>;
 }
 
 /**
@@ -368,6 +392,14 @@ export function x402Middleware(config: X402MiddlewareConfig): RequestHandler {
       
       if (!verifyResult.isValid) {
         log('Payment verification failed:', verifyResult.invalidReason);
+        if (config.onVerifyFailed) {
+          try {
+            await config.onVerifyFailed({
+              reason: verifyResult.invalidReason,
+              resourceUrl: `${req.protocol}://${req.get('host')}${req.originalUrl}`,
+            });
+          } catch {}
+        }
         res.status(402).json({
           error: 'Payment verification failed',
           reason: verifyResult.invalidReason,
@@ -391,6 +423,17 @@ export function x402Middleware(config: X402MiddlewareConfig): RequestHandler {
       log('Payment settled:', settleResult.transaction);
 
       const settledNetwork = settleResult.network || configuredNetworks[0];
+
+      if (config.onSettlement) {
+        try {
+          await config.onSettlement({
+            transaction: settleResult.transaction!,
+            network: settledNetwork,
+            payer: verifyResult.payer ?? '',
+            resourceUrl: `${req.protocol}://${req.get('host')}${req.originalUrl}`,
+          });
+        } catch {}
+      }
 
       // Attach payment info to request
       (req as X402Request).x402 = {
@@ -451,11 +494,10 @@ export function x402Middleware(config: X402MiddlewareConfig): RequestHandler {
       next();
     } catch (error) {
       log('Middleware error:', error);
-      
-      // Don't expose internal errors
+
+      // Don't expose internal details to clients
       res.status(500).json({
         error: 'Payment processing error',
-        message: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   };

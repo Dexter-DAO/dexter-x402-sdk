@@ -44,7 +44,7 @@ export type { X402ClientConfig, X402Client, PaymentReceipt } from './x402-client
 export { wrapFetch } from './wrap-fetch';
 export type { WrapFetchOptions } from './wrap-fetch';
 
-export { createKeypairWallet, isKeypairWallet } from './keypair-wallet';
+export { createKeypairWallet, isKeypairWallet, KEYPAIR_SYMBOL } from './keypair-wallet';
 export type { KeypairWallet } from './keypair-wallet';
 
 export { createEvmKeypairWallet, isEvmKeypairWallet } from './evm-wallet';

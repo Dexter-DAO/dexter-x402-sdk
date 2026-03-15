@@ -314,8 +314,12 @@ export type X402ErrorCode =
   | 'insufficient_balance'
   | 'wallet_missing_sign_transaction'
   | 'wallet_not_connected'
+  | 'wallet_disconnected'
+  | 'user_rejected_signature'
   | 'transaction_build_failed'
   | 'payment_rejected'
+  | 'rpc_timeout'
+  | 'facilitator_timeout'
   // Server errors
   | 'invalid_payment_signature'
   | 'facilitator_verify_failed'

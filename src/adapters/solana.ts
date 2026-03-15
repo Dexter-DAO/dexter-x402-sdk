@@ -156,9 +156,14 @@ export class SolanaAdapter implements ChainAdapter {
       const account = await getAccount(connection, ata, undefined, programId);
       const decimals = accept.extra?.decimals ?? 6;
       return Number(account.amount) / Math.pow(10, decimals);
-    } catch {
-      // Token account doesn't exist
-      return 0;
+    } catch (err) {
+      // Token account doesn't exist = 0 balance (expected for new wallets)
+      if (err && typeof err === 'object' && 'name' in err &&
+          (err.name === 'TokenAccountNotFoundError' || err.name === 'TokenInvalidAccountOwnerError')) {
+        return 0;
+      }
+      // RPC errors, network failures — throw so caller can distinguish from zero balance
+      throw err;
     }
   }
 

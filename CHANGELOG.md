@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.4] - 2026-03-15
+
+### Fixed
+- **Balance checks no longer silently swallow RPC errors** — Solana adapter now only returns 0 for `TokenAccountNotFoundError` (new wallets). EVM adapter throws on HTTP errors and RPC errors. The client gracefully skips the pre-check on RPC failure and lets the chain reject if balance is actually insufficient.
+- **Resource URLs validated for scheme** — client rejects `javascript:`, `data:`, and `file:` URLs from payment requirement headers. Only `http:` and `https:` are accepted.
+- **Internal error details no longer leaked to clients** — middleware 500 responses now return generic `"Payment processing error"` without the underlying error message.
+- **CSP headers on browser paywall** — the generated HTML paywall page now sets `Content-Security-Policy` and `X-Content-Type-Options: nosniff` headers.
+- **Stripe PayTo documentation** — JSDoc now explicitly documents the Base-only limitation with a multi-chain workaround example.
+- **sessionStorage risk documented** — `useAccessPass` JSDoc warns about XSS exposure of stored JWTs.
+
+### Added
+- **`onSettlement` callback** in middleware config — called after every successful payment settlement for logging, analytics, or webhooks.
+- **`onVerifyFailed` callback** in middleware config — called when payment verification fails for monitoring suspicious activity.
+- **`onPaymentRequired` callback** in client config — pre-payment inspection hook. Return `false` to reject a payment before signing. Critical for agent budget controls.
+- **`KEYPAIR_SYMBOL`** — Symbol-keyed access to the underlying Solana Keypair, preventing accidental private key exposure via `console.log` or `JSON.stringify`. The `keypair` property is deprecated but kept for backwards compat.
+- **New error codes** — `wallet_disconnected`, `user_rejected_signature`, `rpc_timeout`, `facilitator_timeout`.
+- **`isSolanaNetwork()` and `isEvmNetwork()`** — exported utility functions for network detection, replacing duplicated `startsWith` checks.
+
 ## [1.9.3] - 2026-03-15
 
 ### Added
