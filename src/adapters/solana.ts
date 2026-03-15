@@ -178,9 +178,9 @@ export class SolanaAdapter implements ChainAdapter {
     const connection = new Connection(url, 'confirmed');
     const userPubkey = new PublicKey(wallet.publicKey.toBase58());
 
-    // Extract required fields (amount or maxAmountRequired for x402 spec compatibility)
+    // Extract required fields — amount is the v2 spec field, maxAmountRequired is v1 fallback
     const { payTo, asset, extra } = accept;
-    const amount = accept.amount || accept.maxAmountRequired;
+    const amount = accept.amount ?? accept.maxAmountRequired;
     if (!amount) {
       throw new Error('Missing amount in payment requirements');
     }

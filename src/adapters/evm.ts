@@ -248,7 +248,8 @@ export class EvmAdapter implements ChainAdapter {
     }
 
     const { payTo, asset, extra } = accept;
-    const amount = accept.amount || accept.maxAmountRequired;
+    // amount is the v2 spec field, maxAmountRequired is v1 fallback
+    const amount = accept.amount ?? accept.maxAmountRequired;
     if (!amount) {
       throw new Error('Missing amount in payment requirements');
     }
@@ -286,10 +287,10 @@ export class EvmAdapter implements ChainAdapter {
       ],
     };
 
-    // Generate a random nonce (32 bytes hex)
-    const nonce = '0x' + [...Array(32)]
-      .map(() => Math.floor(Math.random() * 256).toString(16).padStart(2, '0'))
-      .join('') as `0x${string}`;
+    // Generate a cryptographically secure random nonce (32 bytes hex)
+    const nonceBytes = new Uint8Array(32);
+    (globalThis.crypto ?? (await import('crypto')).webcrypto).getRandomValues(nonceBytes);
+    const nonce = ('0x' + [...nonceBytes].map(b => b.toString(16).padStart(2, '0')).join('')) as `0x${string}`;
 
     const now = Math.floor(Date.now() / 1000);
     

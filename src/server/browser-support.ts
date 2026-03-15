@@ -208,7 +208,7 @@ if (btn) {
       if (!accept) throw new Error('No payment method available');
 
       const payTo = new PublicKey(accept.payTo);
-      const amount = BigInt(accept.amount || accept.maxAmountRequired);
+      const amount = BigInt(accept.amount ?? accept.maxAmountRequired);
       const mintPubkey = new PublicKey(accept.asset);
       const feePayer = accept.extra?.feePayer ? new PublicKey(accept.extra.feePayer) : provider.publicKey;
       const userPubkey = provider.publicKey;
@@ -327,7 +327,7 @@ function generatePaywallHtml(
     const decoded = JSON.parse(Buffer.from(paymentRequiredHeader, 'base64').toString());
     const accept = decoded.accepts?.[0];
     if (accept) {
-      const amount = accept.amount || accept.maxAmountRequired || '0';
+      const amount = accept.amount ?? accept.maxAmountRequired ?? '0';
       const decimals = accept.extra?.decimals || 6;
       price = (Number(amount) / Math.pow(10, decimals)).toFixed(decimals > 4 ? 4 : 2);
       network = accept.network || '';

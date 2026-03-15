@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-03-15
+
+### Breaking
+- **`PaymentAccept.amount` is now required, `maxAmountRequired` is deprecated** — Aligns with the x402 v2 specification. `amount` is the v2 spec field; `maxAmountRequired` remains as an optional alias for backwards compatibility with v1 data. TypeScript consumers referencing `accept.maxAmountRequired` directly will get deprecation warnings. Server output includes both fields during the transition period.
+- **`PaymentAccept.extra` is now optional** — Per v2 spec, `extra` is not required on all payment options. Existing code that accesses `accept.extra.feePayer` should use optional chaining: `accept.extra?.feePayer`.
+
+### Fixed
+- **EVM nonce used `Math.random()`** — Replaced with `crypto.getRandomValues()` for cryptographically secure nonce generation in EIP-3009 authorizations. Falls back to Node.js `crypto.webcrypto` for older environments.
+- **Dynamic pricing used non-cryptographic hash** — Replaced FNV-1a with HMAC-SHA256 for quote validation. Quotes now include a timestamp and are rejected after 5 minutes, preventing both hash collision attacks and stale quote reuse.
+- **Client-side access pass cache didn't cap expiry** — JWT `exp` decoded from unverified tokens is now capped to 24 hours max cache TTL, preventing forged far-future timestamps from caching indefinitely. Server-side verification is unaffected (always enforces HMAC signature).
+
+### Added
+- **`extensions` field on `PaymentRequired` and `PaymentSignature`** — Per v2 spec, both types now support optional `extensions: Record<string, unknown>` for protocol extensions like sponsored-access and bazaar.
+
 ## [1.8.2] - 2026-03-11
 
 ### Fixed

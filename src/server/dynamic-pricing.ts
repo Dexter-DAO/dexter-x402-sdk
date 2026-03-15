@@ -24,6 +24,8 @@
  * ```
  */
 
+import { createHmac, randomBytes } from 'crypto';
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -115,19 +117,8 @@ export interface DynamicPricing {
 // Implementation
 // ============================================================================
 
-/**
- * Simple hash function (browser-compatible, no crypto needed)
- * Uses FNV-1a for speed and simplicity
- */
-function simpleHash(str: string): string {
-  let hash = 2166136261; // FNV offset basis
-  for (let i = 0; i < str.length; i++) {
-    hash ^= str.charCodeAt(i);
-    hash = Math.imul(hash, 16777619); // FNV prime
-  }
-  // Convert to hex string
-  return (hash >>> 0).toString(16).padStart(8, '0');
-}
+/** Max age for a quote before it's considered stale (seconds) */
+const QUOTE_MAX_AGE_SECONDS = 300; // 5 minutes
 
 /**
  * Create a dynamic pricing calculator
@@ -150,11 +141,15 @@ export function createDynamicPricing(config: DynamicPricingConfig): DynamicPrici
   if (minUsd < 0) throw new Error('minUsd cannot be negative');
   if (maxUsd < minUsd) throw new Error('maxUsd must be >= minUsd');
 
+  // Per-instance HMAC secret — quotes are only valid for this pricing instance.
+  // Config changes (new instance) automatically invalidate old quotes.
+  const hmacSecret = randomBytes(32);
+
   /**
-   * Build hash input string (input + config)
-   * Config is included so pricing changes invalidate old quotes
+   * Sign a quote with HMAC-SHA256. Includes input, config, and timestamp
+   * so quotes are tamper-proof and time-bounded.
    */
-  function buildHashInput(input: string): string {
+  function signQuote(input: string, timestamp: number): string {
     const configStr = JSON.stringify({
       unitSize,
       ratePerUnit,
@@ -162,7 +157,8 @@ export function createDynamicPricing(config: DynamicPricingConfig): DynamicPrici
       maxUsd: maxUsd === Infinity ? 'none' : maxUsd,
       roundingMode,
     });
-    return `${input}|${configStr}`;
+    const data = `${input}|${configStr}|${timestamp}`;
+    return createHmac('sha256', hmacSecret).update(data).digest('hex').slice(0, 16);
   }
 
   /**
@@ -202,8 +198,10 @@ export function createDynamicPricing(config: DynamicPricingConfig): DynamicPrici
     const multiplier = Math.pow(10, decimals);
     const amountAtomic = Math.floor(usdAmount * multiplier).toString();
 
-    // Generate quote hash (includes config)
-    const quoteHash = simpleHash(buildHashInput(input));
+    // Sign quote with HMAC-SHA256 (timestamp-bounded)
+    const timestamp = Math.floor(Date.now() / 1000);
+    const mac = signQuote(input, timestamp);
+    const quoteHash = `${timestamp}.${mac}`;
 
     return {
       amountAtomic,
@@ -215,13 +213,31 @@ export function createDynamicPricing(config: DynamicPricingConfig): DynamicPrici
   }
 
   /**
-   * Validate quote hash
-   * Returns true if the hash matches (input + config unchanged)
+   * Validate quote hash.
+   * Verifies HMAC signature and rejects quotes older than QUOTE_MAX_AGE_SECONDS.
    */
   function validateQuote(input: string, quoteHash: string): boolean {
     if (!quoteHash) return false;
-    const expectedHash = simpleHash(buildHashInput(input));
-    return expectedHash === quoteHash;
+    const dotIndex = quoteHash.indexOf('.');
+    if (dotIndex === -1) return false;
+
+    const timestamp = parseInt(quoteHash.slice(0, dotIndex), 10);
+    const mac = quoteHash.slice(dotIndex + 1);
+    if (isNaN(timestamp) || !mac) return false;
+
+    // Reject stale quotes
+    const age = Math.floor(Date.now() / 1000) - timestamp;
+    if (age < 0 || age > QUOTE_MAX_AGE_SECONDS) return false;
+
+    // Verify HMAC
+    const expectedMac = signQuote(input, timestamp);
+    // Constant-time comparison to prevent timing attacks
+    if (mac.length !== expectedMac.length) return false;
+    let mismatch = 0;
+    for (let i = 0; i < mac.length; i++) {
+      mismatch |= mac.charCodeAt(i) ^ expectedMac.charCodeAt(i);
+    }
+    return mismatch === 0;
   }
 
   return {

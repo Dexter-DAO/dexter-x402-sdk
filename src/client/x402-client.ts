@@ -178,14 +178,14 @@ export function createX402Client(config: X402ClientConfig): X402Client {
   function cachePass(url: string, jwt: string): void {
     try {
       const host = new URL(url).host;
-      // Decode expiration from JWT (middle part is base64url-encoded JSON)
       const parts = jwt.split('.');
       if (parts.length === 3) {
         const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
-        if (payload.exp) {
-          passCache.set(host, { jwt, expiresAt: payload.exp });
-          log('Access pass cached for', host, '| expires:', new Date(payload.exp * 1000).toISOString());
-        }
+        const now = Math.floor(Date.now() / 1000);
+        const maxExp = now + 86400; // Cap cache to 24h — server re-verifies regardless
+        const expiresAt = Math.min(typeof payload.exp === 'number' ? payload.exp : now, maxExp);
+        passCache.set(host, { jwt, expiresAt });
+        log('Access pass cached for', host, '| expires:', new Date(expiresAt * 1000).toISOString());
       }
     } catch {
       log('Failed to cache access pass');
@@ -317,7 +317,8 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     const decimals = accept.extra?.decimals ?? (isKnownUSDC(accept.asset) ? 6 : undefined);
     if (typeof decimals !== 'number') return null;
 
-    const paymentAmount = accept.amount || accept.maxAmountRequired;
+    // amount is the v2 spec field, maxAmountRequired is v1 fallback
+    const paymentAmount = accept.amount ?? accept.maxAmountRequired;
     if (!paymentAmount) return null;
 
     // Check balance
@@ -500,8 +501,8 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       );
     }
 
-    // Get amount (x402 spec uses maxAmountRequired, we also support amount)
-    const paymentAmount = accept.amount || accept.maxAmountRequired;
+    // amount is the v2 spec field, maxAmountRequired is v1 fallback
+    const paymentAmount = accept.amount ?? accept.maxAmountRequired;
     if (!paymentAmount) {
       throw new X402Error('missing_amount', 'Payment option missing amount');
     }

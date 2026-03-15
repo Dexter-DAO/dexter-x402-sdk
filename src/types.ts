@@ -138,10 +138,10 @@ export interface PaymentAccept {
   scheme: 'exact';
   /** CAIP-2 network identifier (v1: 'solana', v2: 'solana:5eykt...') */
   network: string;
-  /** Payment amount in atomic units (x402 spec field - REQUIRED) */
-  maxAmountRequired: string;
-  /** Alias for maxAmountRequired (for convenience) */
-  amount?: string;
+  /** Payment amount in atomic units (x402 v2 spec field) */
+  amount: string;
+  /** @deprecated v1 field — use `amount` instead. Kept for backwards compatibility with v1 data. */
+  maxAmountRequired?: string;
   /** Token address */
   asset: string;
   /** Seller's address to receive payment */
@@ -149,7 +149,7 @@ export interface PaymentAccept {
   /** Maximum seconds until payment expires */
   maxTimeoutSeconds: number;
   /** Chain-specific extra data */
-  extra: AcceptsExtra;
+  extra?: AcceptsExtra;
 }
 
 /**
@@ -164,6 +164,8 @@ export interface PaymentRequired {
   accepts: PaymentAccept[];
   /** Optional error message */
   error?: string;
+  /** Protocol extensions */
+  extensions?: Record<string, unknown>;
 }
 
 /**
@@ -181,6 +183,8 @@ export interface PaymentSignature {
     /** Signed transaction (base64 for Solana, JSON for EVM) */
     transaction: string;
   };
+  /** Protocol extensions */
+  extensions?: Record<string, unknown>;
 }
 
 // ============================================================================

@@ -158,22 +158,19 @@ async function runTests() {
     }
 
     const hasAmount = typeof accept.amount === 'string' && accept.amount.length > 0;
-    const hasMaxAmount = typeof accept.maxAmountRequired === 'string' && accept.maxAmountRequired.length > 0;
-
-    if (!hasMaxAmount) {
-      throw new Error('Missing maxAmountRequired (existing field)');
-    }
 
     if (!hasAmount) {
-      throw new Error(`Missing 'amount' field — only has maxAmountRequired: "${accept.maxAmountRequired}"`);
+      throw new Error(`Missing 'amount' field (v2 spec required field)`);
     }
 
-    if (accept.amount !== accept.maxAmountRequired) {
-      throw new Error(`amount (${accept.amount}) !== maxAmountRequired (${accept.maxAmountRequired})`);
+    // maxAmountRequired should also be present as backwards-compat alias
+    const hasMaxAmount = typeof accept.maxAmountRequired === 'string' && accept.maxAmountRequired.length > 0;
+    if (hasMaxAmount && accept.amount !== accept.maxAmountRequired) {
+      throw new Error(`amount (${accept.amount}) !== maxAmountRequired (${accept.maxAmountRequired}) — alias mismatch`);
     }
 
     results.push({ name: 'A: amount field in 402 accepts', passed: true, detail: `amount="${accept.amount}"` });
-    console.log(`      PASS — amount="${accept.amount}", maxAmountRequired="${accept.maxAmountRequired}"\n`);
+    console.log(`      PASS — amount="${accept.amount}"${hasMaxAmount ? `, maxAmountRequired="${accept.maxAmountRequired}" (alias)` : ''}\n`);
   } catch (e: any) {
     results.push({ name: 'A: amount field in 402 accepts', passed: false, detail: e.message });
     console.log(`      FAIL — ${e.message}\n`);
@@ -225,7 +222,7 @@ async function runTests() {
       accepted: {
         scheme: 'exact',
         network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
-        maxAmountRequired: '10000',
+        amount: '10000',
         asset: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
         payTo: 'SellerWalletAddress1111111111111111111111111111',
         maxTimeoutSeconds: 60,
@@ -341,7 +338,7 @@ async function runTests() {
       accepted: {
         scheme: 'exact',
         network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
-        maxAmountRequired: '10000',
+        amount: '10000',
         asset: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
         payTo: 'SellerWalletAddress1111111111111111111111111111',
         maxTimeoutSeconds: 60,

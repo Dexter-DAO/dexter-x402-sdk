@@ -164,7 +164,7 @@ async function runTests() {
       resource: { url: `${apBase}/api/data` },
       accepted: {
         scheme: 'exact', network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
-        maxAmountRequired: '50000', asset: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        amount: '50000', asset: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
         payTo: 'SellerWallet11111111111111111111111111111111111', maxTimeoutSeconds: 60,
         extra: { feePayer: 'MockFeePayer11111111111111111111111111111111', decimals: 6 },
       },
@@ -285,7 +285,7 @@ async function runTests() {
       x402Version: 2, resource: { url: `${prBase}/api/data` },
       accepted: {
         scheme: 'exact', network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
-        maxAmountRequired: '10000', asset: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        amount: '10000', asset: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
         payTo: 'SellerWallet11111111111111111111111111111111111', maxTimeoutSeconds: 60,
         extra: { feePayer: 'MockFeePayer11111111111111111111111111111111', decimals: 6 },
       },
