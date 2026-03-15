@@ -40,6 +40,8 @@ import type { WalletSet, BalanceInfo } from '../adapters/types';
 import { createSolanaAdapter, createEvmAdapter, isSolanaWallet, isEvmWallet } from '../adapters';
 import { X402Error, SOLANA_MAINNET_NETWORK, BASE_MAINNET_NETWORK, USDC_MINT, USDC_BASE } from '../types';
 import { getChainName, getExplorerUrl } from '../utils';
+import type { SponsoredRecommendation } from '@dexterai/x402-ads-types';
+import { getSponsoredRecommendations, fireImpressionBeacon } from '../client/sponsored-access';
 
 // ============================================================================
 // Types
@@ -140,6 +142,13 @@ export interface UseX402PaymentReturn {
     /** Seconds remaining on the pass */
     remainingSeconds: number | null;
   } | null;
+
+  /**
+   * Sponsored recommendations from the most recent payment.
+   * Populated when the facilitator returns sponsored-access extensions
+   * in the settlement response. Null if no recommendations were delivered.
+   */
+  sponsoredRecommendations: SponsoredRecommendation[] | null;
 }
 
 // ============================================================================
@@ -165,6 +174,7 @@ export function useX402Payment(config: UseX402PaymentConfig): UseX402PaymentRetu
   const [transactionId, setTransactionId] = useState<string | null>(null);
   const [transactionNetwork, setTransactionNetwork] = useState<string | null>(null);
   const [balances, setBalances] = useState<BalanceInfo[]>([]);
+  const [sponsoredRecommendations, setSponsoredRecommendations] = useState<SponsoredRecommendation[] | null>(null);
 
   // Logging
   const log = useCallback((...args: unknown[]) => {
@@ -272,6 +282,7 @@ export function useX402Payment(config: UseX402PaymentConfig): UseX402PaymentRetu
     setError(null);
     setTransactionId(null);
     setTransactionNetwork(null);
+    setSponsoredRecommendations(null);
   }, []);
 
   // Create client
@@ -321,6 +332,15 @@ export function useX402Payment(config: UseX402PaymentConfig): UseX402PaymentRetu
         }
       }
 
+      // Extract sponsored recommendations if present
+      const recs = getSponsoredRecommendations(response);
+      setSponsoredRecommendations(recs ?? null);
+      if (recs) {
+        log('Sponsored recommendations received:', recs.length);
+        // Fire impression beacon to confirm delivery
+        fireImpressionBeacon(response).catch(() => {});
+      }
+
       setStatus('success');
       return response;
     } catch (err) {
@@ -356,5 +376,6 @@ export function useX402Payment(config: UseX402PaymentConfig): UseX402PaymentRetu
     reset,
     refreshBalances,
     accessPass: null, // Access pass state managed by useAccessPass hook for granular control
+    sponsoredRecommendations,
   };
 }

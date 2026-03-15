@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.1] - 2026-03-15
+
+### Added
+- **First-class Sponsored Access (Ads for Agents)** — typed helpers for consuming sponsored recommendations from x402 payment receipts:
+  - `getSponsoredRecommendations(response)` — extract typed `SponsoredRecommendation[]` from a payment response
+  - `getSponsoredAccessInfo(response)` — extract the full `SponsoredAccessSettlementInfo` extension data
+  - `fireImpressionBeacon(response)` — fire-and-forget delivery confirmation to the ad network
+- **React hook support** — `useX402Payment` now returns `sponsoredRecommendations` (auto-populated after payment, auto-fires impression beacon)
+- **Server `onMatch` callback** — `sponsoredAccess: { onMatch: (recs, settlement) => ... }` for server-side logging/analytics when recommendations are delivered
+- **Typed middleware injection** — `sponsoredAccess.inject` callback now receives typed `SponsoredRecommendation[]` instead of `unknown[]`
+- **Re-exported types** — `SponsoredRecommendation`, `SponsoredAccessSettlementInfo`, `SponsoredAccessPaymentRequiredInfo`, `SponsoredAccessClientConsent`, and `SPONSORED_ACCESS_EXTENSION_KEY` are now exported from `@dexterai/x402/client`, `@dexterai/x402/server`, and `@dexterai/x402/react`
+
+### Changed
+- **`@dexterai/x402-ads-types` is now a direct dependency** — moved from optional peer dependency to ensure types are always available. Package is 72KB (mostly type declarations, 12 lines of JS).
+
 ## [1.9.0] - 2026-03-15
 
 ### Breaking

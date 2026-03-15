@@ -126,6 +126,15 @@ export type {
 export { stripePayTo } from './stripe-payto';
 export type { StripePayToConfig } from './stripe-payto';
 
+// Sponsored Access (Ads for Agents) types — re-exported from @dexterai/x402-ads-types
+export type {
+  SponsoredRecommendation,
+  SponsoredAccessSettlementInfo,
+  SponsoredAccessPaymentRequiredInfo,
+  SponsoredAccessClientConsent,
+} from '@dexterai/x402-ads-types';
+export { SPONSORED_ACCESS_EXTENSION_KEY } from '@dexterai/x402-ads-types';
+
 // Re-export types for convenience
 export type { VerifyResponse, SettleResponse, PaymentRequired, PaymentAccept, PayToContext, PayToProvider, PayToProviderDefaults, AccessPassTier, AccessPassInfo, AccessPassClaims, AccessPassClientConfig } from '../types';
 export { DEXTER_FACILITATOR_URL, SOLANA_MAINNET_NETWORK, BASE_MAINNET_NETWORK, USDC_MINT, USDC_BASE } from '../types';

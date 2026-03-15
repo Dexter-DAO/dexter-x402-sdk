@@ -580,20 +580,113 @@ tiktoken's default encoding works well for most transformer models. Only use a c
 
 ---
 
-## Sponsored Access (v1.7.2)
+## Sponsored Access (Ads for Agents)
 
-**Server middleware** accepts `sponsoredAccess: true` in its config. When enabled, it reads `extensions["sponsored-access"]` from the facilitator's settlement response and injects `_x402_sponsored` into the JSON response body so agents can see recommendations.
+Sponsored Access delivers targeted resource recommendations through x402 payments. When an agent pays for an API, the facilitator can inject a recommendation for a related tool in the settlement receipt. The agent sees the recommendation and can call it immediately -- the subsequent call is tracked as a conversion with both blockchain transaction hashes as proof.
+
+### Server — Enable Recommendation Injection
+
+Add `sponsoredAccess: true` to your middleware config. This reads `extensions["sponsored-access"]` from the facilitator's settlement response and injects `_x402_sponsored` into the JSON response body so the agent's LLM can see the recommendations (headers are invisible to LLMs).
 
 ```typescript
-app.use(x402Middleware({
-  facilitatorUrl: "https://x402.dexter.cash",
-  sponsoredAccess: true,  // opt-in to recommendation injection
-}));
+import { x402Middleware } from '@dexterai/x402/server';
+
+// Default injection: adds _x402_sponsored field to JSON response
+app.get('/api/data',
+  x402Middleware({
+    payTo: '...', amount: '0.01',
+    sponsoredAccess: true,
+  }),
+  (req, res) => res.json({ data: 'content' })
+);
+// Agent receives: { _x402_sponsored: [{ resourceUrl, description, sponsor }], data: 'content' }
+
+// Custom injection: control where recommendations appear
+app.get('/api/data',
+  x402Middleware({
+    payTo: '...', amount: '0.01',
+    sponsoredAccess: {
+      inject: (body, recs) => ({ ...body, related_tools: recs }),
+      onMatch: (recs, settlement) => {
+        console.log(`Matched ${recs.length} recommendations for tx ${settlement.transaction}`);
+      },
+    },
+  }),
+  (req, res) => res.json({ data: 'content' })
+);
 ```
 
-**Client SDK** decodes the `PAYMENT-RESPONSE` header from x402 responses and attaches the full settlement receipt (including extensions) as `response._x402` for programmatic access.
+### Client — Read Recommendations
 
-**Types:** `SettleResponse` now includes an optional `extensions` field.
+```typescript
+import {
+  wrapFetch,
+  getSponsoredRecommendations,
+  fireImpressionBeacon,
+} from '@dexterai/x402/client';
+
+const x402Fetch = wrapFetch(fetch, { walletPrivateKey: key });
+const response = await x402Fetch('https://api.example.com/data');
+
+// Extract typed recommendations from the payment receipt
+const recs = getSponsoredRecommendations(response);
+if (recs) {
+  for (const rec of recs) {
+    console.log(`${rec.sponsor}: ${rec.description} -- ${rec.resourceUrl}`);
+  }
+  // Confirm delivery to the ad network
+  await fireImpressionBeacon(response);
+}
+```
+
+### React — Recommendations in Hooks
+
+```tsx
+import { useX402Payment } from '@dexterai/x402/react';
+
+function PayButton() {
+  const {
+    fetch,
+    isLoading,
+    sponsoredRecommendations,  // auto-populated after payment
+  } = useX402Payment({ wallets });
+
+  return (
+    <div>
+      <button onClick={() => fetch(url)} disabled={isLoading}>Pay</button>
+      {sponsoredRecommendations?.map((rec, i) => (
+        <a key={i} href={rec.resourceUrl}>{rec.sponsor}: {rec.description}</a>
+      ))}
+    </div>
+  );
+}
+```
+
+### Types
+
+All types are re-exported from `@dexterai/x402-ads-types`:
+
+```typescript
+import type { SponsoredRecommendation, SponsoredAccessSettlementInfo } from '@dexterai/x402/client';
+
+interface SponsoredRecommendation {
+  resourceUrl: string;    // The URL to call
+  description: string;    // Agent-readable description
+  sponsor: string;        // Brand name
+  bazaarId?: string;      // Bazaar catalog ID
+  price?: string;         // Cost in atomic units
+  currency?: string;      // e.g., "USDC"
+}
+```
+
+### How It Works
+
+1. Agent pays for an API via x402
+2. Facilitator settles payment and calls the ad network's match API
+3. If a campaign matches (by URL pattern, category, network), a recommendation is injected into `SettlementResponse.extensions["sponsored-access"]`
+4. Publisher middleware (with `sponsoredAccess: true`) injects it into the JSON response body
+5. Agent's LLM sees the recommendation and can call the suggested resource
+6. If the agent calls it, the facilitator records a conversion with both tx hashes as proof
 
 ---
 

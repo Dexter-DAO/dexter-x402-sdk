@@ -58,3 +58,7 @@ export type { UseAccessPassConfig, UseAccessPassReturn } from './useAccessPass';
 export type { BalanceInfo, WalletSet } from '../adapters/types';
 export { X402Error } from '../types';
 export type { AccessPassTier, AccessPassInfo, AccessPassClientConfig } from '../types';
+
+// Sponsored Access (Ads for Agents)
+export type { SponsoredRecommendation } from '@dexterai/x402-ads-types';
+export { getSponsoredRecommendations, fireImpressionBeacon } from '../client/sponsored-access';

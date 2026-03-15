@@ -62,5 +62,13 @@ export {
 // Constants
 export { DEXTER_FACILITATOR_URL, USDC_MINT } from '../types';
 
+// Sponsored Access (Ads for Agents)
+export {
+  getSponsoredRecommendations,
+  getSponsoredAccessInfo,
+  fireImpressionBeacon,
+} from './sponsored-access';
+export type { SponsoredRecommendation, SponsoredAccessSettlementInfo } from './sponsored-access';
+
 // Access pass types
 export type { AccessPassClientConfig, AccessPassTier, AccessPassInfo } from '../types';

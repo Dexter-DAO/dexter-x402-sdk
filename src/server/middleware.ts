@@ -29,6 +29,7 @@ import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import type { PayToProvider } from '../types';
 import { createX402Server, type BuildRequirementsOptions } from './x402-server';
 import { toAtomicUnits, encodeBase64Json } from '../utils';
+import type { SponsoredRecommendation } from '@dexterai/x402-ads-types';
 
 /**
  * Middleware configuration
@@ -170,7 +171,10 @@ export interface X402MiddlewareConfig {
    * ```
    */
   sponsoredAccess?: boolean | {
-    inject?: (body: unknown, recommendations: unknown[]) => unknown;
+    /** Custom injection function. Receives the original response body and typed recommendations. */
+    inject?: (body: unknown, recommendations: SponsoredRecommendation[]) => unknown;
+    /** Called when sponsored recommendations are matched for a settlement. */
+    onMatch?: (recommendations: SponsoredRecommendation[], settlement: { transaction: string; network: string; payer: string }) => void;
   };
 }
 
@@ -410,10 +414,25 @@ export function x402Middleware(config: X402MiddlewareConfig): RequestHandler {
       // so the agent's LLM actually sees them (headers are invisible to LLMs)
       if (config.sponsoredAccess && settleResult.extensions?.["sponsored-access"]) {
         const extData = settleResult.extensions["sponsored-access"] as
-          { info?: { recommendations?: unknown[] } } | undefined;
-        const recs = extData?.info?.recommendations;
+          { info?: { recommendations?: SponsoredRecommendation[] }; recommendations?: SponsoredRecommendation[] } | undefined;
+        // Facilitator may nest under .info.recommendations or .recommendations directly
+        const recs = extData?.info?.recommendations ?? extData?.recommendations;
         if (recs && recs.length > 0) {
           log('Injecting sponsored-access recommendations into response');
+
+          // Notify callback if configured
+          if (typeof config.sponsoredAccess === 'object' && config.sponsoredAccess.onMatch) {
+            try {
+              config.sponsoredAccess.onMatch(recs, {
+                transaction: settleResult.transaction!,
+                network: settledNetwork,
+                payer: verifyResult.payer ?? '',
+              });
+            } catch {
+              // Don't block response for callback errors
+            }
+          }
+
           const originalJson = res.json.bind(res);
           res.json = function patchedJson(body: unknown) {
             if (typeof config.sponsoredAccess === 'object' && config.sponsoredAccess.inject) {
