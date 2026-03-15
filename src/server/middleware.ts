@@ -30,6 +30,7 @@ import type { PayToProvider } from '../types';
 import { createX402Server, type BuildRequirementsOptions } from './x402-server';
 import { toAtomicUnits, encodeBase64Json } from '../utils';
 import type { SponsoredRecommendation } from '@dexterai/x402-ads-types';
+import { getStripeProviderNetwork } from './stripe-payto';
 
 /**
  * Middleware configuration
@@ -268,9 +269,9 @@ export function x402Middleware(config: X402MiddlewareConfig): RequestHandler {
     const netPayTo = resolvePayToForNetwork(payTo, net);
 
     // Guard: Stripe payTo only supports Base — throw early if misconfigured
-    if (typeof netPayTo === 'function' && (netPayTo as any)._stripeNetwork) {
-      const stripeNet = (netPayTo as any)._stripeNetwork as string;
-      if (net !== stripeNet) {
+    if (typeof netPayTo === 'function') {
+      const stripeNet = getStripeProviderNetwork(netPayTo as PayToProvider);
+      if (stripeNet && net !== stripeNet) {
         throw new Error(
           `stripePayTo is configured for "${stripeNet}" but middleware includes network "${net}". ` +
           `Stripe only supports Base deposit addresses. Use a static payTo for other chains.`

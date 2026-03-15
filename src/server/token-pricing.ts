@@ -27,8 +27,24 @@
  */
 
 import { createHash } from 'crypto';
-import { encoding_for_model, get_encoding, type TiktokenModel } from 'tiktoken';
 import { MODEL_PRICING_MAP } from './model-registry';
+
+// tiktoken is loaded lazily — only imported when countTokens() is actually called.
+// This avoids the 5MB+ WASM binary cost for consumers who don't use token pricing.
+type TiktokenModule = typeof import('tiktoken');
+let _tiktoken: TiktokenModule | null = null;
+
+async function loadTiktoken(): Promise<TiktokenModule> {
+  if (_tiktoken) return _tiktoken;
+  try {
+    _tiktoken = await import('tiktoken');
+    return _tiktoken;
+  } catch {
+    throw new Error(
+      'Token pricing requires the "tiktoken" package. Install with: npm install tiktoken'
+    );
+  }
+}
 
 // ============================================================================
 // Model Pricing Table
@@ -110,7 +126,7 @@ export interface TokenPricingConfig {
    * @example
    * tokenizer: (text) => llamaTokenizer.encode(text).length
    */
-  tokenizer?: (text: string) => number;
+  tokenizer?: (text: string) => number | Promise<number>;
 
   /**
    * Minimum USD amount (floor).
@@ -171,13 +187,13 @@ export interface TokenPriceQuote {
  */
 export interface TokenPricing {
   /** Calculate price from input text */
-  calculate(input: string, systemPrompt?: string): TokenPriceQuote;
+  calculate(input: string, systemPrompt?: string): Promise<TokenPriceQuote>;
 
   /** Validate quote hash (returns true if valid) */
-  validateQuote(input: string, quoteHash: string): boolean;
+  validateQuote(input: string, quoteHash: string): Promise<boolean>;
 
-  /** Count tokens in a string */
-  countTokens(input: string): number;
+  /** Count tokens in a string (lazy-loads tiktoken on first call) */
+  countTokens(input: string): Promise<number>;
 
   /** Get pricing config */
   readonly config: Required<TokenPricingConfig>;
@@ -193,21 +209,24 @@ export interface TokenPricing {
 /**
  * Get tiktoken encoding for a model.
  * Falls back to cl100k_base for unknown models.
+ * Lazy-loads tiktoken on first call.
  */
-function getEncodingForModel(model: string) {
+async function getEncodingForModel(model: string) {
+  const tiktoken = await loadTiktoken();
   try {
-    return encoding_for_model(model as TiktokenModel);
+    return tiktoken.encoding_for_model(model as import('tiktoken').TiktokenModel);
   } catch {
     // Fall back to cl100k_base (GPT-4/4o family encoding)
-    return get_encoding('cl100k_base');
+    return tiktoken.get_encoding('cl100k_base');
   }
 }
 
 /**
  * Count tokens in a string using tiktoken.
+ * Lazy-loads tiktoken on first call — no cost if never used.
  */
-export function countTokens(text: string, model: string = DEFAULT_MODEL): number {
-  const encoding = getEncodingForModel(model);
+export async function countTokens(text: string, model: string = DEFAULT_MODEL): Promise<number> {
+  const encoding = await getEncodingForModel(model);
   try {
     const tokens = encoding.encode(text);
     return tokens.length;
@@ -251,7 +270,7 @@ export function createTokenPricing(config: TokenPricingConfig = {}): TokenPricin
     outputRate: modelInfo.output,
     maxTokens: modelInfo.maxTokens,
     tier: modelInfo.tier,
-    tokenizer: customTokenizer ?? ((text: string) => countTokens(text, model)),
+    tokenizer: customTokenizer ?? ((text: string): Promise<number> => countTokens(text, model)),
     minUsd: config.minUsd ?? 0.001,
     maxUsd: config.maxUsd ?? 50.0,
     decimals: config.decimals ?? 6,
@@ -262,7 +281,7 @@ export function createTokenPricing(config: TokenPricingConfig = {}): TokenPricin
   /**
    * Count tokens in text (uses custom tokenizer if provided)
    */
-  function countTokensInternal(input: string): number {
+  async function countTokensInternal(input: string): Promise<number> {
     if (customTokenizer) {
       return customTokenizer(input);
     }
@@ -272,10 +291,10 @@ export function createTokenPricing(config: TokenPricingConfig = {}): TokenPricin
   /**
    * Calculate price from input
    */
-  function calculate(input: string, systemPrompt?: string): TokenPriceQuote {
+  async function calculate(input: string, systemPrompt?: string): Promise<TokenPriceQuote> {
     // Count input tokens (prompt + system prompt if provided)
     const fullInput = systemPrompt ? `${systemPrompt}\n\n${input}` : input;
-    const inputTokens = countTokensInternal(fullInput);
+    const inputTokens = await countTokensInternal(fullInput);
 
     // Calculate USD cost based on input tokens only
     // Price = (inputTokens / 1,000,000) × inputRate
@@ -308,9 +327,9 @@ export function createTokenPricing(config: TokenPricingConfig = {}): TokenPricin
   /**
    * Validate quote hash
    */
-  function validateQuote(input: string, quoteHash: string): boolean {
+  async function validateQuote(input: string, quoteHash: string): Promise<boolean> {
     if (!quoteHash) return false;
-    const inputTokens = countTokensInternal(input);
+    const inputTokens = await countTokensInternal(input);
     const expectedHash = generateQuoteHash(input, model, modelInfo.input, inputTokens);
     return expectedHash === quoteHash;
   }

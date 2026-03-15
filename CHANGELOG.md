@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.2] - 2026-03-15
+
+### Breaking
+- **`TokenPricing.calculate()`, `validateQuote()`, and `countTokens()` are now async** — returns `Promise<TokenPriceQuote>`, `Promise<boolean>`, and `Promise<number>` respectively. This is required because tiktoken is now lazy-loaded. Add `await` to all calls.
+- **`TokenPricingConfig.tokenizer` now accepts async functions** — type changed from `(text: string) => number` to `(text: string) => number | Promise<number>`. Existing sync tokenizers still work.
+
+### Fixed
+- **tiktoken is no longer a hard dependency** — moved from `dependencies` to optional `peerDependencies`. The 5MB+ WASM binary is only loaded when `createTokenPricing()` or `countTokens()` is actually called. Consumers who don't use token pricing save the install cost entirely. Throws a helpful error if tiktoken is needed but not installed.
+- **Stripe PayTo guard used fragile private property** — replaced `(provider as any)._stripeNetwork` with a `WeakMap` registry that survives wrapping, proxying, and `bind()`. Exported `getStripeProviderNetwork()` for external use.
+
+### Added
+- **EVM wallet Quick Start in README** — `wrapFetch` with `evmPrivateKey` is now documented alongside the Solana example in the Quick Start section.
+
 ## [1.9.1] - 2026-03-15
 
 ### Added

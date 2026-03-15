@@ -21,6 +21,17 @@
 
 import type { PayToContext, PayToProvider } from '../types';
 
+/**
+ * Registry of Stripe PayTo providers and their configured networks.
+ * Uses WeakMap so the tag survives wrapping, proxying, or bind().
+ */
+const stripeProviderNetworks = new WeakMap<PayToProvider, string>();
+
+/** Get the network a Stripe PayTo provider is configured for, or undefined if not a Stripe provider. */
+export function getStripeProviderNetwork(provider: PayToProvider): string | undefined {
+  return stripeProviderNetworks.get(provider);
+}
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -217,9 +228,9 @@ export function stripePayTo(
     facilitatorUrl: 'https://x402.dexter.cash',
   };
 
-  // Guard: Stripe only supports Base networks. Throw early if misconfigured
-  // with multi-network middleware on non-Base chains.
-  (provider as any)._stripeNetwork = caip2Network;
+  // Register in WeakMap so middleware can detect Stripe providers and
+  // guard against non-Base networks (survives wrapping/proxying)
+  stripeProviderNetworks.set(provider, caip2Network);
 
   return provider;
 }

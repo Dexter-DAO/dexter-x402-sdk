@@ -77,8 +77,20 @@ The simplest way to make x402 payments from scripts:
 ```typescript
 import { wrapFetch } from '@dexterai/x402/client';
 
+// Solana
 const x402Fetch = wrapFetch(fetch, {
   walletPrivateKey: process.env.SOLANA_PRIVATE_KEY,
+});
+
+// EVM (Base, Polygon, Arbitrum, Optimism, Avalanche, SKALE)
+const x402Fetch = wrapFetch(fetch, {
+  evmPrivateKey: process.env.EVM_PRIVATE_KEY,  // requires: npm install viem
+});
+
+// Both — SDK picks the chain with balance
+const x402Fetch = wrapFetch(fetch, {
+  walletPrivateKey: process.env.SOLANA_PRIVATE_KEY,
+  evmPrivateKey: process.env.EVM_PRIVATE_KEY,
 });
 
 // That's it. 402 responses are handled automatically.
