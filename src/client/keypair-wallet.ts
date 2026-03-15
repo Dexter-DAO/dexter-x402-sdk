@@ -23,18 +23,15 @@
  */
 
 import { Keypair, VersionedTransaction, Transaction } from '@solana/web3.js';
+import type { SolanaWallet } from '../adapters/solana';
 
 /** Symbol key for the underlying Keypair — prevents accidental exposure via console.log or JSON.stringify */
 const KEYPAIR_SYMBOL = Symbol.for('x402:keypair');
 
 /**
- * Keypair wallet interface (compatible with SDK's SolanaWallet)
+ * Keypair wallet interface — extends SolanaWallet with safe Keypair access.
  */
-export interface KeypairWallet {
-  /** Public key with toBase58() method */
-  publicKey: { toBase58(): string };
-  /** Sign a transaction */
-  signTransaction<T extends Transaction | VersionedTransaction>(tx: T): Promise<T>;
+export interface KeypairWallet extends SolanaWallet {
   /**
    * Get the underlying Keypair. Accessed via Symbol to prevent accidental
    * exposure through console.log, JSON.stringify, or Object.keys.
@@ -128,9 +125,7 @@ export async function createKeypairWallet(
     publicKey: {
       toBase58: () => keypair.publicKey.toBase58(),
     },
-    signTransaction: async <T extends Transaction | VersionedTransaction>(
-      tx: T
-    ): Promise<T> => {
+    signTransaction: async <T>(tx: T): Promise<T> => {
       if (tx instanceof VersionedTransaction) {
         tx.sign([keypair]);
         return tx;

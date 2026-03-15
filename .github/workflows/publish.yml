@@ -31,6 +31,8 @@ jobs:
   publish:
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -45,7 +47,19 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Publish
+      - name: Publish to npm
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          # Extract changelog for this version
+          BODY=$(awk "/^## \[${VERSION#v}\]/{found=1; next} /^## \[/{if(found) exit} found{print}" CHANGELOG.md)
+          if [ -z "$BODY" ]; then
+            BODY="Release ${VERSION}"
+          fi
+          gh release create "$VERSION" --title "$VERSION" --notes "$BODY"
+        env:
+          GH_TOKEN: ${{ github.token }}

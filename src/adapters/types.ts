@@ -117,13 +117,18 @@ export interface AdapterConfig {
 }
 
 /**
- * Multi-wallet container for different chains
+ * Multi-wallet container for different chains.
+ *
+ * @example
+ * ```typescript
+ * import type { SolanaWallet, EvmWallet } from '@dexterai/x402/adapters';
+ * ```
  */
 export interface WalletSet {
-  /** Solana wallet (from @solana/wallet-adapter) */
-  solana?: unknown;
-  /** EVM wallet (from wagmi, ethers, or viem) */
-  evm?: unknown;
+  /** Solana wallet (from @solana/wallet-adapter or createKeypairWallet) */
+  solana?: import('../adapters/solana').SolanaWallet;
+  /** EVM wallet (from wagmi, createEvmKeypairWallet, or any { address, signTypedData } object) */
+  evm?: import('../adapters/evm').EvmWallet;
 }
 
 /**

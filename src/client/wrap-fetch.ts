@@ -22,6 +22,7 @@ import { createX402Client, type X402ClientConfig } from './x402-client';
 import { createKeypairWallet } from './keypair-wallet';
 import { createEvmKeypairWallet } from './evm-wallet';
 import type { AccessPassClientConfig } from '../types';
+import type { WalletSet } from '../adapters/types';
 
 /**
  * Options for wrapFetch
@@ -84,6 +85,12 @@ export interface WrapFetchOptions {
    * ```
    */
   accessPass?: AccessPassClientConfig;
+
+  /**
+   * Called before signing a payment. Return true to proceed, false to reject.
+   * Used internally by Budget Accounts — can also be set directly.
+   */
+  onPaymentRequired?: (requirements: import('../types').PaymentAccept) => boolean | Promise<boolean>;
 }
 
 /**
@@ -125,6 +132,7 @@ export function wrapFetch(
     maxAmountAtomic,
     verbose,
     accessPass,
+    onPaymentRequired,
   } = options;
 
   // Validate at least one wallet
@@ -134,7 +142,7 @@ export function wrapFetch(
 
   // Build wallet set — both wallet factories are async (dynamic imports for ESM).
   // We start them eagerly and await before the first fetch call.
-  const wallets: { solana?: unknown; evm?: unknown } = {};
+  const wallets: WalletSet = {};
   const walletInits: Promise<void>[] = [];
 
   if (walletPrivateKey) {
@@ -164,6 +172,7 @@ export function wrapFetch(
     fetch: fetchImpl,
     verbose,
     accessPass,
+    onPaymentRequired,
   };
 
   // Create client

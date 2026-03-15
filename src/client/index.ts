@@ -62,6 +62,14 @@ export {
 // Constants
 export { DEXTER_FACILITATOR_URL, USDC_MINT } from '../types';
 
+// API Discovery
+export { searchAPIs } from './discovery';
+export type { SearchAPIsOptions, DiscoveredAPI } from './discovery';
+
+// Budget Accounts (autonomous agent spending controls)
+export { createBudgetAccount } from './budget-account';
+export type { BudgetAccount, BudgetAccountConfig, BudgetConfig, PaymentRecord } from './budget-account';
+
 // Sponsored Access (Ads for Agents)
 export {
   getSponsoredRecommendations,

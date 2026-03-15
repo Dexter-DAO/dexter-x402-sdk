@@ -135,6 +135,19 @@ export interface X402ClientConfig {
    * ```
    */
   onPaymentRequired?: (requirements: PaymentAccept) => boolean | Promise<boolean>;
+
+  /**
+   * Maximum retry attempts for transient failures (network errors, 502/503).
+   * Does not cause double payments — EIP-3009 nonces prevent replay.
+   * @default 0 (no retry)
+   */
+  maxRetries?: number;
+
+  /**
+   * Base delay between retries in milliseconds (doubles each attempt).
+   * @default 500
+   */
+  retryDelayMs?: number;
 }
 
 /**
@@ -172,11 +185,40 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     verbose = false,
     accessPass: accessPassConfig,
     onPaymentRequired,
+    maxRetries = 0,
+    retryDelayMs = 500,
   } = config;
 
   const log = verbose
     ? console.log.bind(console, '[x402]')
     : () => {};
+
+  /** Retry-aware fetch — retries on network errors and 5xx responses */
+  async function fetchWithRetry(
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const response = await customFetch(input, init);
+        // Don't retry on 4xx (client errors) — only 502/503/504
+        if (response.status >= 502 && response.status <= 504 && attempt < maxRetries) {
+          log(`Retry ${attempt + 1}/${maxRetries}: server returned ${response.status}`);
+          await new Promise(r => setTimeout(r, retryDelayMs * Math.pow(2, attempt)));
+          continue;
+        }
+        return response;
+      } catch (err) {
+        lastError = err;
+        if (attempt < maxRetries) {
+          log(`Retry ${attempt + 1}/${maxRetries}: ${err instanceof Error ? err.message : 'network error'}`);
+          await new Promise(r => setTimeout(r, retryDelayMs * Math.pow(2, attempt)));
+        }
+      }
+    }
+    throw lastError;
+  }
 
   // ── Access pass cache (host → { jwt, expiresAt }) ──
   const passCache = new Map<string, { jwt: string; expiresAt: number }>();
@@ -455,8 +497,8 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       }
     }
 
-    // Make initial request (without pass)
-    const response = await customFetch(input, init);
+    // Make initial request (with retry on transient failures)
+    const response = await fetchWithRetry(input, init);
 
     // If not 402, return as-is
     if (response.status !== 402) {
@@ -637,9 +679,9 @@ export function createX402Client(config: X402ClientConfig): X402Client {
 
     const paymentSignatureHeader = btoa(JSON.stringify(paymentSignature));
 
-    // Retry request with payment
+    // Retry request with payment (safe to retry — EIP-3009 nonces prevent double-spend)
     log('Retrying request with payment...');
-    const retryResponse = await customFetch(input, {
+    const retryResponse = await fetchWithRetry(input, {
       ...init,
       headers: {
         ...(init?.headers || {}),

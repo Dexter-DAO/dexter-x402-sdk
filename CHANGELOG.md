@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-03-15
+
+### Breaking
+- **`PaymentAccept.amount` is now required** — v2 spec field. `maxAmountRequired` is deprecated (optional alias for v1 compat).
+- **`PaymentAccept.extra` is now optional** — per v2 spec.
+- **`TokenPricing` methods are async** — `calculate()`, `validateQuote()`, `countTokens()` return Promises. `tiktoken` is now an optional peer dependency (lazy-loaded on first call).
+
+### Added
+- **Budget Accounts** — `createBudgetAccount()` wraps fetch with spending controls: total budget, per-request cap, hourly rate limit, and domain allowlist. Tracks cumulative spend with a full payment ledger. Give your agent $50 and let it spend autonomously.
+- **API Discovery** — `searchAPIs()` searches the Dexter marketplace for x402 paid APIs by query, category, network, price range, and quality score. Returns typed `DiscoveredAPI[]` that can be called directly with `wrapFetch`.
+- **Retry with exponential backoff** — `maxRetries` and `retryDelayMs` in client config. Retries on network errors and 502/503/504. Safe for payments — EIP-3009 nonces prevent double-spend.
+- **First-class Sponsored Access (Ads for Agents)** — `getSponsoredRecommendations()`, `getSponsoredAccessInfo()`, `fireImpressionBeacon()` client helpers. React hook `sponsoredRecommendations`. Server `onMatch` callback. `@dexterai/x402-ads-types` promoted to direct dependency.
+- **Pre-payment inspection** — `onPaymentRequired` callback on client and `wrapFetch`. Return `false` to reject a payment before signing.
+- **Settlement webhooks** — `onSettlement` and `onVerifyFailed` callbacks in middleware config.
+- **CSP headers** on browser paywall page.
+- **`KEYPAIR_SYMBOL`** for safe access to the Solana Keypair (Symbol-keyed, hidden from serialization).
+- **`escapeHtml()`** exported from server for safe HTML rendering of payment data.
+- **`isSolanaNetwork()` / `isEvmNetwork()`** utility functions.
+- **New error codes** — `wallet_disconnected`, `user_rejected_signature`, `rpc_timeout`, `facilitator_timeout`.
+- **Typed `WalletSet`** — `solana` and `evm` fields are now typed as `SolanaWallet` and `EvmWallet` instead of `unknown`.
+- **52 unit tests** covering dynamic pricing, XSS escaping, USDC detection, type compliance, amount conversion, sponsored access.
+- **CI/CD** — GitHub Actions: typecheck + build + test on Node 18/20/22. Publish workflow gated on tests, auto-creates GitHub releases.
+- **`extensions` field** on `PaymentRequired` and `PaymentSignature` per v2 spec.
+- **Auto GitHub releases** from tag pushes with changelog extraction.
+
+### Fixed
+- **EVM nonce security** — `Math.random()` replaced with `crypto.getRandomValues()`.
+- **Dynamic pricing security** — FNV-1a replaced with HMAC-SHA256 with timestamp-bounded quotes (5-min TTL).
+- **Balance checks** throw on RPC errors instead of silently returning 0.
+- **Resource URL validation** — blocks `javascript:`, `data:`, `file:` schemes.
+- **Internal errors** no longer leaked to clients.
+- **Stripe guard** uses WeakMap instead of fragile `as any` property.
+- **Source maps removed** from production build (62% smaller package).
+- **Client JWT cache** capped to 24h regardless of decoded `exp`.
+
 ## [1.9.4] - 2026-03-15
 
 ### Fixed
