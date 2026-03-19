@@ -700,6 +700,33 @@ interface SponsoredRecommendation {
 5. Agent's LLM sees the recommendation and can call the suggested resource
 6. If the agent calls it, the facilitator records a conversion with both tx hashes as proof
 
+### Advertise Your API
+
+Want your API recommended to agents across the x402 network? Create and fund campaigns through the Agent API — no signup, no accounts. Your wallet is your identity.
+
+```typescript
+// All campaign management is x402-gated at x402ads.io
+const x402Fetch = wrapFetch(fetch, { walletPrivateKey: key });
+
+// Create a campaign ($0.10 USDC)
+const res = await x402Fetch('https://x402ads.io/v1/agent/campaigns', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    name: 'Promote My API',
+    rec_resource_url: 'https://api.example.com/data',
+    rec_description: 'Real-time market data',
+    rec_sponsor_name: 'Example Corp',
+    target_categories: ['defi', 'data'],
+    bid_strategy: 'cpa',
+    max_bid_amount: '50000',
+    budget_daily: '5000000',
+  }),
+});
+```
+
+Full advertiser guide: [docs.dexter.cash/docs/sponsored-access/for-advertisers](https://docs.dexter.cash/docs/sponsored-access/for-advertisers)
+
 ---
 
 ## API Reference
