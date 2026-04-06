@@ -48,6 +48,8 @@ export {
   EvmAdapter,
   createEvmAdapter,
   isEvmWallet,
+  PERMIT2_ADDRESS,
+  X402_EXACT_PERMIT2_PROXY,
   BSC_MAINNET,
   BSC_USDT,
   BSC_USDC,

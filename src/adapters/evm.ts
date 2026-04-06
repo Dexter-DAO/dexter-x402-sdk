@@ -9,6 +9,35 @@ import type { ChainAdapter, AdapterConfig, SignedTransaction } from './types';
 import type { PaymentAccept } from '../types';
 
 /**
+ * Permit2 constants (Uniswap canonical deployment, same address on every EVM chain)
+ */
+export const PERMIT2_ADDRESS = '0x000000000022D473030F116dDEE9F6B43aC78BA3';
+export const X402_EXACT_PERMIT2_PROXY = '0x402085c248EeA27D92E8b30b2C58ed07f9E20001';
+
+/**
+ * EIP-712 types for Permit2 PermitWitnessTransferFrom (matches upstream @x402/evm)
+ */
+const PERMIT2_WITNESS_TYPES = {
+  PermitWitnessTransferFrom: [
+    { name: 'permitted', type: 'TokenPermissions' },
+    { name: 'spender', type: 'address' },
+    { name: 'nonce', type: 'uint256' },
+    { name: 'deadline', type: 'uint256' },
+    { name: 'witness', type: 'Witness' },
+  ],
+  TokenPermissions: [
+    { name: 'token', type: 'address' },
+    { name: 'amount', type: 'uint256' },
+  ],
+  Witness: [
+    { name: 'to', type: 'address' },
+    { name: 'validAfter', type: 'uint256' },
+  ],
+};
+
+const MAX_UINT256 = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
+
+/**
  * Approval strategy from the facilitator's /supported endpoint.
  * Controls how much to approve on chains that use the exact-approval scheme.
  */
@@ -293,6 +322,11 @@ export class EvmAdapter implements ChainAdapter {
       return this.buildApprovalTransaction(accept, wallet, rpcUrl);
     }
 
+    // Route to Permit2 flow when facilitator signals it
+    if (accept.extra?.assetTransferMethod === 'permit2') {
+      return this.buildPermit2Transaction(accept, wallet, rpcUrl);
+    }
+
     const { payTo, asset, extra } = accept;
     // amount is the v2 spec field, maxAmountRequired is v1 fallback
     const amount = accept.amount ?? accept.maxAmountRequired;
@@ -535,6 +569,137 @@ export class EvmAdapter implements ChainAdapter {
       deadline,
       paymentId,
       signature,
+    };
+
+    return {
+      serialized: JSON.stringify(payload),
+      signature,
+    };
+  }
+
+  // ===========================================================================
+  // Permit2: Universal ERC-20 payments via Uniswap's Permit2 contract
+  // ===========================================================================
+
+  /**
+   * Build a Permit2 payment transaction. Used when the facilitator signals
+   * assetTransferMethod: "permit2" in extra (e.g., BSC where EIP-3009 is unavailable).
+   *
+   * Flow:
+   * 1. Check if token has approved the Permit2 contract. If not, approve(Permit2, maxUint256).
+   * 2. Sign EIP-712 PermitWitnessTransferFrom against the Permit2 contract.
+   * 3. Return { permit2Authorization, signature } payload for the facilitator.
+   */
+  private async buildPermit2Transaction(
+    accept: PaymentAccept,
+    wallet: EvmWallet,
+    rpcUrl?: string,
+  ): Promise<SignedTransaction> {
+    const { payTo, asset } = accept;
+    const amount = accept.amount ?? accept.maxAmountRequired;
+    if (!amount) {
+      throw new Error('Missing amount in payment requirements');
+    }
+
+    if (!wallet.signTypedData) {
+      throw new Error('Wallet does not support signTypedData (EIP-712)');
+    }
+
+    this.log('Building Permit2 transaction:', {
+      from: wallet.address,
+      to: payTo,
+      amount,
+      asset,
+      network: accept.network,
+    });
+
+    const url = rpcUrl || this.getDefaultRpcUrl(accept.network);
+
+    // 1. Check allowance: token → Permit2 contract
+    const currentAllowance = await this.readAllowance(url, asset, wallet.address, PERMIT2_ADDRESS);
+
+    if (currentAllowance < BigInt(amount)) {
+      if (!wallet.sendTransaction) {
+        throw new Error(
+          'Permit2 payments require a wallet that supports sendTransaction for the one-time Permit2 approval. ' +
+          'Use createEvmKeypairWallet() or a browser wallet with transaction support.'
+        );
+      }
+
+      this.log(`Approving Permit2 for ${asset} (current allowance: ${currentAllowance})`);
+      const approveTxHash = await wallet.sendTransaction({
+        to: asset,
+        data: this.encodeApprove(PERMIT2_ADDRESS, MAX_UINT256),
+        value: 0n,
+      });
+
+      this.log(`Permit2 approval tx sent: ${approveTxHash}`);
+      await this.waitForReceipt(url, approveTxHash);
+      this.log('Permit2 approval confirmed');
+    } else {
+      this.log('Sufficient Permit2 allowance, skipping approval');
+    }
+
+    // 2. Generate random 256-bit nonce
+    const nonceBytes = new Uint8Array(32);
+    (globalThis.crypto ?? (await import('crypto')).webcrypto).getRandomValues(nonceBytes);
+    const nonce = [...nonceBytes].reduce((acc, b) => acc * 256n + BigInt(b), 0n);
+
+    // 3. Build timing
+    const now = Math.floor(Date.now() / 1000);
+    const validAfter = now - 600; // 10 minutes clock skew tolerance
+    const deadline = now + (accept.maxTimeoutSeconds || 300);
+    const chainId = this.getChainId(accept.network);
+
+    // 4. Build EIP-712 domain (signs against canonical Permit2 contract)
+    const domain = {
+      name: 'Permit2',
+      chainId: BigInt(chainId),
+      verifyingContract: PERMIT2_ADDRESS,
+    };
+
+    // 5. Build message
+    const message = {
+      permitted: {
+        token: asset,
+        amount: BigInt(amount),
+      },
+      spender: X402_EXACT_PERMIT2_PROXY,
+      nonce,
+      deadline: BigInt(deadline),
+      witness: {
+        to: payTo,
+        validAfter: BigInt(validAfter),
+      },
+    };
+
+    // 6. Sign
+    const signature = await wallet.signTypedData({
+      domain: domain as Record<string, unknown>,
+      types: PERMIT2_WITNESS_TYPES as Record<string, unknown[]>,
+      primaryType: 'PermitWitnessTransferFrom',
+      message: message as Record<string, unknown>,
+    });
+
+    this.log('Permit2 PermitWitnessTransferFrom signature obtained');
+
+    // 7. Build payload — matches upstream @x402/evm permit2 payload shape
+    const payload = {
+      signature,
+      permit2Authorization: {
+        from: wallet.address,
+        permitted: {
+          token: asset,
+          amount,
+        },
+        spender: X402_EXACT_PERMIT2_PROXY,
+        nonce: nonce.toString(),
+        deadline: String(deadline),
+        witness: {
+          to: payTo,
+          validAfter: String(validAfter),
+        },
+      },
     };
 
     return {
