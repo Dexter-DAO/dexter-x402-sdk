@@ -1,6 +1,6 @@
 {
   "name": "@dexterai/x402",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Full-stack x402 SDK - add paid API monetization to any endpoint. Express middleware, React hooks, Access Pass, dynamic pricing. Solana, Base, Polygon, Arbitrum, Optimism, Avalanche, SKALE.",
   "author": "Dexter",
   "license": "MIT",
