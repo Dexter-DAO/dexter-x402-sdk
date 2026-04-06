@@ -134,8 +134,8 @@ export interface AcceptsExtra {
 export interface PaymentAccept {
   /** x402 version (1 or 2, defaults to 2 if not specified) */
   x402Version?: 1 | 2;
-  /** Payment scheme (always 'exact' for x402 v2) */
-  scheme: 'exact';
+  /** Payment scheme ('exact' for EIP-3009 chains, 'exact-approval' for approval-based chains like BSC) */
+  scheme: 'exact' | 'exact-approval';
   /** CAIP-2 network identifier (v1: 'solana', v2: 'solana:5eykt...') */
   network: string;
   /** Payment amount in atomic units (x402 v2 spec field) */

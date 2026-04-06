@@ -306,6 +306,23 @@ export function createX402Client(config: X402ClientConfig): X402Client {
   }
 
   /**
+   * Get a human-readable chain name for error messages
+   */
+  function getChainDisplayName(network: string, adapterName: string): string {
+    const names: Record<string, string> = {
+      'eip155:56': 'BSC',
+      'eip155:8453': 'Base',
+      'eip155:84532': 'Base Sepolia',
+      'eip155:42161': 'Arbitrum',
+      'eip155:137': 'Polygon',
+      'eip155:10': 'Optimism',
+      'eip155:43114': 'Avalanche',
+      'eip155:1': 'Ethereum',
+    };
+    return names[network] || adapterName;
+  }
+
+  /**
    * Get RPC URL for a network
    */
   function getRpcUrl(network: string, adapter: ChainAdapter): string {
@@ -600,10 +617,10 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       const requiredAmount = Number(paymentAmount) / Math.pow(10, decimals);
 
       if (balance < requiredAmount) {
-        const network = adapter.name === 'EVM' ? 'Base' : 'Solana';
+        const chainName = getChainDisplayName(accept.network, adapter.name);
         throw new X402Error(
           'insufficient_balance',
-          `Insufficient USDC balance on ${network}. Have $${balance.toFixed(4)}, need $${requiredAmount.toFixed(4)}`
+          `Insufficient balance on ${chainName}. Have $${balance.toFixed(4)}, need $${requiredAmount.toFixed(4)}`
         );
       }
       log(`Balance OK: $${balance.toFixed(4)} >= $${requiredAmount.toFixed(4)}`);

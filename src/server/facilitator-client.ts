@@ -157,12 +157,12 @@ export class FacilitatorClient {
   async getFeePayer(network: string): Promise<string | undefined> {
     const supported = await this.getSupported();
     const kind = supported.kinds.find(
-      (k) => k.x402Version === 2 && k.scheme === 'exact' && k.network === network,
+      (k) => k.x402Version === 2 && (k.scheme === 'exact' || k.scheme === 'exact-approval') && k.network === network,
     );
 
     if (!kind) {
       throw new Error(
-        `Facilitator does not support network "${network}" with scheme "exact"`,
+        `Facilitator does not support network "${network}" with a recognized scheme`,
       );
     }
 
@@ -175,7 +175,7 @@ export class FacilitatorClient {
   async getNetworkExtra(network: string): Promise<SupportedKind['extra']> {
     const supported = await this.getSupported();
     const kind = supported.kinds.find(
-      (k) => k.x402Version === 2 && k.scheme === 'exact' && k.network === network,
+      (k) => k.x402Version === 2 && (k.scheme === 'exact' || k.scheme === 'exact-approval') && k.network === network,
     );
     return kind?.extra;
   }

@@ -20,7 +20,7 @@
 
 import { createSolanaAdapter as _createSolanaAdapter } from './solana';
 import { createEvmAdapter as _createEvmAdapter } from './evm';
-import { USDC_ADDRESSES as _USDC_ADDRESSES } from './evm';
+import { USDC_ADDRESSES as _USDC_ADDRESSES, BSC_STABLECOIN_ADDRESSES as _BSC_STABLECOINS } from './evm';
 
 // Types
 export type {
@@ -48,6 +48,10 @@ export {
   EvmAdapter,
   createEvmAdapter,
   isEvmWallet,
+  BSC_MAINNET,
+  BSC_USDT,
+  BSC_USDC,
+  BSC_STABLECOIN_ADDRESSES,
   BASE_MAINNET,
   BASE_SEPOLIA,
   ARBITRUM_ONE,
@@ -64,6 +68,7 @@ export type { EvmWallet } from './evm';
 /**
  * Check if an asset address is a known USDC contract (any chain).
  * Single source of truth for decimal inference in the client.
+ * Also recognizes BSC stablecoins (USDT + USDC, both 18 decimals).
  */
 export function isKnownUSDC(asset: string): boolean {
   // Solana mints
@@ -72,6 +77,10 @@ export function isKnownUSDC(asset: string): boolean {
   // All EVM USDC addresses (case-insensitive for EVM)
   const lc = asset.toLowerCase();
   for (const addr of Object.values(_USDC_ADDRESSES)) {
+    if (addr.toLowerCase() === lc) return true;
+  }
+  // BSC stablecoins (USDT + USDC — both recognized, decimals come from extra)
+  for (const addr of Object.keys(_BSC_STABLECOINS)) {
     if (addr.toLowerCase() === lc) return true;
   }
   return false;
