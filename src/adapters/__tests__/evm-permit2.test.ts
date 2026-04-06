@@ -206,7 +206,7 @@ describe('EvmAdapter — Permit2', () => {
       const mockFetch = mockFetchResponses(BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'));
       vi.stubGlobal('fetch', mockFetch);
 
-      const result = await adapter.buildTransaction(accept, wallet);
+      await adapter.buildTransaction(accept, wallet);
       const signCall = wallet.signTypedData.mock.calls[0][0];
       expect(signCall.primaryType).toBe('PermitWitnessTransferFrom');
       expect(signCall.domain.chainId).toBe(8453n);
