@@ -444,12 +444,15 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       } catch {}
     }
 
-    const paymentSignature = {
+    const paymentSignature: Record<string, unknown> = {
       x402Version: accept.x402Version ?? 2,
       resource: resolvedResource,
       accepted: accept,
       payload,
     };
+    if (signedTx.extensions) {
+      paymentSignature.extensions = signedTx.extensions;
+    }
 
     const paymentSignatureHeader = btoa(JSON.stringify(paymentSignature));
 
@@ -687,12 +690,15 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       }
     }
 
-    const paymentSignature = {
+    const paymentSignature: Record<string, unknown> = {
       x402Version: accept.x402Version ?? 2,  // Echo version from 402 response, default to 2
       resource: resolvedResource,
       accepted: accept,
       payload,
     };
+    if (signedTx.extensions) {
+      paymentSignature.extensions = signedTx.extensions;
+    }
 
     const paymentSignatureHeader = btoa(JSON.stringify(paymentSignature));
 

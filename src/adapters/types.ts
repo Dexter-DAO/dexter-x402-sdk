@@ -35,6 +35,8 @@ export interface SignedTransaction {
   serialized: string;
   /** Transaction signature/hash if available before broadcast */
   signature?: string;
+  /** Protocol extensions (e.g., erc20ApprovalGasSponsoring) to attach to the payment payload */
+  extensions?: Record<string, unknown>;
 }
 
 /**

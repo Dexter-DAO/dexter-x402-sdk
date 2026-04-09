@@ -158,6 +158,20 @@ export interface EvmWallet {
     data: string;
     value?: bigint;
   }): Promise<string>;
+  /**
+   * Sign a transaction without broadcasting.
+   * Returns the RLP-encoded signed transaction as a hex string.
+   * Used by the erc20ApprovalGasSponsoring extension to hand a signed
+   * approval tx to the facilitator for relay.
+   */
+  signTransaction?(params: {
+    to: string;
+    data: string;
+    chainId: number;
+    gas?: bigint;
+    gasPrice?: bigint;
+    nonce?: number;
+  }): Promise<string>;
 }
 
 /**
@@ -618,24 +632,63 @@ export class EvmAdapter implements ChainAdapter {
     // 1. Check allowance: token → Permit2 contract
     const currentAllowance = await this.readAllowance(url, asset, wallet.address, PERMIT2_ADDRESS);
 
+    // Track whether we need the erc20ApprovalGasSponsoring extension
+    let approvalExtension: Record<string, unknown> | undefined;
+
     if (currentAllowance < BigInt(amount)) {
-      if (!wallet.sendTransaction) {
+      const approveData = this.encodeApprove(PERMIT2_ADDRESS, MAX_UINT256);
+
+      if (wallet.signTransaction) {
+        // Preferred: sign the approval tx without broadcasting.
+        // The facilitator relays it via sendRawTransaction.
+        // Note: the payer still pays gas on the relayed tx. This does NOT make
+        // the approval gasless — it enables signing-only wallets that can't broadcast.
+        this.log(`Signing Permit2 approval for relay (current allowance: ${currentAllowance})`);
+        const chainId = this.getChainId(accept.network);
+        const gasPrice = await this.readGasPrice(url);
+        const nonce = await this.readNonce(url, wallet.address);
+
+        const signedTx = await wallet.signTransaction({
+          to: asset,
+          data: approveData,
+          chainId,
+          gas: 50000n, // standard ERC-20 approve
+          gasPrice,
+          nonce,
+        });
+
+        approvalExtension = {
+          erc20ApprovalGasSponsoring: {
+            info: {
+              from: wallet.address,
+              asset,
+              spender: PERMIT2_ADDRESS,
+              amount: MAX_UINT256.toString(),
+              signedTransaction: signedTx,
+              version: '1',
+            },
+          },
+        };
+        this.log('Permit2 approval signed for facilitator relay');
+      } else if (wallet.sendTransaction) {
+        // Fallback: broadcast the approval directly from the payer's wallet.
+        // Payer needs native token for gas.
+        this.log(`Approving Permit2 directly (current allowance: ${currentAllowance})`);
+        const approveTxHash = await wallet.sendTransaction({
+          to: asset,
+          data: approveData,
+          value: 0n,
+        });
+
+        this.log(`Permit2 approval tx sent: ${approveTxHash}`);
+        await this.waitForReceipt(url, approveTxHash);
+        this.log('Permit2 approval confirmed');
+      } else {
         throw new Error(
-          'Permit2 payments require a wallet that supports sendTransaction for the one-time Permit2 approval. ' +
+          'Permit2 payments require a wallet that supports signTransaction or sendTransaction for the one-time Permit2 approval. ' +
           'Use createEvmKeypairWallet() or a browser wallet with transaction support.'
         );
       }
-
-      this.log(`Approving Permit2 for ${asset} (current allowance: ${currentAllowance})`);
-      const approveTxHash = await wallet.sendTransaction({
-        to: asset,
-        data: this.encodeApprove(PERMIT2_ADDRESS, MAX_UINT256),
-        value: 0n,
-      });
-
-      this.log(`Permit2 approval tx sent: ${approveTxHash}`);
-      await this.waitForReceipt(url, approveTxHash);
-      this.log('Permit2 approval confirmed');
     } else {
       this.log('Sufficient Permit2 allowance, skipping approval');
     }
@@ -705,6 +758,7 @@ export class EvmAdapter implements ChainAdapter {
     return {
       serialized: JSON.stringify(payload),
       signature,
+      extensions: approvalExtension,
     };
   }
 
@@ -783,6 +837,44 @@ export class EvmAdapter implements ChainAdapter {
       await new Promise(r => setTimeout(r, 2000));
     }
     throw new Error(`Approval transaction receipt timeout after ${timeoutMs}ms: ${txHash}`);
+  }
+
+  /**
+   * Read gas price via eth_gasPrice RPC call.
+   */
+  private async readGasPrice(rpcUrl: string): Promise<bigint> {
+    try {
+      const response = await fetch(rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_gasPrice', params: [] }),
+      });
+      const result = (await response.json()) as { result?: string };
+      return result.result ? BigInt(result.result) : 50000000n; // fallback 0.05 gwei
+    } catch {
+      return 50000000n;
+    }
+  }
+
+  /**
+   * Read transaction count (nonce) via eth_getTransactionCount RPC call.
+   */
+  private async readNonce(rpcUrl: string, address: string): Promise<number> {
+    try {
+      const response = await fetch(rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 1,
+          method: 'eth_getTransactionCount',
+          params: [address, 'latest'],
+        }),
+      });
+      const result = (await response.json()) as { result?: string };
+      return result.result ? parseInt(result.result, 16) : 0;
+    } catch {
+      return 0;
+    }
   }
 
   /**

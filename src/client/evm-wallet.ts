@@ -91,6 +91,22 @@ export async function createEvmKeypairWallet(privateKey: string): Promise<EvmWal
       primaryType: string;
       message: Record<string, unknown>;
     }) => account.signTypedData(params),
+    signTransaction: (params: {
+      to: string;
+      data: string;
+      chainId: number;
+      gas?: bigint;
+      gasPrice?: bigint;
+      nonce?: number;
+    }) => account.signTransaction({
+      to: params.to as `0x${string}`,
+      data: params.data as `0x${string}`,
+      chainId: params.chainId,
+      gas: params.gas,
+      gasPrice: params.gasPrice,
+      nonce: params.nonce,
+      type: 'legacy' as const,
+    }),
   };
 }
 
