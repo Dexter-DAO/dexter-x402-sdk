@@ -62,9 +62,14 @@ export {
 // Constants
 export { DEXTER_FACILITATOR_URL, USDC_MINT } from '../types';
 
-// API Discovery
-export { searchAPIs } from './discovery';
-export type { SearchAPIsOptions, DiscoveredAPI } from './discovery';
+// API Discovery (semantic capability search — see 3.0.0 breaking change notes)
+export { capabilitySearch } from './discovery';
+export type {
+  CapabilitySearchOptions,
+  CapabilitySearchResult,
+  CapabilityAPI,
+  NoMatchReason,
+} from './discovery';
 
 // Budget Accounts (autonomous agent spending controls)
 export { createBudgetAccount } from './budget-account';

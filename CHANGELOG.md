@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-04-15
+
+### Breaking
+- **`searchAPIs()` is gone. Replaced by `capabilitySearch()`.** The legacy substring ranker at `/api/facilitator/marketplace/resources` was retired — discovery now goes through the semantic capability search pipeline at `/api/x402gle/capability` (vector search + similarity floor + tiering + cross-encoder LLM rerank).
+- **`DiscoveredAPI` type removed. Replaced by `CapabilityAPI`.** The new shape carries `tier: 'strong' | 'related'`, a raw `similarity` score (0–1), a `why` string explaining the ranking factors, and a final combined `score`. It also nests gaming-flag signals (`gamingFlags`, `gamingSuspicious`) and drops `sellerReputation`, `totalVolume` (formatted), `lastActive`, and `authRequired`.
+- **Hard-filter params are gone.** `category`, `network`, `maxPrice`, `verifiedOnly`, and `sort` were removed from the search options. They were the source of silent false-empties (e.g. `{ query: 'ETH price', network: 'ethereum' }` returned zero results because every ETH-price resource accepts payment on Base). The ranker handles these semantically; payment rail is a checkout-time concern the caller handles separately. The new options are: `query` (required), `limit`, `unverified`, `testnets`, `rerank`, and `endpoint`.
+- **Response is tiered.** `capabilitySearch()` returns `{ strongResults, relatedResults, strongCount, relatedCount, topSimilarity, noMatchReason, rerank, intent, durationMs }` instead of a flat array. `strongResults` are high-confidence matches that cleared the strong similarity threshold; `relatedResults` are adjacent candidates that cleared the floor but not the strong threshold.
+
+### Added
+- **`capabilitySearch(options: CapabilitySearchOptions): Promise<CapabilitySearchResult>`** — semantic search with synonym expansion at the intent parse layer, similarity floor filtering, strong/related tiering, and cross-encoder LLM rerank on the top strong results.
+- **`NoMatchReason` type** — `'below_similarity_threshold' | 'below_strong_threshold' | null`. Callers can distinguish "corpus has zero candidates" from "candidates exist but none are high-confidence".
+- **Intent telemetry on every response** — `result.intent` exposes the parsed `capabilityText` and the synonym-expanded `expandedCapabilityText` that was actually embedded for the vector search. Useful for debugging why a query ranked a particular way.
+- **Rerank telemetry on every response** — `result.rerank.applied` tells you whether the LLM cross-encoder actually reordered the top strong results, and `result.rerank.reason` explains any skip.
+
+### Migration
+Replace the search call:
+```ts
+// Before (2.x)
+const results = await searchAPIs({ query: 'ETH price', category: 'data', maxPrice: 0.10 });
+for (const api of results) { console.log(api.name, api.price); }
+
+// After (3.0)
+const result = await capabilitySearch({ query: 'ETH price' });
+for (const api of result.strongResults) { console.log(api.name, api.price, api.why); }
+if (result.strongCount === 0 && result.relatedCount > 0) {
+  // Fall back to related matches when nothing cleared the strong threshold
+  for (const api of result.relatedResults) { console.log('related:', api.name); }
+}
+```
+
+Filter semantically via the query text, not parameters:
+- `searchAPIs({ category: 'defi' })` → `capabilitySearch({ query: 'DeFi tools' })`
+- `searchAPIs({ network: 'solana' })` → `capabilitySearch({ query: 'on Solana' })` (or filter client-side via `pricing.network`)
+- `searchAPIs({ maxPrice: 0.10 })` → filter the result array: `result.strongResults.filter(r => r.priceUsdc != null && r.priceUsdc <= 0.10)`
+
 ## [2.0.0] - 2026-03-15
 
 ### Breaking
