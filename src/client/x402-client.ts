@@ -32,8 +32,7 @@ import type {
 import { X402Error } from '../types';
 import { createSolanaAdapter, createEvmAdapter, isSolanaWallet, isEvmWallet, isKnownUSDC } from '../adapters';
 
-// Typed payment receipt — replaces the (response as any)._x402 pattern.
-// Uses a WeakMap so we don't mutate the Response object.
+// WeakMap keyed on the response so we don't mutate the Response object.
 const receiptStore = new WeakMap<Response, PaymentReceipt>();
 
 /**
@@ -55,7 +54,6 @@ export interface PaymentReceipt {
 
 /**
  * Get the x402 payment receipt from a response, or undefined if none.
- * Typed alternative to the legacy `(response as any)._x402` pattern.
  */
 export function getPaymentReceipt(response: Response): PaymentReceipt | undefined {
   return receiptStore.get(response);
@@ -738,8 +736,6 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       try {
         const receipt: PaymentReceipt = JSON.parse(atob(paymentResponseHeader));
         receiptStore.set(retryResponse, receipt);
-        // Backwards compat: keep the legacy property for existing consumers
-        (retryResponse as unknown as Record<string, unknown>)['_x402'] = receipt;
         if (receipt.extensions) {
           log('Settlement extensions:', Object.keys(receipt.extensions).join(', '));
         }

@@ -287,7 +287,6 @@ export type X402ErrorCode =
   | 'invalid_payment_required'
   | 'unsupported_network'
   | 'no_matching_payment_option'
-  | 'no_solana_accept' // Legacy, kept for compatibility
   | 'missing_fee_payer'
   | 'missing_decimals'
   | 'missing_amount'

@@ -43,8 +43,6 @@ export interface KeypairWallet extends SolanaWallet {
    * ```
    */
   [KEYPAIR_SYMBOL]: Keypair;
-  /** @deprecated Use wallet[KEYPAIR_SYMBOL] instead — this will be removed in a future major version */
-  keypair: Keypair;
 }
 
 export { KEYPAIR_SYMBOL };
@@ -136,7 +134,6 @@ export async function createKeypairWallet(
       throw new Error('Unknown transaction type');
     },
     [KEYPAIR_SYMBOL]: keypair,
-    keypair, // deprecated — kept for backwards compat
   };
 }
 
@@ -145,10 +142,10 @@ export async function createKeypairWallet(
  */
 export function isKeypairWallet(wallet: unknown): wallet is KeypairWallet {
   if (!wallet || typeof wallet !== 'object') return false;
-  const w = wallet as Record<string, unknown>;
+  const w = wallet as Record<string | symbol, unknown>;
   return (
-    'keypair' in w &&
-    w.keypair instanceof Keypair &&
+    KEYPAIR_SYMBOL in w &&
+    w[KEYPAIR_SYMBOL] instanceof Keypair &&
     'publicKey' in w &&
     'signTransaction' in w
   );
