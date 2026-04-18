@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.1] - 2026-04-18
+
+### Changed
+- `capabilitySearch` implementation moved to `@dexterai/x402-core` — this SDK now re-exports from the shared core package so discovery logic stays consistent across Dexter surfaces (SDK, OpenDexter, MCP servers, widgets). Public API unchanged.
+- Build now minifies output and targets ES2022.
+- Bumped `@dexterai/x402-ads-types` from `^0.1.0` to `^0.2.0`.
+
+### Added
+- `@dexterai/x402-core` as a runtime dependency.
+
+### Removed
+- Stale `tweet-thread-v2.md` draft marketing content from the repo root.
+
 ## [3.0.0] - 2026-04-15
 
 ### Breaking

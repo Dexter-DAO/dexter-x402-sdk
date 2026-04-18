@@ -11,8 +11,10 @@ export default defineConfig({
   format: ['esm', 'cjs'],
   dts: true,
   clean: true,
+  minify: true,
   splitting: false,
   sourcemap: false,
+  target: 'es2022',
   external: [
     // Solana
     '@solana/web3.js',
