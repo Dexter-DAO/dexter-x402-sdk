@@ -4,7 +4,12 @@
  * Chain-agnostic helpers for x402 payments.
  */
 
-import { SOLANA_MAINNET_NETWORK, BASE_MAINNET_NETWORK } from './types';
+import {
+  SOLANA_MAINNET_NETWORK,
+  SOLANA_DEVNET_NETWORK,
+  SOLANA_TESTNET_NETWORK,
+  BASE_MAINNET_NETWORK,
+} from './constants';
 
 // ============================================================================
 // Amount Conversion
@@ -96,10 +101,10 @@ export function getDefaultRpcUrl(network: string): string {
   const family = getChainFamily(network);
 
   if (family === 'solana') {
-    if (network.includes('devnet') || network === 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1') {
+    if (network.includes('devnet') || network === SOLANA_DEVNET_NETWORK) {
       return 'https://api.devnet.solana.com';
     }
-    if (network.includes('testnet') || network === 'solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z') {
+    if (network.includes('testnet') || network === SOLANA_TESTNET_NETWORK) {
       return 'https://api.testnet.solana.com';
     }
     // Mainnet uses Dexter's RPC proxy
@@ -138,8 +143,8 @@ export function getDefaultRpcUrl(network: string): string {
 export function getChainName(network: string): string {
   const mapping: Record<string, string> = {
     [SOLANA_MAINNET_NETWORK]: 'Solana',
-    'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1': 'Solana Devnet',
-    'solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z': 'Solana Testnet',
+    [SOLANA_DEVNET_NETWORK]: 'Solana Devnet',
+    [SOLANA_TESTNET_NETWORK]: 'Solana Testnet',
     'solana': 'Solana',
     [BASE_MAINNET_NETWORK]: 'Base',
     'eip155:84532': 'Base Sepolia',
@@ -167,7 +172,7 @@ export function getExplorerUrl(txSignature: string, network: string): string {
   const family = getChainFamily(network);
 
   if (family === 'solana') {
-    const isDevnet = network.includes('devnet') || network === 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
+    const isDevnet = network.includes('devnet') || network === SOLANA_DEVNET_NETWORK;
     if (isDevnet) {
       return `https://solscan.io/tx/${txSignature}?cluster=devnet`;
     }

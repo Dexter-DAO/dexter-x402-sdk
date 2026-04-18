@@ -20,6 +20,7 @@
  */
 
 import type { PayToContext, PayToProvider } from '../types';
+import { USDC_DECIMALS, DEXTER_FACILITATOR_URL } from '../constants';
 
 /**
  * Registry of Stripe PayTo providers and their configured networks.
@@ -69,9 +70,6 @@ const CAIP2_NETWORKS: Record<string, string> = {
   'base': 'eip155:8453',
   'base-sepolia': 'eip155:84532',
 };
-
-// USDC has 6 decimals
-const USDC_DECIMALS = 6;
 
 // ============================================================================
 // Implementation
@@ -227,7 +225,7 @@ export function stripePayTo(
   // network and facilitator automatically when Stripe is used
   provider._x402Defaults = {
     network: caip2Network,
-    facilitatorUrl: 'https://x402.dexter.cash',
+    facilitatorUrl: DEXTER_FACILITATOR_URL,
   };
 
   // Register in WeakMap so middleware can detect Stripe providers and

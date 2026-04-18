@@ -7,12 +7,37 @@
 
 import type { ChainAdapter, AdapterConfig, SignedTransaction } from './types';
 import type { PaymentAccept } from '../types';
+import {
+  PERMIT2_ADDRESS,
+  X402_EXACT_PERMIT2_PROXY,
+  BASE_MAINNET,
+  BASE_SEPOLIA,
+  ARBITRUM_ONE,
+  BSC_MAINNET,
+  ETHEREUM_MAINNET,
+  CHAIN_IDS,
+  EVM_RPC_URLS as DEFAULT_RPC_URLS,
+} from '../constants';
 
-/**
- * Permit2 constants (Uniswap canonical deployment, same address on every EVM chain)
- */
-export const PERMIT2_ADDRESS = '0x000000000022D473030F116dDEE9F6B43aC78BA3';
-export const X402_EXACT_PERMIT2_PROXY = '0x402085c248EeA27D92E8b30b2C58ed07f9E20001';
+// Re-export for backwards-compatible public API surface
+export {
+  PERMIT2_ADDRESS,
+  X402_EXACT_PERMIT2_PROXY,
+  BASE_MAINNET,
+  BASE_SEPOLIA,
+  ARBITRUM_ONE,
+  POLYGON,
+  OPTIMISM,
+  AVALANCHE,
+  BSC_MAINNET,
+  SKALE_BASE,
+  SKALE_BASE_SEPOLIA,
+  ETHEREUM_MAINNET,
+  BSC_USDT,
+  BSC_USDC,
+  USDC_ADDRESSES,
+  BSC_STABLECOIN_ADDRESSES,
+} from '../constants';
 
 /**
  * EIP-712 types for Permit2 PermitWitnessTransferFrom (matches upstream @x402/evm)
@@ -47,89 +72,6 @@ interface ApprovalStrategy {
   maxCapUsd?: number;
   exactAboveUsd?: number;
 }
-
-/**
- * CAIP-2 network identifiers for EVM chains.
- * Mirrors dexter-facilitator/src/config/chains.ts — update both when adding chains.
- */
-export const BASE_MAINNET = 'eip155:8453';
-export const BASE_SEPOLIA = 'eip155:84532';
-export const ARBITRUM_ONE = 'eip155:42161';
-export const POLYGON = 'eip155:137';
-export const OPTIMISM = 'eip155:10';
-export const AVALANCHE = 'eip155:43114';
-export const BSC_MAINNET = 'eip155:56';
-export const SKALE_BASE = 'eip155:1187947933';
-export const SKALE_BASE_SEPOLIA = 'eip155:324705682';
-
-/** @deprecated Not supported by the Dexter facilitator. Use BASE_MAINNET for EVM payments. */
-export const ETHEREUM_MAINNET = 'eip155:1';
-
-/**
- * BSC stablecoin addresses (18 decimals — unlike 6 on every other chain)
- */
-export const BSC_USDT = '0x55d398326f99059fF775485246999027B3197955';
-export const BSC_USDC = '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d';
-
-/**
- * Chain IDs by CAIP-2 network
- */
-const CHAIN_IDS: Record<string, number> = {
-  [BSC_MAINNET]: 56,
-  [BASE_MAINNET]: 8453,
-  [BASE_SEPOLIA]: 84532,
-  [ARBITRUM_ONE]: 42161,
-  [POLYGON]: 137,
-  [OPTIMISM]: 10,
-  [AVALANCHE]: 43114,
-  [SKALE_BASE]: 1187947933,
-  [SKALE_BASE_SEPOLIA]: 324705682,
-  [ETHEREUM_MAINNET]: 1,
-};
-
-/**
- * Default RPC URLs.
- * Base mainnet uses Dexter's RPC proxy for reliability and zero-config setup.
- * Source of truth: dexter-facilitator/src/config/chains.ts
- */
-const DEFAULT_RPC_URLS: Record<string, string> = {
-  [BSC_MAINNET]: 'https://bsc-dataseed1.binance.org',
-  [BASE_MAINNET]: 'https://api.dexter.cash/api/base/rpc',
-  [BASE_SEPOLIA]: 'https://sepolia.base.org',
-  [ARBITRUM_ONE]: 'https://arb1.arbitrum.io/rpc',
-  [POLYGON]: 'https://polygon-rpc.com',
-  [OPTIMISM]: 'https://mainnet.optimism.io',
-  [AVALANCHE]: 'https://api.avax.network/ext/bc/C/rpc',
-  [SKALE_BASE]: 'https://skale-base.skalenodes.com/v1/base',
-  [SKALE_BASE_SEPOLIA]: 'https://base-sepolia-testnet.skalenodes.com/v1/jubilant-horrible-ancha',
-  [ETHEREUM_MAINNET]: 'https://eth.llamarpc.com',
-};
-
-/**
- * USDC contract addresses by chain.
- * Source of truth: dexter-facilitator/src/config/chains.ts
- */
-export const USDC_ADDRESSES: Record<string, string> = {
-  [BSC_MAINNET]: BSC_USDC,
-  [BASE_MAINNET]: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-  [BASE_SEPOLIA]: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
-  [ARBITRUM_ONE]: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
-  [POLYGON]: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
-  [OPTIMISM]: '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85',
-  [AVALANCHE]: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E',
-  [SKALE_BASE]: '0x85889c8c714505E0c94b30fcfcF64fE3Ac8FCb20',
-  [SKALE_BASE_SEPOLIA]: '0x2e08028E3C4c2356572E096d8EF835cD5C6030bD',
-  [ETHEREUM_MAINNET]: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
-};
-
-/**
- * Known BSC stablecoin addresses (for isKnownStablecoin checks).
- * Both use 18 decimals on BSC, unlike the 6 decimals on all other chains.
- */
-export const BSC_STABLECOIN_ADDRESSES: Record<string, { symbol: string; decimals: number }> = {
-  [BSC_USDT]: { symbol: 'USDT', decimals: 18 },
-  [BSC_USDC]: { symbol: 'USDC', decimals: 18 },
-};
 
 /**
  * EVM wallet interface (compatible with wagmi, ethers, viem)

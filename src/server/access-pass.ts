@@ -36,6 +36,7 @@
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import { createX402Server } from './x402-server';
 import { toAtomicUnits, encodeBase64Json } from '../utils';
+import { DEFAULT_NETWORK, USDC_DECIMALS } from '../constants';
 import type { AccessPassTier, AccessPassInfo, AccessPassClaims } from '../types';
 import crypto from 'crypto';
 
@@ -173,9 +174,6 @@ function verifyJwt(token: string, secret: Buffer): AccessPassClaims | null {
 // ============================================================================
 // Middleware Factory
 // ============================================================================
-
-const DEFAULT_NETWORK = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
-const USDC_DECIMALS = 6;
 
 /**
  * Create x402 access pass middleware for Express.

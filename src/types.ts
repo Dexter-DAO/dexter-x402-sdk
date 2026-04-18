@@ -6,37 +6,18 @@
  */
 
 // ============================================================================
-// Network Constants
+// Re-exports from constants (kept here for backwards-compatible import paths)
 // ============================================================================
 
-/** CAIP-2 network identifier for Solana mainnet */
-export const SOLANA_MAINNET_NETWORK = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
-
-/** CAIP-2 network identifier for Base mainnet */
-export const BASE_MAINNET_NETWORK = 'eip155:8453';
-
-/** Alias for Solana mainnet */
-export const SOLANA_MAINNET = SOLANA_MAINNET_NETWORK;
-
-/** Alias for Base mainnet */
-export const BASE_MAINNET = BASE_MAINNET_NETWORK;
-
-// ============================================================================
-// Asset Constants
-// ============================================================================
-
-/** USDC mint on Solana mainnet */
-export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-
-/** USDC address on Base mainnet */
-export const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
-
-// ============================================================================
-// Facilitator Constants
-// ============================================================================
-
-/** Dexter's public x402 v2 facilitator URL */
-export const DEXTER_FACILITATOR_URL = 'https://x402.dexter.cash';
+export {
+  SOLANA_MAINNET_NETWORK,
+  BASE_MAINNET_NETWORK,
+  SOLANA_MAINNET,
+  BASE_MAINNET,
+  USDC_MINT,
+  USDC_BASE,
+  DEXTER_FACILITATOR_URL,
+} from './constants';
 
 // ============================================================================
 // PayTo Provider Types (for dynamic address resolution, e.g. Stripe)

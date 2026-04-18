@@ -23,23 +23,15 @@ import {
 } from '@solana/spl-token';
 import type { ChainAdapter, AdapterConfig, SignedTransaction } from './types';
 import type { PaymentAccept } from '../types';
+import {
+  SOLANA_MAINNET,
+  SOLANA_DEVNET,
+  SOLANA_TESTNET,
+  SOLANA_RPC_URLS as DEFAULT_RPC_URLS,
+} from '../constants';
 
-/**
- * CAIP-2 network identifiers for Solana
- */
-export const SOLANA_MAINNET = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
-export const SOLANA_DEVNET = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
-export const SOLANA_TESTNET = 'solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z';
-
-/**
- * Default RPC URLs
- * Mainnet uses Dexter's RPC proxy for reliability and zero-config setup
- */
-const DEFAULT_RPC_URLS: Record<string, string> = {
-  [SOLANA_MAINNET]: 'https://api.dexter.cash/api/solana/rpc',
-  [SOLANA_DEVNET]: 'https://api.devnet.solana.com',
-  [SOLANA_TESTNET]: 'https://api.testnet.solana.com',
-};
+// Re-export for backwards-compatible public API surface
+export { SOLANA_MAINNET, SOLANA_DEVNET, SOLANA_TESTNET } from '../constants';
 
 /**
  * Dexter policy-safe compute budget settings

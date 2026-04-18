@@ -29,6 +29,7 @@ import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import type { PayToProvider } from '../types';
 import { createX402Server, type BuildRequirementsOptions } from './x402-server';
 import { toAtomicUnits, encodeBase64Json } from '../utils';
+import { DEFAULT_NETWORK, USDC_DECIMALS } from '../constants';
 import type { SponsoredRecommendation } from '@dexterai/x402-ads-types';
 import { getStripeProviderNetwork } from './stripe-payto';
 
@@ -219,12 +220,6 @@ export interface X402Request extends Request {
     network: string;
   };
 }
-
-// Default network
-const DEFAULT_NETWORK = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
-
-// USDC decimals
-const USDC_DECIMALS = 6;
 
 /**
  * Create x402 middleware for Express

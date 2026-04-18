@@ -20,7 +20,12 @@
 
 import { createSolanaAdapter as _createSolanaAdapter } from './solana';
 import { createEvmAdapter as _createEvmAdapter } from './evm';
-import { USDC_ADDRESSES as _USDC_ADDRESSES, BSC_STABLECOIN_ADDRESSES as _BSC_STABLECOINS } from './evm';
+import {
+  USDC_ADDRESSES as _USDC_ADDRESSES,
+  BSC_STABLECOIN_ADDRESSES as _BSC_STABLECOINS,
+  USDC_MINT,
+  USDC_MINT_DEVNET,
+} from '../constants';
 
 // Types
 export type {
@@ -74,8 +79,8 @@ export type { EvmWallet } from './evm';
  */
 export function isKnownUSDC(asset: string): boolean {
   // Solana mints
-  if (asset === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') return true; // mainnet
-  if (asset === '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU') return true; // devnet
+  if (asset === USDC_MINT) return true; // mainnet
+  if (asset === USDC_MINT_DEVNET) return true; // devnet
   // All EVM USDC addresses (case-insensitive for EVM)
   const lc = asset.toLowerCase();
   for (const addr of Object.values(_USDC_ADDRESSES)) {
