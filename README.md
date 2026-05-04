@@ -5,7 +5,7 @@
 <h1 align="center">@dexterai/x402</h1>
 
 <p align="center">
-  <strong>Full-stack x402 SDK. Add paid API monetization to any endpoint. Solana, Base, and 4 more chains.</strong>
+  <strong>Full-stack x402 SDK. Add paid API monetization to any endpoint. Solana, Base, Polygon, Arbitrum, Optimism, Avalanche, BSC, and SKALE.</strong>
 </p>
 
 <p align="center">
@@ -41,7 +41,7 @@ This SDK handles the entire flow automatically—you just call `fetch()` and pay
 
 **Full-stack.** Client SDK for browsers, server SDK for backends. React hooks, Express middleware patterns, facilitator client—everything you need.
 
-**Multi-chain.** Solana and Base (Ethereum L2) with the same API. Add wallets for both and the SDK picks the right one automatically.
+**Multi-chain.** Solana plus seven EVM chains (Base, Polygon, Arbitrum, Optimism, Avalanche, BSC, SKALE Base) with the same API. Add wallets for both families and the SDK picks the right one automatically.
 
 **Works out of the box.** Built-in RPC proxy, pre-flight balance checks, automatic retry on 402. Uses the [Dexter facilitator](https://x402.dexter.cash) by default—Solana's most feature-rich x402 facilitator.
 
@@ -190,6 +190,7 @@ All networks supported by the [Dexter facilitator](https://x402.dexter.cash/supp
 | Arbitrum | `eip155:42161` | Production |
 | Optimism | `eip155:10` | Production |
 | Avalanche | `eip155:43114` | Production |
+| BSC | `eip155:56` | Production |
 | SKALE Base | `eip155:1187947933` | Production (zero gas) |
 
 **Testnets:**
@@ -197,17 +198,26 @@ All networks supported by the [Dexter facilitator](https://x402.dexter.cash/supp
 | Network | CAIP-2 |
 |---------|--------|
 | Solana Devnet | `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1` |
+| Solana Testnet | `solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z` |
 | Base Sepolia | `eip155:84532` |
-| SKALE Sepolia | `eip155:324705682` |
+| SKALE Base Sepolia | `eip155:324705682` |
 
 Accept payments on multiple chains simultaneously:
 
 ```typescript
-// Same address across EVM chains
+// Same address across all EVM chains
 app.get('/api/data', x402Middleware({
   payTo: '0xYourAddress',
   amount: '0.01',
-  network: ['eip155:8453', 'eip155:137', 'eip155:42161', 'eip155:10'],
+  network: [
+    'eip155:8453',       // Base
+    'eip155:137',        // Polygon
+    'eip155:42161',      // Arbitrum
+    'eip155:10',         // Optimism
+    'eip155:43114',      // Avalanche
+    'eip155:56',         // BSC
+    'eip155:1187947933', // SKALE Base (zero gas)
+  ],
 }));
 
 // Different addresses per chain family
@@ -217,7 +227,16 @@ app.get('/api/data', x402Middleware({
     'eip155:*': '0xYourEvmAddress...',
   },
   amount: '0.01',
-  network: ['solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', 'eip155:8453', 'eip155:137'],
+  network: [
+    'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+    'eip155:8453',
+    'eip155:137',
+    'eip155:42161',
+    'eip155:10',
+    'eip155:43114',
+    'eip155:56',
+    'eip155:1187947933',
+  ],
 }));
 ```
 

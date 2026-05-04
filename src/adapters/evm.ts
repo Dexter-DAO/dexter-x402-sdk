@@ -15,6 +15,11 @@ import {
   ARBITRUM_ONE,
   BSC_MAINNET,
   ETHEREUM_MAINNET,
+  POLYGON,
+  OPTIMISM,
+  AVALANCHE,
+  SKALE_BASE,
+  SKALE_BASE_SEPOLIA,
   CHAIN_IDS,
   EVM_RPC_URLS as DEFAULT_RPC_URLS,
 } from '../constants';
@@ -136,7 +141,18 @@ export function isEvmWallet(wallet: unknown): wallet is EvmWallet {
  */
 export class EvmAdapter implements ChainAdapter {
   readonly name = 'EVM';
-  readonly networks = [BSC_MAINNET, BASE_MAINNET, BASE_SEPOLIA, ETHEREUM_MAINNET, ARBITRUM_ONE];
+  readonly networks = [
+    BSC_MAINNET,
+    BASE_MAINNET,
+    BASE_SEPOLIA,
+    ETHEREUM_MAINNET,
+    ARBITRUM_ONE,
+    POLYGON,
+    OPTIMISM,
+    AVALANCHE,
+    SKALE_BASE,
+    SKALE_BASE_SEPOLIA,
+  ];
 
   private config: AdapterConfig;
   private log: (...args: unknown[]) => void;
@@ -151,12 +167,17 @@ export class EvmAdapter implements ChainAdapter {
   canHandle(network: string): boolean {
     // Handle exact CAIP-2
     if (this.networks.includes(network)) return true;
-    // Legacy format
+    // Legacy short-form aliases
     if (network === 'base') return true;
     if (network === 'bsc') return true;
     if (network === 'ethereum') return true;
     if (network === 'arbitrum') return true;
-    // Check if it starts with 'eip155:'
+    if (network === 'polygon') return true;
+    if (network === 'optimism') return true;
+    if (network === 'avalanche') return true;
+    if (network === 'skale-base') return true;
+    if (network === 'skale-base-sepolia') return true;
+    // Any other CAIP-2 EVM identifier we haven't enumerated
     if (network.startsWith('eip155:')) return true;
     return false;
   }
@@ -168,11 +189,16 @@ export class EvmAdapter implements ChainAdapter {
     if (DEFAULT_RPC_URLS[network]) {
       return DEFAULT_RPC_URLS[network];
     }
-    // Normalize legacy
+    // Normalize legacy short-form aliases
     if (network === 'base') return DEFAULT_RPC_URLS[BASE_MAINNET];
     if (network === 'bsc') return DEFAULT_RPC_URLS[BSC_MAINNET];
     if (network === 'ethereum') return DEFAULT_RPC_URLS[ETHEREUM_MAINNET];
     if (network === 'arbitrum') return DEFAULT_RPC_URLS[ARBITRUM_ONE];
+    if (network === 'polygon') return DEFAULT_RPC_URLS[POLYGON];
+    if (network === 'optimism') return DEFAULT_RPC_URLS[OPTIMISM];
+    if (network === 'avalanche') return DEFAULT_RPC_URLS[AVALANCHE];
+    if (network === 'skale-base') return DEFAULT_RPC_URLS[SKALE_BASE];
+    if (network === 'skale-base-sepolia') return DEFAULT_RPC_URLS[SKALE_BASE_SEPOLIA];
     return DEFAULT_RPC_URLS[BASE_MAINNET];
   }
 

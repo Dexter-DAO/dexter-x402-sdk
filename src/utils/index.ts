@@ -17,6 +17,7 @@ export {
   fromAtomicUnits,
   getChainFamily,
   getChainName,
+  getChainDisplayName,
   getExplorerUrl,
   type ChainFamily,
 } from '../utils';

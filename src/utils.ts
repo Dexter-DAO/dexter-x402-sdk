@@ -9,6 +9,15 @@ import {
   SOLANA_DEVNET_NETWORK,
   SOLANA_TESTNET_NETWORK,
   BASE_MAINNET_NETWORK,
+  BASE_SEPOLIA_NETWORK,
+  ARBITRUM_ONE_NETWORK,
+  POLYGON_NETWORK,
+  OPTIMISM_NETWORK,
+  AVALANCHE_NETWORK,
+  BSC_MAINNET_NETWORK,
+  SKALE_BASE_NETWORK,
+  SKALE_BASE_SEPOLIA_NETWORK,
+  ETHEREUM_MAINNET_NETWORK,
 } from './constants';
 
 // ============================================================================
@@ -142,19 +151,55 @@ export function getDefaultRpcUrl(network: string): string {
  */
 export function getChainName(network: string): string {
   const mapping: Record<string, string> = {
+    // Solana family
     [SOLANA_MAINNET_NETWORK]: 'Solana',
     [SOLANA_DEVNET_NETWORK]: 'Solana Devnet',
     [SOLANA_TESTNET_NETWORK]: 'Solana Testnet',
     'solana': 'Solana',
+    'solana-devnet': 'Solana Devnet',
+    'solana-testnet': 'Solana Testnet',
+    // EVM family — keyed by canonical CAIP-2
     [BASE_MAINNET_NETWORK]: 'Base',
-    'eip155:84532': 'Base Sepolia',
-    'eip155:1': 'Ethereum',
-    'eip155:42161': 'Arbitrum One',
+    [BASE_SEPOLIA_NETWORK]: 'Base Sepolia',
+    [ETHEREUM_MAINNET_NETWORK]: 'Ethereum',
+    [ARBITRUM_ONE_NETWORK]: 'Arbitrum',
+    [POLYGON_NETWORK]: 'Polygon',
+    [OPTIMISM_NETWORK]: 'Optimism',
+    [AVALANCHE_NETWORK]: 'Avalanche',
+    [BSC_MAINNET_NETWORK]: 'BSC',
+    [SKALE_BASE_NETWORK]: 'SKALE Base',
+    [SKALE_BASE_SEPOLIA_NETWORK]: 'SKALE Base Sepolia',
+    // EVM family — legacy short-form aliases
     'base': 'Base',
+    'base-sepolia': 'Base Sepolia',
     'ethereum': 'Ethereum',
     'arbitrum': 'Arbitrum',
+    'polygon': 'Polygon',
+    'optimism': 'Optimism',
+    'avalanche': 'Avalanche',
+    'bsc': 'BSC',
+    'skale-base': 'SKALE Base',
+    'skale-base-sepolia': 'SKALE Base Sepolia',
   };
   return mapping[network] || network;
+}
+
+/**
+ * Get a human-readable chain name with adapter-family fallback.
+ *
+ * Differs from {@link getChainName} in the fallback: instead of returning
+ * the raw network identifier (which is useful for logging / matching), this
+ * returns the adapter family ("Solana" / "EVM") when the chain isn't in
+ * the registry. Use this in user-facing strings — error messages, badges,
+ * status pills — where exposing a CAIP-2 string would be ugly.
+ *
+ * @param network - CAIP-2 network identifier or legacy alias
+ * @param family - The adapter family name to use as a fallback
+ *                 (e.g. 'Solana' or 'EVM')
+ */
+export function getChainDisplayName(network: string, family: string): string {
+  const name = getChainName(network);
+  return name === network ? family : name;
 }
 
 // ============================================================================
@@ -189,6 +234,18 @@ export function getExplorerUrl(txSignature: string, network: string): string {
       chainId = '1';
     } else if (network === 'arbitrum') {
       chainId = '42161';
+    } else if (network === 'polygon') {
+      chainId = '137';
+    } else if (network === 'optimism') {
+      chainId = '10';
+    } else if (network === 'avalanche') {
+      chainId = '43114';
+    } else if (network === 'bsc') {
+      chainId = '56';
+    } else if (network === 'skale-base') {
+      chainId = '1187947933';
+    } else if (network === 'skale-base-sepolia') {
+      chainId = '324705682';
     }
 
     switch (chainId) {
@@ -196,6 +253,12 @@ export function getExplorerUrl(txSignature: string, network: string): string {
       case '84532': return `https://sepolia.basescan.org/tx/${txSignature}`;
       case '1': return `https://etherscan.io/tx/${txSignature}`;
       case '42161': return `https://arbiscan.io/tx/${txSignature}`;
+      case '137': return `https://polygonscan.com/tx/${txSignature}`;
+      case '10': return `https://optimistic.etherscan.io/tx/${txSignature}`;
+      case '43114': return `https://snowtrace.io/tx/${txSignature}`;
+      case '56': return `https://bscscan.com/tx/${txSignature}`;
+      case '1187947933': return `https://elated-tan-skat.explorer.mainnet.skalenodes.com/tx/${txSignature}`;
+      case '324705682': return `https://base-sepolia-testnet.explorer.skalenodes.com/tx/${txSignature}`;
       default: return `https://basescan.org/tx/${txSignature}`;
     }
   }

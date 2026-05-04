@@ -51,10 +51,32 @@ describe('Network Detection', () => {
 });
 
 describe('Chain Names', () => {
-  it('maps CAIP-2 IDs to human-readable names', () => {
+  it('maps CAIP-2 IDs to human-readable names for the original four', () => {
     expect(getChainName('solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp')).toBe('Solana');
     expect(getChainName('eip155:8453')).toBe('Base');
-    expect(getChainName('eip155:42161')).toBe('Arbitrum One');
+    expect(getChainName('eip155:42161')).toBe('Arbitrum');
+    expect(getChainName('eip155:1')).toBe('Ethereum');
+  });
+
+  it('maps every chain Dexter\'s facilitator supports', () => {
+    // If a chain in this list ever drops out of the registry, the verifier
+    // and the public Test Theater will start surfacing raw CAIP-2 strings
+    // to users. Lock the mapping in place.
+    expect(getChainName('eip155:84532')).toBe('Base Sepolia');
+    expect(getChainName('eip155:137')).toBe('Polygon');
+    expect(getChainName('eip155:10')).toBe('Optimism');
+    expect(getChainName('eip155:43114')).toBe('Avalanche');
+    expect(getChainName('eip155:56')).toBe('BSC');
+    expect(getChainName('eip155:1187947933')).toBe('SKALE Base');
+    expect(getChainName('eip155:324705682')).toBe('SKALE Base Sepolia');
+  });
+
+  it('accepts legacy short-form aliases', () => {
+    expect(getChainName('base')).toBe('Base');
+    expect(getChainName('polygon')).toBe('Polygon');
+    expect(getChainName('avalanche')).toBe('Avalanche');
+    expect(getChainName('bsc')).toBe('BSC');
+    expect(getChainName('skale-base')).toBe('SKALE Base');
   });
 
   it('returns the raw identifier for unknown networks', () => {
@@ -69,14 +91,17 @@ describe('Explorer URLs', () => {
     expect(url).toContain('orbmarkets.io');
   });
 
-  it('generates correct Base explorer URLs', () => {
-    const url = getExplorerUrl('0xMockTx', 'eip155:8453');
-    expect(url).toBe('https://basescan.org/tx/0xMockTx');
-  });
-
-  it('generates correct Arbitrum explorer URLs', () => {
-    const url = getExplorerUrl('0xMockTx', 'eip155:42161');
-    expect(url).toBe('https://arbiscan.io/tx/0xMockTx');
+  it('generates correct EVM explorer URLs across all supported chains', () => {
+    expect(getExplorerUrl('0xT', 'eip155:8453')).toBe('https://basescan.org/tx/0xT');
+    expect(getExplorerUrl('0xT', 'eip155:84532')).toBe('https://sepolia.basescan.org/tx/0xT');
+    expect(getExplorerUrl('0xT', 'eip155:42161')).toBe('https://arbiscan.io/tx/0xT');
+    expect(getExplorerUrl('0xT', 'eip155:1')).toBe('https://etherscan.io/tx/0xT');
+    expect(getExplorerUrl('0xT', 'eip155:137')).toBe('https://polygonscan.com/tx/0xT');
+    expect(getExplorerUrl('0xT', 'eip155:10')).toBe('https://optimistic.etherscan.io/tx/0xT');
+    expect(getExplorerUrl('0xT', 'eip155:43114')).toBe('https://snowtrace.io/tx/0xT');
+    expect(getExplorerUrl('0xT', 'eip155:56')).toBe('https://bscscan.com/tx/0xT');
+    expect(getExplorerUrl('0xT', 'eip155:1187947933')).toContain('skalenodes.com');
+    expect(getExplorerUrl('0xT', 'eip155:324705682')).toContain('base-sepolia-testnet');
   });
 });
 

@@ -31,6 +31,7 @@ import type {
 } from '../types';
 import { X402Error } from '../types';
 import { createSolanaAdapter, createEvmAdapter, isSolanaWallet, isEvmWallet, isKnownUSDC } from '../adapters';
+import { getChainDisplayName as canonicalGetChainDisplayName } from '../utils';
 
 // WeakMap keyed on the response so we don't mutate the Response object.
 const receiptStore = new WeakMap<Response, PaymentReceipt>();
@@ -307,17 +308,9 @@ export function createX402Client(config: X402ClientConfig): X402Client {
    * Get a human-readable chain name for error messages
    */
   function getChainDisplayName(network: string, adapterName: string): string {
-    const names: Record<string, string> = {
-      'eip155:56': 'BSC',
-      'eip155:8453': 'Base',
-      'eip155:84532': 'Base Sepolia',
-      'eip155:42161': 'Arbitrum',
-      'eip155:137': 'Polygon',
-      'eip155:10': 'Optimism',
-      'eip155:43114': 'Avalanche',
-      'eip155:1': 'Ethereum',
-    };
-    return names[network] || adapterName;
+    // Delegate to the canonical exported helper so error messages and UI
+    // labels stay consistent across the SDK and any external callers.
+    return canonicalGetChainDisplayName(network, adapterName);
   }
 
   /**
@@ -404,8 +397,9 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       const balance = await adapter.getBalance(accept, wallet, rpcUrl);
       const requiredAmount = Number(paymentAmount) / Math.pow(10, decimals);
       if (balance < requiredAmount) {
+        const chainName = getChainDisplayName(accept.network, adapter.name);
         throw new X402Error('insufficient_balance',
-          `Insufficient balance for access pass. Have $${balance.toFixed(4)}, need $${requiredAmount.toFixed(4)}`);
+          `Insufficient balance for access pass on ${chainName}. Have $${balance.toFixed(4)}, need $${requiredAmount.toFixed(4)}`);
       }
     } catch (err) {
       if (err instanceof X402Error) throw err; // Re-throw insufficient_balance

@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [3.2.0] - 2026-05-03
+
+Multi-chain coverage parity. The facilitator has supported Polygon, Optimism, Avalanche, BSC, and SKALE Base for a while; the client adapters and helper functions now declare every one of those chains explicitly instead of relying on `eip155:` substring fallbacks. This closes the gap that caused downstream consumers (e.g. the Dexter resource verifier) to display "Insufficient balance on Base" for resources that actually accepted payment on a different EVM chain.
+
+### Added
+- `EvmAdapter.networks` now declares Polygon, Optimism, Avalanche, SKALE Base, and SKALE Base Sepolia in addition to Base mainnet, Base Sepolia, Ethereum, Arbitrum, and BSC. Behaviour for unknown `eip155:N` strings is unchanged (still accepted via prefix match) — the difference is that supported chains are now first-class enumerated entries.
+- `getChainName()` extended with mappings for BSC, Polygon, Optimism, Avalanche, SKALE Base, and SKALE Base Sepolia. Legacy short-form aliases (`'polygon'`, `'avalanche'`, `'bsc'`, `'skale-base'`, etc.) are accepted alongside the canonical CAIP-2 form.
+- `getExplorerUrl()` extended with explorer URL templates for the same set of chains (Polygonscan, Optimistic Etherscan, Snowtrace, BscScan, SKALE Base + SKALE Base Sepolia explorers).
+- `getChainDisplayName(network, family)` exported from `@dexterai/x402/utils` — same mapping as `getChainName()` but falls back to the adapter family name (`'Solana'` / `'EVM'`) instead of the raw CAIP-2 string. Use this in user-facing error messages and UI badges.
+- New test suite `evm-chain-coverage.test.ts` (71 cases) locks in the adapter declaration / canHandle / RPC / USDC / chain ID matrix per chain so future contributors can't add a constant without wiring the adapter.
+
+### Fixed
+- The pre-payment `insufficient_balance` X402Error in `createX402Client` now resolves the chain name from the canonical registry, so the message reads "Insufficient balance on Polygon" instead of the previous hardcoded "Insufficient balance on Base" for non-Base EVM chains.
+- Access-pass purchase flow's `insufficient_balance` error now includes the chain name. Previously it omitted the chain entirely, which made the diagnosis ambiguous when the same wallet was authorized on multiple chains.
+
+### Changed
+- Consolidated network identifiers, token addresses, RPC URLs, chain IDs, Permit2 addresses, and protocol defaults into a single `src/constants.ts` module. Types, adapters, server middleware, access pass, and Stripe PayTo now import from it instead of carrying their own duplicates. Public export surface is unchanged. ([`4d3e881`])
+- `getChainName('eip155:42161')` now returns `'Arbitrum'` (was `'Arbitrum One'`). The shorter form reads better in error messages and matches every other chain's display convention. The CAIP-2 identifier is unchanged.
+
+### Removed
+- `X402ErrorCode` member `no_solana_accept` — zero callers anywhere in the ecosystem. ([`58c7eea`])
+- `KeypairWallet.keypair` — the deprecated field that shadowed `KEYPAIR_SYMBOL`. `isKeypairWallet()` now checks the symbol directly. No external callers were found. ([`58c7eea`])
+- Implicit `(response as any)._x402 = receipt` mutation after payment settlement. The typed `getPaymentReceipt(response)` + `PaymentReceipt` WeakMap path has been the public API since 1.8.0; the legacy mutation no longer had any readers. ([`58c7eea`])
+
 ## [3.1.1] - 2026-04-18
 
 ### Changed
@@ -292,7 +318,7 @@ Filter semantically via the query text, not parameters:
 ## [1.2.4] - 2024-12-30
 
 ### Fixed
-- **x402 v1 compatibility** - SDK now echoes the `x402Version` from the server's 402 response instead of hardcoding v2. This enables compatibility with v1-only facilitators (PayAI, Ultraviolet, etc.)
+- **x402 v1 compatibility** - SDK now echoes the `x402Version` from the server's 402 response instead of hardcoding v2. This enables compatibility with v1-only facilitators.
 - Added `x402Version` field to `PaymentAccept` type
 
 ## [1.2.1] - 2024-12-28
@@ -398,24 +424,38 @@ Filter semantically via the query text, not parameters:
 
 ---
 
-## Migration from PayAI SDKs
+[Unreleased]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v3.1.1...HEAD
+[3.1.1]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v3.0.0...v3.1.1
+[3.0.0]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v2.0.0...v3.0.0
+[2.0.0]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.9.4...v2.0.0
+[1.9.4]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.9.3...v1.9.4
+[1.9.3]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.9.2...v1.9.3
+[1.9.2]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.9.1...v1.9.2
+[1.9.1]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.9.0...v1.9.1
+[1.9.0]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.8.2...v1.9.0
+[1.8.2]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.8.1...v1.8.2
+[1.8.1]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.8.0...v1.8.1
+[1.8.0]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.7.2...v1.8.0
+[1.7.2]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.7.1...v1.7.2
+[1.7.1]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.7.0...v1.7.1
+[1.7.0]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.6.6...v1.7.0
+[1.6.6]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.6.5...v1.6.6
+[1.6.5]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.6.4...v1.6.5
+[1.6.4]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.5.5...v1.6.4
+[1.5.0]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.4.1...v1.5.0
+[1.4.1]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.4.0...v1.4.1
+[1.4.0]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.3.1...v1.4.0
+[1.3.1]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.2.5...v1.3.0
+[1.2.4]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.2.1...v1.2.4
+[1.2.1]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.2.0...v1.2.1
+[1.2.0]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.0.4...v1.1.0
+[1.0.4]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.0.3...v1.0.4
+[1.0.3]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.0.2...v1.0.3
+[1.0.2]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.0.1...v1.0.2
+[1.0.1]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/Dexter-DAO/dexter-x402-sdk/releases/tag/v1.0.0
 
-If migrating from `@payai/x402-solana`:
-
-```diff
-- import { createX402Client } from '@payai/x402-solana';
-+ import { createX402Client } from '@dexterai/x402/client';
-+ import { createSolanaAdapter } from '@dexterai/x402/adapters';
-
-- const client = createX402Client({ wallet });
-+ const client = createX402Client({
-+   adapters: [createSolanaAdapter()],
-+   wallets: { solana: wallet },
-+ });
-```
-
-Key differences:
-- Dexter SDK is v2-only (no legacy X-PAYMENT header support)
-- Multi-chain by design - add Base support by including `createEvmAdapter()`
-- Phantom-compatible (handles Lighthouse assertions automatically)
-
+[`4d3e881`]: https://github.com/Dexter-DAO/dexter-x402-sdk/commit/4d3e881
+[`58c7eea`]: https://github.com/Dexter-DAO/dexter-x402-sdk/commit/58c7eea
