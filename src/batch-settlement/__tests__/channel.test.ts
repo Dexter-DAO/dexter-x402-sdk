@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { __test_buildClientStack } from '../channel';
+import { __test_buildClientStack, openBatchChannel } from '../channel';
 import { getDefaultChannelStore } from '../store';
 
 /** A deterministic fake EvmWallet — signs a fixed value, enough for construction. */
@@ -35,5 +35,47 @@ describe('__test_buildClientStack', () => {
         depositAtomic: '300000',
       }),
     ).toThrow(/not available on network/i);
+  });
+});
+
+describe('openBatchChannel', () => {
+  it('rejects an unsupported network before any signing', async () => {
+    await expect(
+      openBatchChannel({
+        wallet: fakeWallet,
+        network: 'eip155:1',
+        deposit: '0.30',
+        store: getDefaultChannelStore(),
+      }),
+    ).rejects.toThrow(/not available on network/i);
+  });
+
+  it('rejects a non-positive deposit', async () => {
+    await expect(
+      openBatchChannel({
+        wallet: fakeWallet,
+        network: 'eip155:8453',
+        deposit: '0',
+        store: getDefaultChannelStore(),
+      }),
+    ).rejects.toThrow(/deposit must be a positive amount/i);
+  });
+
+  it('returns a handle exposing channelId, network, state, fetch, and close', async () => {
+    const channel = await openBatchChannel({
+      wallet: fakeWallet,
+      network: 'eip155:8453',
+      deposit: '0.30',
+      rpcUrl: 'https://example.invalid',
+      store: getDefaultChannelStore(),
+    });
+    expect(channel.network).toBe('eip155:8453');
+    expect(typeof channel.fetch).toBe('function');
+    expect(typeof channel.close).toBe('function');
+    expect(channel.state).toEqual({
+      deposited: '0.3',
+      spent: '0',
+      remaining: '0.3',
+    });
   });
 });
