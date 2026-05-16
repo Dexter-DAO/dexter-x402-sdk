@@ -46,4 +46,32 @@ describe('runClose — claim/settle/refund orchestration', () => {
       runClose(failingManager, '0xchannel', { settledAtomic: '0', refundedAtomic: '0' }),
     ).rejects.toThrow(/claim simulation failed/);
   });
+
+  it('throws when claims is empty but accounting expected a settled amount', async () => {
+    const emptyClaimsManager = {
+      async claimAndSettle() { return { claims: [], settle: undefined }; },
+      async refund() { return []; },
+    };
+    await expect(
+      runClose(emptyClaimsManager, '0xchannel', { settledAtomic: '160000', refundedAtomic: '140000' }),
+    ).rejects.toThrow(/inconsistency/i);
+  });
+
+  it('allows empty claims for a fully-unspent channel (settledAtomic 0)', async () => {
+    const fullyUnspentManager = {
+      async claimAndSettle() { return { claims: [], settle: undefined }; },
+      async refund(ids: string[]) { return [{ channel: ids[0]!, transaction: '0xrefund' }]; },
+    };
+    const receipt = await runClose(fullyUnspentManager, '0xchannel', {
+      settledAtomic: '0',
+      refundedAtomic: '300000',
+    });
+    expect(receipt).toEqual({
+      claimTx: '',
+      settleTx: '',
+      refundTx: '0xrefund',
+      settledAmount: '0',
+      refundedAmount: '0.3',
+    });
+  });
 });

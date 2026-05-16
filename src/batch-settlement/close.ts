@@ -57,6 +57,11 @@ export interface CloseAmounts {
  * The facilitator's fee-payer pays gas for all three transactions. Any failure
  * throws — close() never reports a partial success.
  *
+ * `claimTx`/`settleTx` are empty strings only when the channel had nothing to
+ * claim (a fully-unspent channel). If the channel's accounting expected a
+ * settled amount but the facilitator reported no claim, `runClose` throws
+ * rather than returning an inconsistent receipt.
+ *
  * The upstream manager reports only transaction hashes, so the seller/buyer
  * amounts are taken from the channel's own accounting via `amounts` and
  * converted from atomic units to USDC human units.
@@ -67,6 +72,11 @@ export async function runClose(
   amounts: CloseAmounts,
 ): Promise<CloseReceipt> {
   const { claims, settle } = await manager.claimAndSettle();
+  if (claims.length === 0 && BigInt(amounts.settledAtomic) > 0n) {
+    throw new Error(
+      `batch-settlement close inconsistency: channel accounting expected a settled amount of ${amounts.settledAtomic} atomic units, but the facilitator's claimAndSettle reported no claim transaction (claims was empty)`,
+    );
+  }
   const refunds = await manager.refund([channelId]);
   const refund = refunds[0];
   return {
