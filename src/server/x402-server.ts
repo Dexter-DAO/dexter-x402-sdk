@@ -102,6 +102,12 @@ export interface X402ServerConfig {
   asset?: AssetConfig;
   /** Default payment timeout in seconds */
   defaultTimeoutSeconds?: number;
+  /**
+   * Payment scheme to advertise. 'batch-settlement' is the EVM escrow-channel
+   * batching scheme (discrete API purchases, gas-amortized) — see
+   * @dexterai/x402/batch-settlement. Default: 'exact'.
+   */
+  scheme?: 'exact' | 'batch-settlement';
 }
 
 /**
@@ -175,6 +181,8 @@ export function createX402Server(config: X402ServerConfig): X402Server {
     defaultTimeoutSeconds = 60,
   } = config;
 
+  const scheme = config.scheme ?? 'exact';
+
   const facilitator = new FacilitatorClient(facilitatorUrl);
 
   // Cache for network extra data
@@ -240,6 +248,11 @@ export function createX402Server(config: X402ServerConfig): X402Server {
       decimals: cachedExtra?.decimals ?? asset.decimals,
       name: cachedExtra?.name,
       version: cachedExtra?.version,
+      // batch-settlement: surface the facilitator's on-chain authorizer so the
+      // buyer's channel pays into the right contract.
+      ...(scheme === 'batch-settlement' && cachedExtra?.receiverAuthorizer
+        ? { receiverAuthorizer: cachedExtra.receiverAuthorizer as string }
+        : {}),
     };
   }
 
@@ -258,7 +271,7 @@ export function createX402Server(config: X402ServerConfig): X402Server {
     const extra = await getNetworkExtra();
 
     const accept: PaymentAccept = {
-      scheme: 'exact',
+      scheme,
       network,
       amount: amountAtomic,
       maxAmountRequired: amountAtomic,

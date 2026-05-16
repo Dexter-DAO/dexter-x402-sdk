@@ -170,12 +170,18 @@ export class FacilitatorClient {
   }
 
   /**
-   * Get extra data for a network (feePayer, decimals, EIP-712 data, etc.)
+   * Get extra data for a network (feePayer, decimals, EIP-712 data,
+   * receiverAuthorizer for batch-settlement, etc.)
    */
   async getNetworkExtra(network: string): Promise<SupportedKind['extra']> {
     const supported = await this.getSupported();
     const kind = supported.kinds.find(
-      (k) => k.x402Version === 2 && (k.scheme === 'exact' || k.scheme === 'exact-approval') && k.network === network,
+      (k) =>
+        k.x402Version === 2 &&
+        (k.scheme === 'exact' ||
+          k.scheme === 'exact-approval' ||
+          k.scheme === 'batch-settlement') &&
+        k.network === network,
     );
     return kind?.extra;
   }

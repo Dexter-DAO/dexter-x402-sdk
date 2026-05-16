@@ -121,6 +121,12 @@ export interface X402MiddlewareConfig {
   timeoutSeconds?: number;
 
   /**
+   * Payment scheme to advertise. 'batch-settlement' is the EVM escrow-channel
+   * batching scheme. Default: 'exact'.
+   */
+  scheme?: 'exact' | 'batch-settlement';
+
+  /**
    * Enable verbose logging
    */
   verbose?: boolean;
@@ -304,6 +310,7 @@ export function x402Middleware(config: X402MiddlewareConfig): RequestHandler {
       asset,
       facilitatorUrl,
       defaultTimeoutSeconds: timeoutSeconds,
+      scheme: config.scheme,
     }));
   }
 
