@@ -305,7 +305,14 @@ export async function openBatchChannel(
   const store = options.store ?? getDefaultChannelStore();
   const facilitatorUrl = options.facilitatorUrl ?? DEFAULT_FACILITATOR_URL;
 
-  const depositAtomic = parseUnits(options.deposit, USDC_DECIMALS);
+  let depositAtomic: bigint;
+  try {
+    depositAtomic = parseUnits(options.deposit, USDC_DECIMALS);
+  } catch {
+    throw new Error(
+      `deposit must be a valid USDC amount in decimal units (e.g. "0.30"), got "${options.deposit}"`,
+    );
+  }
   if (depositAtomic <= 0n) {
     throw new Error(
       `deposit must be a positive amount, got "${options.deposit}"`,

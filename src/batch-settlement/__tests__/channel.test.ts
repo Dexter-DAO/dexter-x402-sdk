@@ -61,6 +61,17 @@ describe('openBatchChannel', () => {
     ).rejects.toThrow(/deposit must be a positive amount/i);
   });
 
+  it('rejects a malformed deposit string with a clear error', async () => {
+    await expect(
+      openBatchChannel({
+        wallet: fakeWallet,
+        network: 'eip155:8453',
+        deposit: 'not-a-number',
+        store: getDefaultChannelStore(),
+      }),
+    ).rejects.toThrow(/valid USDC amount/i);
+  });
+
   it('returns a handle exposing channelId, network, state, fetch, and close', async () => {
     const channel = await openBatchChannel({
       wallet: fakeWallet,
