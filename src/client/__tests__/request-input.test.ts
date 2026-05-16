@@ -62,7 +62,7 @@ describe('x402 client — Request-object input', () => {
     // we have no wallet for. The client will fail to find a payment option
     // and throw no_matching_payment_option — but crucially it must reach that
     // point WITHOUT a Request-reuse crash, and must have read the body once.
-    const customFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const customFetch = (async (_input: string | URL | Request, init?: RequestInit) => {
       calls++;
       const body = init?.body;
       if (body instanceof ArrayBuffer) bodies.push(new TextDecoder().decode(body));
