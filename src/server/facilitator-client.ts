@@ -156,6 +156,8 @@ export class FacilitatorClient {
    */
   async getFeePayer(network: string): Promise<string | undefined> {
     const supported = await this.getSupported();
+    // batch-settlement is intentionally excluded: it uses signature-based gas
+    // sponsoring (no feePayer field on its /supported kind). Do not add it here.
     const kind = supported.kinds.find(
       (k) => k.x402Version === 2 && (k.scheme === 'exact' || k.scheme === 'exact-approval') && k.network === network,
     );
