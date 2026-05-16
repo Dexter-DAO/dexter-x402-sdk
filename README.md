@@ -176,6 +176,67 @@ function PayButton() {
 
 ---
 
+## Batch settlement (EVM)
+
+Batch settlement lets a buyer pre-fund an escrow channel once, make many
+**discrete** paid API calls against it with cheap off-chain vouchers, and then
+close the channel — the seller's many charges are batched into a handful of
+on-chain transactions instead of one per call. It amortizes gas across
+high-frequency discrete purchasing.
+
+It is **not** a streaming primitive — it batches discrete purchases. EVM only
+(Base, Arbitrum, Polygon). The buyer never needs a gas token: every step
+(deposit, voucher, claim, settle, refund) is signature-based; the Dexter
+facilitator submits the transactions and pays the gas.
+
+### Buyer
+
+```ts
+import { openBatchChannel } from '@dexterai/x402/batch-settlement';
+
+// Open a channel — signs an escrow deposit authorization (no gas needed).
+const channel = await openBatchChannel({
+  wallet: evmWallet,            // any { address, signTypedData }
+  network: 'eip155:8453',       // Base
+  deposit: '0.30',              // USDC escrowed for this channel
+});
+
+// Each call signs a cumulative voucher against the channel.
+const a = await channel.fetch('https://api.example.com/v1/data');
+const b = await channel.fetch('https://api.example.com/v1/data');
+
+console.log(channel.state); // { deposited: '0.3', spent: '0.16', remaining: '0.14' }
+
+// Close — the facilitator claims, settles to the seller, and refunds the rest.
+const receipt = await channel.close();
+console.log(receipt.settledAmount, receipt.refundedAmount);
+```
+
+Channel state auto-persists (localStorage in the browser, a file under
+`~/.dexter-x402/channels` in Node). If the process restarts mid-session,
+calling `openBatchChannel` again with the same wallet, network, and store
+transparently resumes the open channel — the channel's state is recovered from
+storage, or from on-chain state if storage was lost. Pass a custom `store` (any
+`ChannelStore`) to persist elsewhere.
+
+### Seller
+
+Advertise the scheme from the existing server or middleware with one option —
+Dexter operates the delegate authorizer, so the seller manages no signing key:
+
+```ts
+import { x402Middleware } from '@dexterai/x402/server';
+
+app.use(x402Middleware({
+  payTo: '0xYourReceivingAddress',
+  amount: '0.08',
+  network: 'eip155:8453',
+  scheme: 'batch-settlement',
+}));
+```
+
+---
+
 ## Supported Networks
 
 All networks supported by the [Dexter facilitator](https://x402.dexter.cash/supported). USDC on every chain.
@@ -250,6 +311,9 @@ import { createX402Client } from '@dexterai/x402/client';
 
 // Client - Node.js (private key wallet)
 import { wrapFetch, createKeypairWallet } from '@dexterai/x402/client';
+
+// Batch settlement - EVM escrow channel (gas amortization)
+import { openBatchChannel } from '@dexterai/x402/batch-settlement';
 
 // React hook
 import { useX402Payment } from '@dexterai/x402/react';
