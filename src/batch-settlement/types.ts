@@ -78,6 +78,7 @@ export interface BatchSettlementChannel {
 /** Thrown by openBatchChannel when the buyer wallet lacks USDC for the deposit. */
 export class InsufficientBalanceError extends Error {
   constructor(message: string) {
+    // ES2022 compile target: setting `this.name` is sufficient; no Object.setPrototypeOf needed.
     super(message);
     this.name = 'InsufficientBalanceError';
   }
@@ -86,6 +87,7 @@ export class InsufficientBalanceError extends Error {
 /** Thrown when a network has no deployed x402BatchSettlement contract. */
 export class UnsupportedNetworkError extends Error {
   constructor(message: string) {
+    // ES2022 compile target: setting `this.name` is sufficient; no Object.setPrototypeOf needed.
     super(message);
     this.name = 'UnsupportedNetworkError';
   }
