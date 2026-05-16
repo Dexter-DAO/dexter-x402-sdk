@@ -31,6 +31,57 @@ import type {
 } from '../types';
 import { X402Error } from '../types';
 import { createSolanaAdapter, createEvmAdapter, isSolanaWallet, isEvmWallet, isKnownUSDC } from '../adapters';
+
+/**
+ * Normalize a fetch input into a `[urlString, init]` pair.
+ *
+ * The x402 flow makes the SAME request more than once — the unpaid probe,
+ * then the paid retry (and possibly an access-pass attempt). When the caller
+ * passes a `Request` object, its body is a one-shot stream: the probe consumes
+ * it, and the retry's `new Request(consumedRequest, init)` throws
+ * "Cannot construct a Request with a Request object that has already been
+ * used." A `Request` also can't have headers layered on via an `init` spread,
+ * because its headers/body live on the object, not in `init`.
+ *
+ * So when `input` is a `Request`, we drain it ONCE here — buffering the body
+ * into an ArrayBuffer and lifting method/headers into a plain `RequestInit` —
+ * and hand the rest of the client a string + a re-usable init. A string or URL
+ * passes through untouched. This makes the wrapper safe to compose under other
+ * fetch wrappers (e.g. the SIWx extension) that hand us a `Request`.
+ */
+async function normalizeRequestInput(
+  input: string | URL | Request,
+  init?: RequestInit,
+): Promise<[string, RequestInit | undefined]> {
+  if (typeof input === 'string') return [input, init];
+  if (input instanceof URL) return [input.href, init];
+
+  // input is a Request — drain it into a plain, replayable init.
+  const req = input;
+  const headers = new Headers(req.headers);
+  // An explicit `init` (rare when a Request is passed, but allowed) wins.
+  if (init?.headers) {
+    new Headers(init.headers).forEach((v, k) => headers.set(k, v));
+  }
+
+  const merged: RequestInit = {
+    method: init?.method ?? req.method,
+    headers,
+    signal: init?.signal ?? req.signal,
+    redirect: init?.redirect ?? req.redirect,
+    credentials: init?.credentials ?? req.credentials,
+  };
+
+  // Buffer the body so every retry gets a fresh copy. GET/HEAD have none.
+  const method = (merged.method ?? 'GET').toUpperCase();
+  if (init && 'body' in init) {
+    merged.body = init.body;
+  } else if (method !== 'GET' && method !== 'HEAD' && req.body) {
+    merged.body = await req.arrayBuffer();
+  }
+
+  return [req.url, merged];
+}
 import { getChainDisplayName as canonicalGetChainDisplayName } from '../utils';
 
 // WeakMap keyed on the response so we don't mutate the Response object.
@@ -478,13 +529,18 @@ export function createX402Client(config: X402ClientConfig): X402Client {
   }
 
   /**
-   * Main fetch function with x402 payment handling + access pass support
+   * Main fetch function with x402 payment handling + access pass support.
+   *
+   * `input` is always a string here — the public `x402Fetch` entry point
+   * normalizes any `Request`/`URL` into a string + replayable init before
+   * delegating in, so the probe and the paid retry never share a consumed
+   * request body. See `normalizeRequestInput`.
    */
-  async function x402Fetch(
-    input: string | URL | Request,
+  async function x402FetchInner(
+    input: string,
     init?: RequestInit
   ): Promise<Response> {
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const url = input;
     log('Making request:', url);
 
     // ── Access pass: try cached pass first ──
@@ -652,8 +708,8 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     // Resolve relative resource URLs to absolute URLs
     // Sellers may return path-only resources like "/api/foo" in their 402 response.
     // We resolve against the original request URL so events have full URLs for discovery.
-    const originalUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    
+    const originalUrl = input;
+
     // requirements.resource can be a string (legacy) or ResourceInfo object (v2)
     // Preserve the original format, just resolve any relative URLs
     let resolvedResource: unknown = requirements.resource;
@@ -739,6 +795,20 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     }
 
     return retryResponse;
+  }
+
+  /**
+   * Public entry point. Normalizes `Request`/`URL` input into a string +
+   * replayable init (see `normalizeRequestInput`) so the unpaid probe and
+   * the paid retry never contend over a one-shot request body, then runs
+   * the x402 payment flow.
+   */
+  async function x402Fetch(
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> {
+    const [url, normalizedInit] = await normalizeRequestInput(input, init);
+    return x402FetchInner(url, normalizedInit);
   }
 
   return {
