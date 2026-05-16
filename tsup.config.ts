@@ -7,6 +7,7 @@ export default defineConfig({
     'react/index': 'src/react/index.ts',
     'adapters/index': 'src/adapters/index.ts',
     'utils/index': 'src/utils/index.ts',
+    'batch-settlement/index': 'src/batch-settlement/index.ts',
   },
   format: ['esm', 'cjs'],
   dts: true,
@@ -27,5 +28,8 @@ export default defineConfig({
     'react-dom',
     // Stripe (optional - only needed for stripePayTo)
     'stripe',
+    // x402 upstream (batch-settlement)
+    '@x402/core',
+    '@x402/evm',
   ],
 });

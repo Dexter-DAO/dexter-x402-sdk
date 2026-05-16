@@ -30,6 +30,11 @@
       "types": "./dist/utils/index.d.ts",
       "import": "./dist/utils/index.js",
       "require": "./dist/utils/index.cjs"
+    },
+    "./batch-settlement": {
+      "types": "./dist/batch-settlement/index.d.ts",
+      "import": "./dist/batch-settlement/index.js",
+      "require": "./dist/batch-settlement/index.cjs"
     }
   },
   "files": [
@@ -54,7 +59,9 @@
     "@dexterai/x402-ads-types": "^0.2.0",
     "@dexterai/x402-core": "^1.1.0",
     "@solana/spl-token": "^0.4.9",
-    "@solana/web3.js": "^1.98.0"
+    "@solana/web3.js": "^1.98.0",
+    "@x402/core": "^2.12.0",
+    "@x402/evm": "^2.12.0"
   },
   "devDependencies": {
     "@types/aws-lambda": "^8.10.161",
