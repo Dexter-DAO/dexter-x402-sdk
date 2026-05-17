@@ -41,6 +41,9 @@ export function startAutoLoop(args: {
 
   return {
     async stop() {
+      // Idempotent: a second (or later) call is a no-op so the timer is
+      // cleared once and the final flush runs exactly once.
+      if (stopped) return;
       stopped = true;
       clearInterval(timer);
       // Final flush — settle anything accumulated since the last tick.

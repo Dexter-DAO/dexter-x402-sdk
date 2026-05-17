@@ -32,6 +32,21 @@ describe('startAutoLoop', () => {
     vi.useRealTimers();
   });
 
+  it('stop() is idempotent — a second call runs no extra flush', async () => {
+    vi.useFakeTimers();
+    let claimCalls = 0;
+    const handle = startAutoLoop({
+      claimAndSettle: async () => { claimCalls += 1; },
+      claimIntervalMs: 1000,
+    });
+    await vi.advanceTimersByTimeAsync(1500); // 1 tick
+    await handle.stop();                     // flush => total should be 2
+    const afterFirstStop = claimCalls;
+    await handle.stop();                     // second stop — no extra flush
+    expect(claimCalls).toBe(afterFirstStop);
+    vi.useRealTimers();
+  });
+
   it('a failing claim pass does not stop the loop', async () => {
     vi.useFakeTimers();
     let calls = 0;
