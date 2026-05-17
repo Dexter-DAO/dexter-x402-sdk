@@ -13,6 +13,7 @@ import {
   getChannel,
 } from '@x402/evm/batch-settlement/client';
 import { x402Client, x402HTTPClient } from '@x402/core/client';
+import type { ChannelConfig } from '@x402/evm';
 import type { EvmWallet } from '../adapters/evm';
 import { getDefaultChannelStore } from './store';
 import {
@@ -24,6 +25,13 @@ import {
   type OpenBatchChannelOptions,
   type ResumeBatchChannelOptions,
 } from './types';
+import {
+  forceWithdraw as runForceWithdraw,
+  finalizeWithdraw as runFinalizeWithdraw,
+  type ForceWithdrawResult,
+  type FinalizeWithdrawResult,
+  type WithdrawWalletClient,
+} from './withdraw';
 
 /** CAIP-2 networks where the x402BatchSettlement contract is deployed. */
 const SUPPORTED: Record<string, { chain: Chain; defaultRpc: string }> = {
@@ -46,6 +54,12 @@ export interface ClientStack {
   x402Cli: x402Client;
   httpClient: x402HTTPClient;
   rpcUrl: string;
+  /**
+   * The buyer's viem wallet client (extended with public actions). Used by the
+   * escape-hatch (`forceWithdraw` / `finalizeWithdraw`) to submit on-chain
+   * withdrawal transactions and read channel state. The buyer pays gas.
+   */
+  withdrawClient: WithdrawWalletClient;
 }
 
 /**
@@ -104,7 +118,13 @@ function buildClientStack(input: ClientStackInput): ClientStack {
   x402Cli.register(input.network as `${string}:${string}`, scheme);
   const httpClient = new x402HTTPClient(x402Cli);
 
-  return { scheme, x402Cli, httpClient, rpcUrl };
+  // The escape hatch submits real transactions; `signerClient` is a viem wallet
+  // client extended with public actions, so it carries writeContract /
+  // readContract / waitForTransactionReceipt. Cast to the structural subset the
+  // escape hatch needs.
+  const withdrawClient = signerClient as unknown as WithdrawWalletClient;
+
+  return { scheme, x402Cli, httpClient, rpcUrl, withdrawClient };
 }
 
 /** Test-only export — do not use outside tests. */
@@ -147,6 +167,22 @@ function channelIdFromPayload(paymentPayload: unknown): string {
   return typeof channelId === 'string' ? channelId : '';
 }
 
+/**
+ * Pulls the `channelConfig` tuple out of a batch-settlement payment payload.
+ * Both deposit and voucher payloads carry `channelConfig` alongside
+ * `voucher.channelId` — verified against `@x402/evm` 2.12
+ * `BatchSettlementDepositPayload` / `BatchSettlementVoucherPayload`. The
+ * escape hatch (`forceWithdraw` / `finalizeWithdraw`) needs the full config to
+ * call the contract. Returns `undefined` for an unrecognised payload shape.
+ */
+function channelConfigFromPayload(paymentPayload: unknown): ChannelConfig | undefined {
+  const payload = (paymentPayload as { payload?: unknown }).payload;
+  if (!payload || typeof payload !== 'object') return undefined;
+  const config = (payload as { channelConfig?: unknown }).channelConfig;
+  if (!config || typeof config !== 'object') return undefined;
+  return config as ChannelConfig;
+}
+
 /** Inputs needed to construct a {@link BatchSettlementChannel} handle. */
 interface ChannelHandleInput {
   stack: ClientStack;
@@ -166,6 +202,9 @@ function makeChannelHandle(input: ChannelHandleInput): BatchSettlementChannel {
   const { stack, store, network } = input;
   // Mutable channel state — all populated/refreshed by the first successful fetch.
   let channelId = '';
+  // The channel's on-chain config tuple — captured from the first paid payload.
+  // Required by the escape hatch; the deposit/voucher payload carries it.
+  let channelConfig: ChannelConfig | undefined;
   let depositedAtomic = input.depositedAtomic;
   let spentAtomic = 0n;
 
@@ -224,6 +263,10 @@ function makeChannelHandle(input: ChannelHandleInput): BatchSettlementChannel {
         // payload's voucher carries the deterministic channelId either way.
         const resolvedId = channelIdFromPayload(paymentPayload);
         if (resolvedId) channelId = resolvedId;
+        // The payload also carries the channel config tuple — capture it so the
+        // escape hatch can call the contract without an extra round trip.
+        const resolvedConfig = channelConfigFromPayload(paymentPayload);
+        if (resolvedConfig) channelConfig = resolvedConfig;
 
         const paidHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
         const paid = await fetch(requestInput, {
@@ -259,6 +302,34 @@ function makeChannelHandle(input: ChannelHandleInput): BatchSettlementChannel {
         await store.delete(channelId.toLowerCase());
       }
       return { closed: true };
+    },
+    async forceWithdraw(): Promise<ForceWithdrawResult> {
+      if (!channelConfig) {
+        throw new Error(
+          'forceWithdraw is unavailable until the channel has resolved on-chain — ' +
+            'make at least one fetch() against the channel first',
+        );
+      }
+      return runForceWithdraw({
+        config: channelConfig,
+        network,
+        client: stack.withdrawClient,
+        withdrawDelaySecs: channelConfig.withdrawDelay,
+      });
+    },
+    async finalizeWithdraw(): Promise<FinalizeWithdrawResult> {
+      if (!channelConfig) {
+        throw new Error(
+          'finalizeWithdraw is unavailable until the channel has resolved on-chain — ' +
+            'make at least one fetch() against the channel first',
+        );
+      }
+      return runFinalizeWithdraw({
+        config: channelConfig,
+        network,
+        client: stack.withdrawClient,
+        withdrawDelaySecs: channelConfig.withdrawDelay,
+      });
     },
   };
 }

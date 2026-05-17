@@ -43,3 +43,5 @@ export type {
   CloseReceipt,
   CloseResult,
 } from './types';
+export { WithdrawNotReadyError } from './withdraw';
+export type { ForceWithdrawResult, FinalizeWithdrawResult } from './withdraw';

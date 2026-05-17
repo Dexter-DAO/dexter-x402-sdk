@@ -1,5 +1,6 @@
 import type { ClientChannelStorage } from '@x402/evm/batch-settlement/client';
 import type { EvmWallet } from '../adapters/evm';
+import type { ForceWithdrawResult, FinalizeWithdrawResult } from './withdraw';
 
 /**
  * Channel persistence. This is the upstream `ClientChannelStorage` interface
@@ -87,6 +88,19 @@ export interface BatchSettlementChannel {
    * vouchers and refunds the buyer's unspent escrow. Returns { closed: true }.
    */
   close(): Promise<CloseResult>;
+  /**
+   * Escape hatch — initiates the contract's on-chain withdrawal of this
+   * channel's unspent escrow, starting the withdrawDelay timer. Use only if
+   * the seller never settles. COSTS THE BUYER GAS — the buyer's wallet must
+   * hold the chain's native token; there is no facilitator-relayed variant.
+   */
+  forceWithdraw(): Promise<ForceWithdrawResult>;
+  /**
+   * Escape hatch — finalizes a withdrawal started by forceWithdraw, after the
+   * withdrawDelay has elapsed; returns the funds. Throws WithdrawNotReadyError
+   * if called too early. COSTS THE BUYER GAS.
+   */
+  finalizeWithdraw(): Promise<FinalizeWithdrawResult>;
 }
 
 /** Thrown by openBatchChannel when the buyer wallet lacks USDC for the deposit. */
