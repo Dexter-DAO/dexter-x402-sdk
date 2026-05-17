@@ -104,3 +104,55 @@ describe('channel.close() — repurposed as an intent signal', () => {
     expect(result).toEqual({ closed: true });
   });
 });
+
+describe('escape hatch — wallet transaction capability', () => {
+  it('forceWithdraw throws a clear error when the wallet cannot submit transactions', async () => {
+    // fakeWallet has only signTypedData — no sendTransaction / signTransaction.
+    // The escape hatch needs the buyer to pay gas, so it must fail clearly.
+    const channel = await openBatchChannel({
+      wallet: fakeWallet,
+      network: 'eip155:8453',
+      deposit: '0.30',
+      rpcUrl: 'https://example.invalid',
+      store: getDefaultChannelStore(),
+    });
+    await expect(channel.forceWithdraw()).rejects.toThrow(
+      /wallet that can submit transactions|signature-only wallet/i,
+    );
+  });
+
+  it('finalizeWithdraw throws the same clear error for a signature-only wallet', async () => {
+    const channel = await openBatchChannel({
+      wallet: fakeWallet,
+      network: 'eip155:8453',
+      deposit: '0.30',
+      rpcUrl: 'https://example.invalid',
+      store: getDefaultChannelStore(),
+    });
+    await expect(channel.finalizeWithdraw()).rejects.toThrow(
+      /wallet that can submit transactions|signature-only wallet/i,
+    );
+  });
+
+  it('a transaction-capable wallet passes the capability gate (fails later on channel state, not capability)', async () => {
+    // A wallet with sendTransaction CAN use the escape hatch — so it must NOT
+    // hit the capability error. With no fetch() yet there is no channelConfig,
+    // so it falls through to the channel-state error instead.
+    const txWallet = {
+      ...fakeWallet,
+      async sendTransaction() {
+        return ('0x' + 'ab'.repeat(32)) as `0x${string}`;
+      },
+    };
+    const channel = await openBatchChannel({
+      wallet: txWallet,
+      network: 'eip155:8453',
+      deposit: '0.30',
+      rpcUrl: 'https://example.invalid',
+      store: getDefaultChannelStore(),
+    });
+    await expect(channel.forceWithdraw()).rejects.toThrow(
+      /unavailable until the channel has resolved on-chain/i,
+    );
+  });
+});
