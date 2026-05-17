@@ -106,8 +106,12 @@ describe('channel.close() — repurposed as an intent signal', () => {
 });
 
 describe('escape hatch — wallet transaction capability', () => {
+  // The escape hatch bridges only `wallet.sendTransaction` (the wallet owns
+  // gas/nonce). A `signTransaction`-only wallet cannot be used: signing without
+  // a nonce/gas yields an unbroadcastable raw tx. So the capability gate must
+  // require `sendTransaction` specifically and the error must name it.
   it('forceWithdraw throws a clear error when the wallet cannot submit transactions', async () => {
-    // fakeWallet has only signTypedData — no sendTransaction / signTransaction.
+    // fakeWallet has only signTypedData — no sendTransaction.
     // The escape hatch needs the buyer to pay gas, so it must fail clearly.
     const channel = await openBatchChannel({
       wallet: fakeWallet,
@@ -117,7 +121,7 @@ describe('escape hatch — wallet transaction capability', () => {
       store: getDefaultChannelStore(),
     });
     await expect(channel.forceWithdraw()).rejects.toThrow(
-      /wallet that can submit transactions|signature-only wallet/i,
+      /requires a wallet with a sendTransaction method/i,
     );
   });
 
@@ -130,7 +134,32 @@ describe('escape hatch — wallet transaction capability', () => {
       store: getDefaultChannelStore(),
     });
     await expect(channel.finalizeWithdraw()).rejects.toThrow(
-      /wallet that can submit transactions|signature-only wallet/i,
+      /requires a wallet with a sendTransaction method/i,
+    );
+  });
+
+  it('forceWithdraw throws the capability error for a signTransaction-only wallet (signTransaction alone is not sufficient)', async () => {
+    // A wallet that exposes signTransaction but NOT sendTransaction must FAIL
+    // the gate: this SDK does not hand the wallet a nonce/gas-bearing tx, so a
+    // raw signature from signTransaction is not broadcastable.
+    const signOnlyWallet = {
+      ...fakeWallet,
+      async signTransaction() {
+        return ('0x' + 'cd'.repeat(64)) as `0x${string}`;
+      },
+    };
+    const channel = await openBatchChannel({
+      wallet: signOnlyWallet,
+      network: 'eip155:8453',
+      deposit: '0.30',
+      rpcUrl: 'https://example.invalid',
+      store: getDefaultChannelStore(),
+    });
+    await expect(channel.forceWithdraw()).rejects.toThrow(
+      /requires a wallet with a sendTransaction method/i,
+    );
+    await expect(channel.finalizeWithdraw()).rejects.toThrow(
+      /requires a wallet with a sendTransaction method/i,
     );
   });
 

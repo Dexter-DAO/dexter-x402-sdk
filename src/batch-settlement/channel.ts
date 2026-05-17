@@ -61,12 +61,12 @@ export interface ClientStack {
    */
   withdrawClient: WithdrawWalletClient;
   /**
-   * True when the consumer's wallet exposes a transaction-submitting capability
-   * (`sendTransaction` or `signTransaction`). The escape hatch submits real
-   * on-chain transactions; a signature-only wallet (only `signTypedData`)
-   * cannot use it. `forceWithdraw` / `finalizeWithdraw` check this BEFORE any
-   * `writeContract` call so a signature-only wallet gets a clear error instead
-   * of a cryptic keyless-RPC failure.
+   * True when the consumer's wallet exposes `sendTransaction`. The escape hatch
+   * submits real on-chain transactions and `sendTransaction` is the only
+   * reliable bridge (the wallet owns gas/nonce). A `signTransaction`-only or
+   * signature-only wallet cannot use it. `forceWithdraw` / `finalizeWithdraw`
+   * check this BEFORE any `writeContract` call so an incapable wallet gets a
+   * clear error instead of a cryptic keyless-RPC failure.
    */
   canSubmitTransactions: boolean;
 }
@@ -111,21 +111,23 @@ function buildClientStack(input: ClientStackInput): ClientStack {
   // transaction capability. `writeContract` on a wallet client encodes the call
   // then calls the client's `sendTransaction`; overriding `sendTransaction` to
   // delegate to the consumer wallet makes `writeContract` route through it.
+  // Only `sendTransaction` is a reliable bridge for the escape hatch: the
+  // wallet owns gas estimation and nonce selection. A `signTransaction`-only
+  // wallet would have to be handed a fully-formed tx (nonce + gas) — which
+  // this SDK does not do — so a raw signature from it is not broadcastable.
+  // Therefore `signTransaction` alone does NOT make the wallet escape-hatch
+  // capable.
   const walletSendTransaction = input.wallet.sendTransaction;
-  const walletSignTransaction = input.wallet.signTransaction;
-  const canSubmitTransactions =
-    typeof walletSendTransaction === 'function' ||
-    typeof walletSignTransaction === 'function';
+  const canSubmitTransactions = typeof walletSendTransaction === 'function';
 
   /**
    * Drop-in `sendTransaction` for the escape-hatch client. Accepts viem's
    * transaction-request shape (`writeContract` builds `{ to, data, value, ... }`)
-   * and routes the submission through the consumer's wallet:
-   *   - `wallet.sendTransaction` — wallet broadcasts; returns the tx hash.
-   *   - else `wallet.signTransaction` — wallet returns a signed raw tx, which we
-   *     broadcast via the public transport's `eth_sendRawTransaction`.
-   * Throws a clear error if the wallet can do neither (should be unreachable —
-   * `forceWithdraw` / `finalizeWithdraw` gate on `canSubmitTransactions` first).
+   * and routes the submission through the consumer wallet's `sendTransaction`,
+   * which broadcasts and returns the tx hash (the wallet owns gas/nonce).
+   * Throws a clear error if the wallet has no `sendTransaction` (should be
+   * unreachable — `forceWithdraw` / `finalizeWithdraw` gate on
+   * `canSubmitTransactions` first).
    */
   const bridgedSendTransaction = async (txArgs: {
     to?: `0x${string}` | null;
@@ -147,21 +149,8 @@ function buildClientStack(input: ClientStackInput): ClientStack {
       });
       return hash as `0x${string}`;
     }
-    if (typeof walletSignTransaction === 'function') {
-      const signedTx = await walletSignTransaction.call(input.wallet, {
-        to,
-        data,
-        chainId: entry.chain.id,
-      });
-      // Broadcast the raw signed tx through the (keyless) public transport —
-      // `eth_sendRawTransaction` needs no signer, only a pre-signed payload.
-      return walletClient.sendRawTransaction({
-        serializedTransaction: signedTx as `0x${string}`,
-      });
-    }
     throw new Error(
-      'batch-settlement escape hatch requires a wallet that can submit ' +
-        'transactions (sendTransaction or signTransaction)',
+      'batch-settlement: wallet has no sendTransaction',
     );
   };
 
@@ -384,10 +373,10 @@ function makeChannelHandle(input: ChannelHandleInput): BatchSettlementChannel {
       // state, instead of hitting a cryptic keyless-RPC failure later.
       if (!stack.canSubmitTransactions) {
         throw new Error(
-          'batch-settlement forceWithdraw requires a wallet that can submit ' +
-            'transactions (sendTransaction or signTransaction). The withdrawal ' +
-            'escape hatch needs the buyer to pay gas; a signature-only wallet ' +
-            'cannot use it.',
+          'batch-settlement forceWithdraw requires a wallet with a ' +
+            'sendTransaction method (the withdrawal escape hatch submits an ' +
+            'on-chain transaction and the buyer pays gas; a signature-only ' +
+            'wallet cannot use it).',
         );
       }
       if (!channelConfig) {
@@ -408,10 +397,10 @@ function makeChannelHandle(input: ChannelHandleInput): BatchSettlementChannel {
       // on-chain transaction. Check the wallet's capability FIRST.
       if (!stack.canSubmitTransactions) {
         throw new Error(
-          'batch-settlement finalizeWithdraw requires a wallet that can submit ' +
-            'transactions (sendTransaction or signTransaction). The withdrawal ' +
-            'escape hatch needs the buyer to pay gas; a signature-only wallet ' +
-            'cannot use it.',
+          'batch-settlement finalizeWithdraw requires a wallet with a ' +
+            'sendTransaction method (the withdrawal escape hatch submits an ' +
+            'on-chain transaction and the buyer pays gas; a signature-only ' +
+            'wallet cannot use it).',
         );
       }
       if (!channelConfig) {
