@@ -15,13 +15,12 @@ import {
 import { x402Client, x402HTTPClient } from '@x402/core/client';
 import type { EvmWallet } from '../adapters/evm';
 import { getDefaultChannelStore } from './store';
-import { runClose, buildChannelManager } from './close';
 import {
   UnsupportedNetworkError,
   type ChannelStore,
   type ChannelState,
   type BatchSettlementChannel,
-  type CloseReceipt,
+  type CloseResult,
   type OpenBatchChannelOptions,
   type ResumeBatchChannelOptions,
 } from './types';
@@ -114,9 +113,6 @@ export const __test_buildClientStack = buildClientStack;
 /** USDC has 6 decimals on every batch-settlement-supported chain. */
 const USDC_DECIMALS = 6;
 
-/** Default facilitator: the Dexter facilitator submits the on-chain deposit/claim/settle/refund. */
-const DEFAULT_FACILITATOR_URL = 'https://x402.dexter.cash';
-
 /**
  * Converts atomic-unit channel accounting into the public {@link ChannelState}
  * (USDC human units). `remaining` is clamped at 0 — once spend reaches the
@@ -155,7 +151,6 @@ function channelIdFromPayload(paymentPayload: unknown): string {
 interface ChannelHandleInput {
   stack: ClientStack;
   store: ChannelStore;
-  facilitatorUrl: string;
   network: string;
   /** Known deposit (atomic units). 0n on resume until the first fetch recovers it. */
   depositedAtomic: bigint;
@@ -165,13 +160,12 @@ interface ChannelHandleInput {
  * Builds the live channel handle. The handle is created BEFORE any network
  * call: `channelId` is empty and accounting reflects the known deposit. The
  * first successful `fetch` triggers the upstream deposit signature, resolves
- * the real `channelId` and the seller `receiver`, and refreshes accounting.
+ * the real `channelId`, and refreshes accounting.
  */
 function makeChannelHandle(input: ChannelHandleInput): BatchSettlementChannel {
-  const { stack, store, facilitatorUrl, network } = input;
+  const { stack, store, network } = input;
   // Mutable channel state — all populated/refreshed by the first successful fetch.
   let channelId = '';
-  let receiver = '';
   let depositedAtomic = input.depositedAtomic;
   let spentAtomic = 0n;
 
@@ -218,10 +212,6 @@ function makeChannelHandle(input: ChannelHandleInput): BatchSettlementChannel {
         (name) => probe.headers.get(name),
         await probe.clone().json().catch(() => undefined),
       );
-      // The 402's first accepted requirement carries the seller payout address;
-      // close() needs it and it is only knowable from a live 402.
-      const firstAccept = paymentRequired.accepts?.[0];
-      if (firstAccept?.payTo) receiver = firstAccept.payTo;
 
       // One corrective retry: a stale cumulative base makes the facilitator
       // answer 402 again; the upstream onPaymentResponse hook resyncs channel
@@ -259,30 +249,16 @@ function makeChannelHandle(input: ChannelHandleInput): BatchSettlementChannel {
       // Unreachable: the loop returns on every path; satisfies the type checker.
       return lastResponse as Response;
     },
-    async close(): Promise<CloseReceipt> {
-      if (!channelId) {
-        throw new Error(
-          'cannot close a channel that has made no requests — call fetch() at least once first',
-        );
+    async close(): Promise<CloseResult> {
+      // Buyer close() is an intent signal — the buyer cannot claim. If this
+      // channel has a local record, mark it done so a later openBatchChannel
+      // does not auto-resume it. The seller's runtime performs the actual
+      // claim/settle/refund; the buyer's unspent escrow returns via the
+      // seller's refundWithSignature.
+      if (channelId) {
+        await store.delete(channelId.toLowerCase());
       }
-      if (!receiver) {
-        throw new Error(
-          'cannot close: the seller payout address is unknown (no 402 was observed)',
-        );
-      }
-      const settledAtomic = spentAtomic.toString();
-      const refundedAtomic = (
-        spentAtomic > depositedAtomic ? 0n : depositedAtomic - spentAtomic
-      ).toString();
-
-      const manager = buildChannelManager(facilitatorUrl, network, receiver);
-      const receipt = await runClose(manager, channelId, {
-        settledAtomic,
-        refundedAtomic,
-      });
-      // The channel is settled and refunded on-chain — drop the local record.
-      await store.delete(channelId.toLowerCase());
-      return receipt;
+      return { closed: true };
     },
   };
 }
@@ -303,7 +279,6 @@ export async function openBatchChannel(
   options: OpenBatchChannelOptions,
 ): Promise<BatchSettlementChannel> {
   const store = options.store ?? getDefaultChannelStore();
-  const facilitatorUrl = options.facilitatorUrl ?? DEFAULT_FACILITATOR_URL;
 
   let depositAtomic: bigint;
   try {
@@ -331,7 +306,6 @@ export async function openBatchChannel(
   return makeChannelHandle({
     stack,
     store,
-    facilitatorUrl,
     network: options.network,
     depositedAtomic: depositAtomic,
   });
@@ -353,7 +327,6 @@ export async function resumeBatchChannel(
   options: ResumeBatchChannelOptions,
 ): Promise<BatchSettlementChannel> {
   const store = options.store ?? getDefaultChannelStore();
-  const facilitatorUrl = options.facilitatorUrl ?? DEFAULT_FACILITATOR_URL;
 
   // Resume never opens a fresh deposit — the deposit strategy returns 0; the
   // upstream scheme recovers the existing channel from storage / on-chain.
@@ -368,7 +341,6 @@ export async function resumeBatchChannel(
   return makeChannelHandle({
     stack,
     store,
-    facilitatorUrl,
     network: options.network,
     depositedAtomic: 0n,
   });

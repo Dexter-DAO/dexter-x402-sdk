@@ -1,9 +1,11 @@
 /**
  * Batch-settlement — escrow-channel batching for the @dexterai/x402 SDK.
  *
- * A buyer pre-funds an escrow channel once, makes many DISCRETE paid API
- * calls against it with cheap off-chain vouchers, and closes the channel
- * (settle + refund). It amortizes gas across many discrete purchases.
+ * A buyer pre-funds an escrow channel once and makes many DISCRETE paid API
+ * calls against it with cheap off-chain vouchers. It amortizes gas across many
+ * discrete purchases. The buyer's `close()` is an intent signal — it marks the
+ * channel done locally; the seller's runtime performs the on-chain
+ * claim/settle/refund and the buyer's unspent escrow is returned to it.
  *
  * This is NOT a streaming primitive. Dexter's streaming product is Tab/OTS,
  * a separate project.
@@ -19,7 +21,7 @@
  * });
  * const a = await channel.fetch('https://api.example.com/v1/data');
  * const b = await channel.fetch('https://api.example.com/v1/data');
- * const receipt = await channel.close();
+ * await channel.close(); // { closed: true } — intent signal, not a settlement
  * ```
  */
 export { openBatchChannel, resumeBatchChannel } from './channel';
@@ -39,4 +41,5 @@ export type {
   ChannelState,
   ChannelStore,
   CloseReceipt,
+  CloseResult,
 } from './types';

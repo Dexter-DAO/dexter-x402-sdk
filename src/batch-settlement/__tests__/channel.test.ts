@@ -90,3 +90,17 @@ describe('openBatchChannel', () => {
     });
   });
 });
+
+describe('channel.close() — repurposed as an intent signal', () => {
+  it('returns { closed: true } and does not throw when no requests were made', async () => {
+    const channel = await openBatchChannel({
+      wallet: fakeWallet,
+      network: 'eip155:8453',
+      deposit: '0.30',
+      rpcUrl: 'https://example.invalid',
+      store: getDefaultChannelStore(),
+    });
+    const result = await channel.close();
+    expect(result).toEqual({ closed: true });
+  });
+});

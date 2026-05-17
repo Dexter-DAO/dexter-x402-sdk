@@ -44,7 +44,11 @@ export interface ResumeBatchChannelOptions {
   store?: ChannelStore;
 }
 
-/** Result of channel.close() — the three settlement tx hashes and final amounts. */
+/**
+ * Result of the seller runtime's claim -> settle -> refund — the three
+ * settlement tx hashes and final amounts. Used by the SELLER module; the
+ * buyer's channel.close() returns {@link CloseResult} instead.
+ */
 export interface CloseReceipt {
   /** claimWithSignature tx hash. */
   claimTx: string;
@@ -56,6 +60,12 @@ export interface CloseReceipt {
   settledAmount: string;
   /** Unspent amount returned to the buyer, USDC human units. */
   refundedAmount: string;
+}
+
+/** Result of the buyer's channel.close() — an intent signal, not a settlement. */
+export interface CloseResult {
+  /** Always true — the channel was marked done in the buyer's local store. */
+  closed: true;
 }
 
 /**
@@ -71,8 +81,12 @@ export interface BatchSettlementChannel {
   readonly state: ChannelState;
   /** Drop-in fetch. On a batch-settlement 402, signs a voucher and retries. */
   fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>;
-  /** Facilitator-driven claim -> settle -> refund. Resumable if interrupted. */
-  close(): Promise<CloseReceipt>;
+  /**
+   * Marks the channel done in the buyer's local store (an intent signal).
+   * The buyer does not settle — the seller's runtime claims accumulated
+   * vouchers and refunds the buyer's unspent escrow. Returns { closed: true }.
+   */
+  close(): Promise<CloseResult>;
 }
 
 /** Thrown by openBatchChannel when the buyer wallet lacks USDC for the deposit. */
