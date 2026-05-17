@@ -35,6 +35,11 @@
       "types": "./dist/batch-settlement/index.d.ts",
       "import": "./dist/batch-settlement/index.js",
       "require": "./dist/batch-settlement/index.cjs"
+    },
+    "./batch-settlement/seller": {
+      "types": "./dist/batch-settlement/seller/index.d.ts",
+      "import": "./dist/batch-settlement/seller/index.js",
+      "require": "./dist/batch-settlement/seller/index.cjs"
     }
   },
   "files": [
