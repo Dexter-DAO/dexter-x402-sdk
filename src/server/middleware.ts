@@ -32,6 +32,8 @@ import { toAtomicUnits, encodeBase64Json } from '../utils';
 import { DEFAULT_NETWORK, USDC_DECIMALS } from '../constants';
 import type { SponsoredRecommendation } from '@dexterai/x402-ads-types';
 import { getStripeProviderNetwork } from './stripe-payto';
+import { createBatchSettlementSeller } from '../batch-settlement/seller';
+import type { BatchSettlementSeller } from '../batch-settlement/seller';
 
 /**
  * Middleware configuration
@@ -125,6 +127,20 @@ export interface X402MiddlewareConfig {
    * batching scheme. Default: 'exact'.
    */
   scheme?: 'exact' | 'batch-settlement';
+
+  /**
+   * Batch-settlement seller options. Only used when scheme is
+   * 'batch-settlement'. See createBatchSettlementSeller.
+   */
+  batchSettlement?: {
+    autoSettle?: boolean | {
+      claimIntervalSecs?: number;
+      settleIntervalSecs?: number;
+      refundIntervalSecs?: number;
+    };
+    channelStore?: import('@x402/evm/batch-settlement/server').ChannelStorage;
+    route?: string;
+  };
 
   /**
    * Enable verbose logging
@@ -257,7 +273,32 @@ function resolvePayToForNetwork(
   throw new Error(`No payTo configured for network "${network}"`);
 }
 
-export function x402Middleware(config: X402MiddlewareConfig): RequestHandler {
+export function x402Middleware(
+  config: X402MiddlewareConfig,
+): RequestHandler | BatchSettlementSeller {
+  if (config.scheme === 'batch-settlement') {
+    const network = Array.isArray(config.network) ? config.network[0] : config.network;
+    if (!network) {
+      throw new Error('x402Middleware: scheme "batch-settlement" requires a network');
+    }
+    const payTo = typeof config.payTo === 'string' ? config.payTo : undefined;
+    if (!payTo) {
+      throw new Error(
+        'x402Middleware: scheme "batch-settlement" requires a string payTo address',
+      );
+    }
+    return createBatchSettlementSeller({
+      payTo,
+      network,
+      price: config.amount,
+      facilitatorUrl: config.facilitatorUrl,
+      route: config.batchSettlement?.route,
+      channelStore: config.batchSettlement?.channelStore,
+      autoSettle: config.batchSettlement?.autoSettle,
+      verbose: config.verbose,
+    });
+  }
+
   const {
     payTo,
     amount,
