@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-05-17
+
+Batch settlement is now functional end-to-end. 3.3.0 shipped a batch-settlement
+buyer but no seller runtime, so a seller had no way to collect the vouchers a
+buyer signed. This release adds the seller runtime and corrects the buyer's
+`channel.close()`.
+
+### Added
+- **Batch-settlement seller runtime** — `createBatchSettlementSeller(config)`, exported from `@dexterai/x402/batch-settlement/seller`. Returns a callable object that **is** an Express request handler (mount it directly) and also exposes `.closeChannel(channelId)`, `.closeAll()`, and `.stop()`. It accepts batch-settlement payments — incoming vouchers are verified and persisted to channel storage — and collects them (claim → settle → refund), automatically via a background loop (on by default) and on explicit demand via `closeChannel` / `closeAll`. Config: `{ payTo, network, price, facilitatorUrl?, route?, channelStore?, autoSettle?, verbose? }`.
+- **`x402Middleware({ scheme: 'batch-settlement', ... })` now returns the callable seller object** — a seller that mounts the batch-settlement scheme via `x402Middleware` still gets a `.stop()` / `.closeAll()` / `.closeChannel()` handle.
+- **Buyer escape hatch** — `channel.forceWithdraw()` followed (after the channel's withdraw delay) by `channel.finalizeWithdraw()` reclaims unspent escrow directly via the contract's timed withdrawal if the seller never settles. This is a last-resort safety net; normal operation does not need it. Unlike every other batch-settlement step, the escape hatch costs the buyer gas — the buyer's wallet must be transaction-capable (it must expose a `sendTransaction` method). A signature-only wallet cannot use it.
+
+### Breaking
+- **`channel.close()` no longer returns a `CloseReceipt`.** It now returns `{ closed: true }` and is an intent signal that the buyer is finished with the channel — it is not a settlement and does not move funds. The buyer's unspent escrow returns via the seller's refund on the normal settlement path. (3.3.0's `close()` threw and never worked; this corrects it.)
+
+### Fixed
+- **Batch settlement is now functional end-to-end** — a seller can collect the payments a buyer makes, which 3.3.0 could not (it shipped a buyer with no seller runtime).
+
 ## [3.2.0] - 2026-05-03
 
 Multi-chain coverage parity. The facilitator has supported Polygon, Optimism, Avalanche, BSC, and SKALE Base for a while; the client adapters and helper functions now declare every one of those chains explicitly instead of relying on `eip155:` substring fallbacks. This closes the gap that caused downstream consumers (e.g. the Dexter resource verifier) to display "Insufficient balance on Base" for resources that actually accepted payment on a different EVM chain.
@@ -424,7 +442,8 @@ Filter semantically via the query text, not parameters:
 
 ---
 
-[Unreleased]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v3.1.1...HEAD
+[Unreleased]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v3.4.0...HEAD
+[3.4.0]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v3.2.0...v3.4.0
 [3.1.1]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v3.0.0...v3.1.1
 [3.0.0]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/Dexter-DAO/dexter-x402-sdk/compare/v1.9.4...v2.0.0

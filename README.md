@@ -207,9 +207,11 @@ const b = await channel.fetch('https://api.example.com/v1/data');
 
 console.log(channel.state); // { deposited: '0.3', spent: '0.16', remaining: '0.14' }
 
-// Close — the facilitator claims, settles to the seller, and refunds the rest.
-const receipt = await channel.close();
-console.log(receipt.settledAmount, receipt.refundedAmount);
+// Done buying — signal you're finished with the channel.
+const { closed } = await channel.close();
+// closed === true. This is an intent signal, not a settlement: it does not
+// move funds. The seller's settlement (below) claims what you spent and
+// refunds the rest of your escrow automatically on the normal path.
 ```
 
 Channel state auto-persists (localStorage in the browser, a file under
@@ -219,20 +221,73 @@ transparently resumes the open channel — the channel's state is recovered from
 storage, or from on-chain state if storage was lost. Pass a custom `store` (any
 `ChannelStore`) to persist elsewhere.
 
+#### Escape hatch — `forceWithdraw()` / `finalizeWithdraw()`
+
+If the seller never settles, the buyer can reclaim unspent escrow directly via
+the channel contract's timed withdrawal:
+
+```ts
+// 1. Start the on-chain timed withdrawal.
+await channel.forceWithdraw();
+
+// 2. After the channel's withdraw delay elapses, finalize it.
+await channel.finalizeWithdraw();
+```
+
+This is a last-resort safety net — **normal operation never needs it**, since
+the seller's settlement returns unspent escrow on the standard path. Unlike
+every other batch-settlement step, the escape hatch **costs the buyer gas**: it
+submits transactions itself, so the buyer's wallet must be transaction-capable
+(it must expose a `sendTransaction` method). A signature-only wallet cannot use
+the escape hatch.
+
 ### Seller
 
-Advertise the scheme from the existing server or middleware with one option —
-Dexter operates the delegate authorizer, so the seller manages no signing key:
+`createBatchSettlementSeller(config)` returns a callable object that **is** an
+Express request handler — mount it directly. It accepts batch-settlement
+payments (each incoming voucher is verified and persisted to channel storage)
+and collects them (claim → settle → refund). Dexter operates the delegate
+authorizer, so the seller manages no signing key:
+
+```ts
+import { createBatchSettlementSeller } from '@dexterai/x402/batch-settlement/seller';
+
+const seller = createBatchSettlementSeller({
+  payTo: '0xYourReceivingAddress',
+  network: 'eip155:8453',       // Base
+  price: '0.08',                // USDC per call
+});
+
+// The seller object IS the Express handler — mount it directly.
+app.use('/api/data', seller);
+
+// Auto-settlement runs in the background by default. On shutdown, stop the
+// seller — this flushes a final settle so no collected vouchers are lost.
+process.on('SIGTERM', async () => {
+  await seller.stop();
+});
+```
+
+Settlement happens automatically via a background loop (on by default). To
+settle on demand, call `seller.closeChannel(channelId)` for one channel or
+`seller.closeAll()` for every open channel.
+
+Mounting via `x402Middleware` also works — with `scheme: 'batch-settlement'` it
+returns the same callable seller object, so you still get a `.stop()` /
+`.closeAll()` / `.closeChannel()` handle:
 
 ```ts
 import { x402Middleware } from '@dexterai/x402/server';
 
-app.use(x402Middleware({
+const seller = x402Middleware({
   payTo: '0xYourReceivingAddress',
   amount: '0.08',
   network: 'eip155:8453',
   scheme: 'batch-settlement',
-}));
+});
+
+app.use('/api/data', seller);
+// seller.stop() / seller.closeAll() are available here too.
 ```
 
 ---
@@ -312,8 +367,11 @@ import { createX402Client } from '@dexterai/x402/client';
 // Client - Node.js (private key wallet)
 import { wrapFetch, createKeypairWallet } from '@dexterai/x402/client';
 
-// Batch settlement - EVM escrow channel (gas amortization)
+// Batch settlement - EVM escrow channel buyer (gas amortization)
 import { openBatchChannel } from '@dexterai/x402/batch-settlement';
+
+// Batch settlement - EVM escrow channel seller runtime
+import { createBatchSettlementSeller } from '@dexterai/x402/batch-settlement/seller';
 
 // React hook
 import { useX402Payment } from '@dexterai/x402/react';
