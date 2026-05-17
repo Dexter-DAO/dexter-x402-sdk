@@ -94,18 +94,64 @@ export function buildResourceServer(input: ResourceServerInput): ResourceServerR
     },
   });
 
-  // initialize() fetches facilitator support; processHTTPRequest must wait for it.
-  const ready: Promise<void> = httpResourceServer.initialize();
+  // initialize() fetches facilitator support; processHTTPRequest must wait for
+  // it. A single permanently-rejected promise would silently wedge EVERY
+  // request, so initialization is lazy: ensureReady() caches a fulfilled init
+  // promise and starts a fresh initialize() after a prior failure, letting a
+  // transient startup blip self-heal.
+  let readyPromise: Promise<void> | null = null;
+  function ensureReady(): Promise<void> {
+    if (readyPromise) return readyPromise;
+    const attempt = httpResourceServer.initialize();
+    attempt.catch((err) => {
+      // Drop the cached promise so the next request retries from scratch.
+      if (readyPromise === attempt) readyPromise = null;
+      // A startup failure of the payment runtime is worth surfacing even when
+      // verbose logging is off.
+      if (input.verbose) {
+        log('resource server initialize() failed:', err);
+      } else {
+        console.error('[batch-settlement:seller] resource server initialize() failed:', err);
+      }
+    });
+    readyPromise = attempt;
+    return attempt;
+  }
+  // Kick off the first attempt now and expose it as the `ready` field so
+  // existing callers/tests that await `.ready` still work.
+  const ready: Promise<void> = ensureReady();
+
+  /**
+   * Emit an upstream-built response (the 402 from `payment-error`, or the
+   * failure response from a rejected settlement) onto the Express response.
+   * No-op if a response was already sent.
+   */
+  function sendUpstreamResponse(
+    res: Response,
+    response: { status: number; headers: Record<string, string>; body?: unknown },
+  ): void {
+    if (res.headersSent) return;
+    for (const [k, v] of Object.entries(response.headers)) res.setHeader(k, v);
+    res.status(response.status);
+    const { body } = response;
+    if (body == null) {
+      res.end();
+    } else if (typeof body === 'string') {
+      res.send(body);
+    } else {
+      res.json(body);
+    }
+  }
 
   const handler = async (
     req: Request,
     res: Response,
     next: NextFunction,
   ): Promise<void> => {
-    await ready;
+   try {
+    await ensureReady();
 
-    // Framework-agnostic HTTPAdapter over the Express request — mirrors the
-    // smoke test's makeAdapter.
+    // Build the framework-agnostic HTTP adapter from the Express request.
     const host = req.get('host') ?? '';
     const adapter: HTTPAdapter = {
       getHeader: (name: string) => req.headers[name.toLowerCase()] as string | undefined,
@@ -149,16 +195,7 @@ export function buildResourceServer(input: ResourceServerInput): ResourceServerR
     // No / invalid payment — emit the upstream-built 402. Its `accepts`
     // advertises the batch-settlement scheme, payTo and price.
     if (result.type === 'payment-error') {
-      const { status, headers, body } = result.response;
-      for (const [k, v] of Object.entries(headers)) res.setHeader(k, v);
-      res.status(status);
-      if (body == null) {
-        res.end();
-      } else if (typeof body === 'string') {
-        res.send(body);
-      } else {
-        res.json(body);
-      }
+      sendUpstreamResponse(res, result.response);
       return;
     }
 
@@ -188,16 +225,7 @@ export function buildResourceServer(input: ResourceServerInput): ResourceServerR
     if (!settle.success) {
       // The voucher was rejected at settlement — surface the upstream-built
       // failure response and do NOT run the seller's handler.
-      const { status, headers, body } = settle.response;
-      for (const [k, v] of Object.entries(headers)) res.setHeader(k, v);
-      res.status(status);
-      if (body == null) {
-        res.end();
-      } else if (typeof body === 'string') {
-        res.send(body);
-      } else {
-        res.json(body);
-      }
+      sendUpstreamResponse(res, settle.response);
       return;
     }
 
@@ -208,6 +236,17 @@ export function buildResourceServer(input: ResourceServerInput): ResourceServerR
     }
 
     next();
+   } catch (error) {
+    // Express 4 does not forward a rejected promise from an async handler to
+    // its error pipeline, so an unguarded throw here would hang the client
+    // connection until socket timeout — on the real-money request path.
+    log('handler error:', error);
+    // Guard against double-send: the 402 / upstream / success paths above may
+    // have already flushed a response before an unexpected throw.
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Payment processing error' });
+    }
+   }
   };
 
   return { scheme, facilitator, handler, ready };
