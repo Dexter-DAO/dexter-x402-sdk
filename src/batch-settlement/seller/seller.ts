@@ -45,11 +45,10 @@ export function createBatchSettlementSeller(
   const facilitatorUrl = config.facilitatorUrl ?? DEFAULT_FACILITATOR_URL;
   // The runtime store is the upstream SERVER-side `ChannelStorage` (with
   // `list` / `updateChannel`) — the type `buildResourceServer` and
-  // `createChannelManager` both consume. `BatchSettlementSellerConfig.channelStore`
-  // is typed as the buyer-side `ChannelStore` (a Task 2 file not edited here);
-  // a consumer-supplied store is bridged via `unknown` to the server shape.
+  // `createChannelManager` both consume. `config.channelStore` is already
+  // typed as that server-side `ChannelStorage`.
   const channelStore: ChannelStorage =
-    (config.channelStore as unknown as ChannelStorage | undefined) ??
+    config.channelStore ??
     new FileChannelStorage({
       directory: join(homedir(), '.dexter-x402', 'seller-channels'),
     });
@@ -81,9 +80,7 @@ export function createBatchSettlementSeller(
     loop = startAutoLoop({
       claimAndSettle: runClaimPass,
       claimIntervalMs,
-      onError: config.verbose
-        ? (e) => console.error('[batch-settlement:seller] auto-loop pass failed', e)
-        : undefined,
+      onError: (e) => console.error('[batch-settlement:seller] auto-loop claim pass failed', e),
     });
   }
 

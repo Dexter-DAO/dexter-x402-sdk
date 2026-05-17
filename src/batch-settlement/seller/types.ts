@@ -1,5 +1,6 @@
 import type { RequestHandler } from 'express';
-import type { ChannelStore, CloseReceipt } from '../types';
+import type { ChannelStorage } from '@x402/evm/batch-settlement/server';
+import type { CloseReceipt } from '../types';
 
 /**
  * Result of closing one channel from the seller side. Either a settlement
@@ -24,9 +25,9 @@ export interface BatchSettlementSellerConfig {
   /**
    * Persistent server-side channel storage. Default: file-backed at
    * ~/.dexter-x402/seller-channels/. Pass RedisChannelStorage or a custom
-   * ChannelStore for multi-instance deployments.
+   * server-side ChannelStorage for multi-instance deployments.
    */
-  channelStore?: ChannelStore;
+  channelStore?: ChannelStorage;
   /**
    * Auto-settlement loop. Default true (loop on, default intervals). Pass an
    * object to tune; pass false to disable (settle only via closeChannel/closeAll).
