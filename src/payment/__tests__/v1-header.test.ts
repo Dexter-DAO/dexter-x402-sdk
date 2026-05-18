@@ -117,4 +117,28 @@ describe('buildV1PaymentHeader — SVM', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe('budget_exceeded');
   });
+
+  it('rejects a non-exact scheme before any RPC work', async () => {
+    const solana = await createKeypairWallet(SOL_KEY);
+    const ch: PaymentChallenge = {
+      x402Version: 1,
+      options: [
+        {
+          scheme: 'upto', // not 'exact' — v1 SVM supports only exact
+          network: { caip2: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', bare: 'solana', family: 'svm' },
+          amount: '10000',
+          asset: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+          payTo: '11111111111111111111111111111111',
+          maxTimeoutSeconds: 60,
+          extra: { feePayer: '11111111111111111111111111111111' },
+        },
+      ],
+    };
+    const result = await buildV1PaymentHeader(ch, { solana }, {});
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('merchant_rejected');
+      expect(result.detail).toMatch(/exact/i);
+    }
+  });
 });

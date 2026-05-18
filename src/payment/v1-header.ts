@@ -250,6 +250,16 @@ async function buildSvmHeader(
       return { ok: false, reason: 'budget_exceeded' };
     }
   }
+  // Only the `exact` scheme is defined for v1 SVM. Reject anything else
+  // up front rather than signing a transaction for a scheme we cannot
+  // honour — the SVM adapter always builds an `exact` transfer.
+  if (option.scheme !== 'exact') {
+    return {
+      ok: false,
+      reason: 'merchant_rejected',
+      detail: `v1 SVM supports only the 'exact' scheme, got '${option.scheme}'`,
+    };
+  }
   // v1 SVM exact is unsignable without the facilitator fee payer — it is
   // the transaction's fee payer. Fail clearly rather than fall through.
   const extra = (option.extra ?? {}) as Record<string, unknown>;
