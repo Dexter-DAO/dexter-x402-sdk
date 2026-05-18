@@ -18,6 +18,7 @@ import type { WalletSet } from '../adapters/types';
 import type { EvmWallet } from '../adapters/evm';
 import { toNetworkRef } from './network-map';
 import { CHAIN_IDS } from '../constants';
+import { getAddress } from 'viem';
 
 /**
  * EIP-712 type set for the v1 `exact` EVM scheme. v1 signs an EIP-3009
@@ -96,13 +97,24 @@ async function signV1EvmPayment(
   if (chainId === undefined) {
     throw new Error(`unknown chain id for network ${option.network.caip2}`);
   }
-  const extra = (option.extra ?? {}) as Record<string, unknown>;
+  // The EIP-712 domain separator is keccak256 over
+  // name + version + chainId + verifyingContract. If name/version do not
+  // match the deployed token contract's actual EIP-712 domain, the
+  // recovered signer is wrong and the payment is rejected
+  // (invalid_signature) or settlement reverts on-chain. The domain is
+  // therefore NEVER guessed — `pay` guarantees extra.name / extra.version
+  // are present non-empty strings before calling this helper (see the
+  // domain check in `pay`). Hardcoded fallbacks ('USD Coin'/'2') were
+  // removed: they are correct only for native USDC and silently produce
+  // an unspendable signature for bridged USDC (USDC.e) and chains like
+  // BSC / Polygon PoS where the token reports a different name/version.
+  const extra = option.extra as Record<string, unknown>;
   const signature = await wallet.signTypedData({
     domain: {
-      name: typeof extra.name === 'string' ? extra.name : 'USD Coin',
-      version: typeof extra.version === 'string' ? extra.version : '2',
+      name: extra.name as string,
+      version: extra.version as string,
       chainId,
-      verifyingContract: option.asset,
+      verifyingContract: getAddress(option.asset),
     },
     types: V1_AUTHORIZATION_TYPES,
     primaryType: 'TransferWithAuthorization',
@@ -195,7 +207,29 @@ export const v1Strategy: PaymentStrategy = {
         }
       }
 
-      // 3. Build the signed v1 `exact` payment payload.
+      // 3. Verify the v1 challenge carries the exact-scheme EIP-712 domain.
+      //    A wrong EIP-712 domain produces a cryptographically unspendable
+      //    signature, so the domain is never guessed — if the merchant
+      //    omitted extra.name / extra.version the payment cannot be signed
+      //    correctly and pay fails fast rather than emit a bad payload.
+      const chosenExtra = (chosen.extra ?? {}) as Record<string, unknown>;
+      const domainName = chosenExtra.name;
+      const domainVersion = chosenExtra.version;
+      if (
+        typeof domainName !== 'string' ||
+        domainName.length === 0 ||
+        typeof domainVersion !== 'string' ||
+        domainVersion.length === 0
+      ) {
+        return {
+          ok: false,
+          reason: 'merchant_rejected',
+          detail:
+            'v1 challenge missing exact-scheme EIP-712 domain (extra.name / extra.version)',
+        };
+      }
+
+      // 4. Build the signed v1 `exact` payment payload.
       //
       //    CRITICAL — NO NETWORK REWRITE. The `network` field on the wire
       //    MUST be the merchant's advertised v1 string verbatim. For a
@@ -210,13 +244,13 @@ export const v1Strategy: PaymentStrategy = {
       const wireNetwork = chosen.network.bare;
       const payment = await signV1EvmPayment(evmWallet, chosen, wireNetwork);
 
-      // 4. Base64-encode the payload into the X-PAYMENT header value.
+      // 5. Base64-encode the payload into the X-PAYMENT header value.
       const paymentHeader = Buffer.from(
         JSON.stringify(payment),
         'utf8',
       ).toString('base64');
 
-      // 5. Build a FRESH RequestInit — never reuse a consumed body.
+      // 6. Build a FRESH RequestInit — never reuse a consumed body.
       const headers = new Headers(requestInit.headers ?? undefined);
       headers.set('X-PAYMENT', paymentHeader);
 
@@ -237,7 +271,7 @@ export const v1Strategy: PaymentStrategy = {
         freshInit.body = requestInit.body;
       }
 
-      // 6. Send and map the outcome.
+      // 7. Send and map the outcome.
       const response = await fetch(url, freshInit);
       if (response.ok) {
         return {

@@ -61,6 +61,11 @@ describe('v1Strategy.pay', () => {
     const challenge = await v1Strategy.parseChallenge(
       (await import('./fixtures')).makeV1Response(),
     );
+    // The fixture's v1 accepts entry has no `extra`. Inject a valid
+    // EIP-712 domain so pay can sign — without this the new fail-safe
+    // (merchant_rejected on a missing domain) would trip and the
+    // network-preservation assertion below would never run.
+    challenge!.options[0].extra = { name: 'USD Coin', version: '2' };
     const { createEvmKeypairWallet } = await import('../../client/evm-wallet');
     const wallets = {
       evm: createEvmKeypairWallet(
@@ -91,6 +96,41 @@ describe('v1Strategy.pay', () => {
     );
     const net = String(decoded.network ?? decoded.payload?.network ?? '');
     expect(net).toBe('base');
+    vi.unstubAllGlobals();
+  });
+
+  it('fails with merchant_rejected when the v1 challenge omits the EIP-712 domain', async () => {
+    // A wrong EIP-712 domain (name/version) produces a cryptographically
+    // unspendable signature. When the merchant omits extra.name /
+    // extra.version pay must NOT guess the domain — it fails fast.
+    const mockFetch = vi.fn(async () => new Response('{"ok":true}', { status: 200 }));
+    vi.stubGlobal('fetch', mockFetch);
+
+    const { v1Strategy } = await import('../v1-strategy');
+    const challenge = await v1Strategy.parseChallenge(
+      (await import('./fixtures')).makeV1Response(),
+    );
+    // Leave `extra` undefined — the fixture provides no EIP-712 domain.
+    const { createEvmKeypairWallet } = await import('../../client/evm-wallet');
+    const wallets = {
+      evm: createEvmKeypairWallet(
+        '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d',
+      ),
+    } as never;
+
+    const result = await v1Strategy.pay(
+      'https://example.com/api',
+      { method: 'GET' },
+      challenge!,
+      wallets,
+      { maxAmountAtomic: '100000' },
+    );
+
+    expect(result.ok).toBe(false);
+    expect((result as { reason: string }).reason).toBe('merchant_rejected');
+    expect((result as { detail?: string }).detail).toMatch(/EIP-712 domain/);
+    // pay must never reach the merchant retry with a bad payload.
+    expect(mockFetch).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
 });
