@@ -138,6 +138,9 @@ export class SolanaAdapter implements ChainAdapter {
           ? TOKEN_2022_PROGRAM_ID
           : TOKEN_PROGRAM_ID;
 
+      // allowOwnerOffCurve = false: the owner is the buyer's own wallet,
+      // which is always a real account (never a PDA) — off-curve is
+      // impossible here.
       const ata = await getAssociatedTokenAddress(
         mintPubkey,
         userPubkey,
@@ -235,18 +238,32 @@ export class SolanaAdapter implements ChainAdapter {
       );
     }
 
-    // Derive Associated Token Accounts
+    // Derive Associated Token Accounts.
+    //
+    // allowOwnerOffCurve — the third arg — controls whether
+    // getAssociatedTokenAddress will derive an ATA for an OFF-CURVE owner
+    // (a Program Derived Address). It throws TokenOwnerOffCurveError
+    // otherwise.
+    //
+    // Source: the owner is `userPubkey`, the buyer's own wallet. A buyer is
+    // always a real account (keypair or browser wallet) — never a PDA — so
+    // off-curve is impossible here and the flag stays `false`.
     const sourceAta = await getAssociatedTokenAddress(
       mintPubkey,
       userPubkey,
       false,
       programId
     );
-    // allowOwnerOffCurve: true — an x402 merchant's payTo is frequently a
-    // program-derived address (PDA), not a keypair. getAssociatedTokenAddress
-    // throws TokenOwnerOffCurveError on a PDA owner unless this is set.
-    // The source ATA owner is always the buyer's own keypair (on-curve), so
-    // it stays false; only the destination can legitimately be off-curve.
+    // Destination: the owner is the merchant's `payTo`. Most merchants are a
+    // normal wallet (on-curve), but some are a protocol whose `payTo` is a
+    // PDA (an escrow / revenue-split / treasury controlled by a program).
+    // `true` lets us derive the *standard* ATA for such a payTo instead of
+    // throwing. This assumes a PDA merchant receives at its standard ATA —
+    // which is the x402 convention. If a merchant instead used a
+    // non-standard program-owned token account, this derivation would point
+    // at the wrong account, but the facilitator independently re-derives the
+    // payTo ATA the same way and rejects a mismatch — so a wrong assumption
+    // fails the payment cleanly, it never misdirects funds.
     const destinationAta = await getAssociatedTokenAddress(
       mintPubkey,
       destinationPubkey,
