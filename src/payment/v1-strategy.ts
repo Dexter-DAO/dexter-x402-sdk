@@ -17,6 +17,7 @@ import type {
 import type { WalletSet } from '../adapters/types';
 import { toNetworkRef } from './network-map';
 import { buildV1PaymentHeader } from './v1-header';
+import { errorDetail } from './errors';
 
 function toOptions(accepts: unknown[]): ChallengeOption[] {
   const out: ChallengeOption[] = [];
@@ -124,7 +125,7 @@ export const v1Strategy: PaymentStrategy = {
       return {
         ok: false,
         reason: 'error',
-        detail: err instanceof Error ? err.message : String(err),
+        detail: errorDetail(err),
       };
     } finally {
       if (timer !== undefined) clearTimeout(timer);

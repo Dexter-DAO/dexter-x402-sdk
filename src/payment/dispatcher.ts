@@ -10,6 +10,7 @@ import type { WalletSet } from '../adapters/types';
 import { v2Strategy } from './v2-strategy';
 import { v1Strategy } from './v1-strategy';
 import { toSiwxSigner } from './siwx-signer';
+import { errorDetail } from './errors';
 
 // v2 first: it is the current protocol version. v1 is the fallback.
 const STRATEGIES: PaymentStrategy[] = [v2Strategy, v1Strategy];
@@ -50,7 +51,7 @@ async function buildProbeFetch(wallets: WalletSet): Promise<typeof fetch> {
     console.warn(
       `[x402] SIW-X unavailable — @x402/extensions failed to load; ` +
         `SIW-X merchants will not authenticate. ` +
-        `${err instanceof Error ? err.message : String(err)}`,
+        `${errorDetail(err)}`,
     );
     return fetch;
   }
@@ -95,7 +96,7 @@ export async function payAndFetch(
     return {
       ok: false,
       reason: 'error',
-      detail: err instanceof Error ? err.message : String(err),
+      detail: errorDetail(err),
     };
   }
 

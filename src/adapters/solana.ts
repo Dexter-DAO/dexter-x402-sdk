@@ -242,10 +242,15 @@ export class SolanaAdapter implements ChainAdapter {
       false,
       programId
     );
+    // allowOwnerOffCurve: true — an x402 merchant's payTo is frequently a
+    // program-derived address (PDA), not a keypair. getAssociatedTokenAddress
+    // throws TokenOwnerOffCurveError on a PDA owner unless this is set.
+    // The source ATA owner is always the buyer's own keypair (on-curve), so
+    // it stays false; only the destination can legitimately be off-curve.
     const destinationAta = await getAssociatedTokenAddress(
       mintPubkey,
       destinationPubkey,
-      false,
+      true,
       programId
     );
 

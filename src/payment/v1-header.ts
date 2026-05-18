@@ -20,6 +20,7 @@ import type { PaymentAccept } from '../types';
 import { createSolanaAdapter } from '../adapters';
 import { CHAIN_IDS } from '../constants';
 import { getAddress } from 'viem';
+import { errorDetail } from './errors';
 
 /**
  * EIP-712 type set for the v1 `exact` EVM scheme. v1 signs an EIP-3009
@@ -180,7 +181,7 @@ export async function buildV1PaymentHeader(
     return {
       ok: false,
       reason: 'error',
-      detail: err instanceof Error ? err.message : String(err),
+      detail: errorDetail(err),
     };
   }
 }
