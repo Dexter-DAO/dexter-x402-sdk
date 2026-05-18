@@ -23,6 +23,19 @@ describe('toNetworkRef', () => {
     expect(r?.family).toBe('svm');
   });
 
+  it('resolves regardless of input case', () => {
+    expect(toNetworkRef('BASE')).toEqual({
+      caip2: 'eip155:8453',
+      bare: 'base',
+      family: 'evm',
+    });
+    expect(toNetworkRef('EIP155:8453')).toEqual({
+      caip2: 'eip155:8453',
+      bare: 'base',
+      family: 'evm',
+    });
+  });
+
   it('returns null for an unknown network', () => {
     expect(toNetworkRef('dogecoin')).toBeNull();
   });

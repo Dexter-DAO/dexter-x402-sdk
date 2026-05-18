@@ -33,21 +33,16 @@ const byCaip2 = new Map(ENTRIES.map((e) => [e.caip2.toLowerCase(), e]));
 const byBare = new Map(ENTRIES.map((e) => [e.bare.toLowerCase(), e]));
 
 /**
- * Resolve any network string — CAIP-2 or bare — to a NetworkRef.
- * Returns null when the network is not recognised.
+ * Resolve a network string — CAIP-2 or bare — to a NetworkRef.
+ * Only networks in the canonical ENTRIES table resolve. An
+ * unrecognised network (including an unmapped eip155:* / solana:*
+ * chain) returns null — callers must not receive a half-resolved,
+ * misleading NetworkRef.
  */
 export function toNetworkRef(network: string): NetworkRef | null {
   if (!network) return null;
   const key = network.toLowerCase();
-  const entry =
-    byCaip2.get(key) ||
-    byBare.get(key) ||
-    // CAIP-2 EVM with an unmapped chain id still resolves to evm family.
-    (key.startsWith('eip155:')
-      ? { caip2: network, bare: key, family: 'evm' as const }
-      : key.startsWith('solana:')
-        ? { caip2: network, bare: 'solana', family: 'svm' as const }
-        : undefined);
+  const entry = byCaip2.get(key) || byBare.get(key);
   if (!entry) return null;
   return { caip2: entry.caip2, bare: entry.bare, family: entry.family };
 }
