@@ -4,6 +4,7 @@
  */
 export { payAndFetch, detectStrategy } from './dispatcher';
 export { toNetworkRef } from './network-map';
+export { toSiwxSigner } from './siwx-signer';
 export type {
   PaymentStrategy,
   PaymentChallenge,

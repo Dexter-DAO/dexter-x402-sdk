@@ -75,8 +75,8 @@ export type {
 export { createBudgetAccount } from './budget-account';
 export type { BudgetAccount, BudgetAccountConfig, BudgetConfig, PaymentRecord } from './budget-account';
 
-// x402 version seam — version-agnostic paid fetch (v1 + v2)
-export { payAndFetch, detectStrategy, toNetworkRef } from '../payment';
+// x402 version seam — version-agnostic paid fetch (v1 + v2), incl. SIW-X
+export { payAndFetch, detectStrategy, toNetworkRef, toSiwxSigner } from '../payment';
 export type {
   PaymentStrategy,
   PaymentChallenge,
