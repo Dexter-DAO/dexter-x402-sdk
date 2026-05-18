@@ -15,6 +15,9 @@ import type {
 } from './types';
 import type { WalletSet } from '../adapters/types';
 import type { EvmWallet } from '../adapters/evm';
+import type { SolanaWallet } from '../adapters/solana';
+import type { PaymentAccept } from '../types';
+import { createSolanaAdapter } from '../adapters';
 import { CHAIN_IDS } from '../constants';
 import { getAddress } from 'viem';
 
@@ -168,12 +171,8 @@ export async function buildV1PaymentHeader(
         return await buildEvmHeader(option, evmWallet, opts);
       }
       if (option.network.family === 'svm' && wallets.solana) {
-        // SVM implemented in a later task.
-        return {
-          ok: false,
-          reason: 'error',
-          detail: 'v1 SVM signing not yet implemented',
-        };
+        const solanaWallet = (await wallets.solana) as SolanaWallet;
+        return await buildSvmHeader(option, solanaWallet, opts);
       }
     }
     return { ok: false, reason: 'unsupported_network' };
@@ -217,6 +216,80 @@ async function buildEvmHeader(
   // NO network rewrite — wire network is the merchant's advertised bare name.
   const wireNetwork = option.network.bare;
   const payment = await signV1EvmPayment(evmWallet, option, wireNetwork);
+  const headerValue = Buffer.from(
+    JSON.stringify(payment),
+    'utf8',
+  ).toString('base64');
+  return { ok: true, headerValue, option };
+}
+
+/**
+ * Build and base64-encode a v1 `exact`-scheme SVM (Solana) X-PAYMENT header.
+ *
+ * Unlike EVM (an offline EIP-3009 signature), v1 SVM `exact` ships a real,
+ * partially-signed Solana v0 transaction (SetComputeUnitLimit +
+ * SetComputeUnitPrice + TransferChecked, fee payer = `extra.feePayer`).
+ * Building it requires Solana RPC (mint lookup + recent blockhash).
+ *
+ * The v2 Solana adapter's `buildTransaction` already produces exactly that
+ * transaction — it is v1/v2-agnostic (falls back to `maxAmountRequired`).
+ * This is a thin envelope around it: take the serialized wire transaction
+ * and wrap it in the v1 PaymentPayload `{ transaction }` shape.
+ *
+ * RPC failures from `buildTransaction` are allowed to throw — the
+ * `buildV1PaymentHeader` wrapper converts them to `{ ok:false, reason:'error' }`.
+ */
+async function buildSvmHeader(
+  option: ChallengeOption,
+  solanaWallet: SolanaWallet,
+  opts: PayAndFetchOptions,
+): Promise<V1HeaderResult> {
+  // Budget check FIRST — before any RPC work (mint lookup / blockhash).
+  if (opts.maxAmountAtomic !== undefined) {
+    if (BigInt(option.amount) > BigInt(opts.maxAmountAtomic)) {
+      return { ok: false, reason: 'budget_exceeded' };
+    }
+  }
+  // v1 SVM exact is unsignable without the facilitator fee payer — it is
+  // the transaction's fee payer. Fail clearly rather than fall through.
+  const extra = (option.extra ?? {}) as Record<string, unknown>;
+  if (typeof extra.feePayer !== 'string' || extra.feePayer.length === 0) {
+    return {
+      ok: false,
+      reason: 'merchant_rejected',
+      detail:
+        'v1 SVM challenge missing extra.feePayer (required as the transaction fee payer)',
+    };
+  }
+  // NO network rewrite — wire network is the merchant's advertised bare name.
+  const wireNetwork = option.network.bare;
+  // The v2 Solana adapter builds the exact 3-instruction partially-signed
+  // transaction v1 SVM exact requires; reuse it. `scheme` is cast because
+  // PaymentAccept's union is stricter than ChallengeOption's string scheme;
+  // `extra` already satisfies AcceptsExtra via its index signature.
+  const accept: PaymentAccept = {
+    x402Version: 1,
+    scheme: option.scheme as PaymentAccept['scheme'],
+    network: wireNetwork,
+    asset: option.asset,
+    payTo: option.payTo,
+    amount: option.amount,
+    maxAmountRequired: option.amount,
+    maxTimeoutSeconds: option.maxTimeoutSeconds ?? 60,
+    extra,
+  };
+  const adapter = createSolanaAdapter();
+  const built = await adapter.buildTransaction(
+    accept,
+    solanaWallet,
+    opts.solanaRpcUrl,
+  );
+  const payment = {
+    x402Version: 1,
+    scheme: option.scheme,
+    network: wireNetwork,
+    payload: { transaction: built.serialized },
+  };
   const headerValue = Buffer.from(
     JSON.stringify(payment),
     'utf8',

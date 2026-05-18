@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildV1PaymentHeader } from '../v1-header';
 import { createEvmKeypairWallet } from '../../client/evm-wallet';
+import { createKeypairWallet } from '../../client/keypair-wallet';
 import type { PaymentChallenge } from '../types';
 
 const EVM_KEY =
@@ -64,5 +65,56 @@ describe('buildV1PaymentHeader — EVM', () => {
     const result = await buildV1PaymentHeader(evmChallenge(), {}, {});
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe('unsupported_network');
+  });
+});
+
+// A deterministic throwaway 64-byte Solana secret key (generated, unfunded).
+const SOL_KEY: number[] = [137,185,198,196,16,106,26,238,156,217,247,235,0,99,5,122,9,60,71,230,189,252,89,54,148,208,50,194,245,60,76,91,191,134,28,7,166,25,141,198,166,230,146,187,146,223,231,79,84,59,221,99,80,28,46,80,141,155,16,110,66,104,43,97];
+
+describe('buildV1PaymentHeader — SVM', () => {
+  it('fails merchant_rejected when a v1 SVM option omits extra.feePayer', async () => {
+    const solana = await createKeypairWallet(SOL_KEY);
+    const ch: PaymentChallenge = {
+      x402Version: 1,
+      options: [
+        {
+          scheme: 'exact',
+          network: { caip2: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', bare: 'solana', family: 'svm' },
+          amount: '10000',
+          asset: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+          payTo: '11111111111111111111111111111111',
+          maxTimeoutSeconds: 60,
+          extra: {}, // no feePayer
+        },
+      ],
+    };
+    const result = await buildV1PaymentHeader(ch, { solana }, {});
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('merchant_rejected');
+      expect(result.detail).toMatch(/feePayer/i);
+    }
+  });
+
+  it('budget_exceeded is checked before any RPC work for SVM', async () => {
+    const solana = await createKeypairWallet(SOL_KEY);
+    const ch: PaymentChallenge = {
+      x402Version: 1,
+      options: [
+        {
+          scheme: 'exact',
+          network: { caip2: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', bare: 'solana', family: 'svm' },
+          amount: '10000',
+          asset: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+          payTo: '11111111111111111111111111111111',
+          maxTimeoutSeconds: 60,
+          extra: { feePayer: '11111111111111111111111111111111' },
+        },
+      ],
+    };
+    // amount 10000 > budget 1 -> must fail budget_exceeded WITHOUT hitting RPC.
+    const result = await buildV1PaymentHeader(ch, { solana }, { maxAmountAtomic: '1' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe('budget_exceeded');
   });
 });
