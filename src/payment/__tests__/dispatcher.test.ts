@@ -17,6 +17,16 @@ describe('detectStrategy', () => {
     const s = await detectStrategy(makeEmptyResponse());
     expect(s).toBeNull();
   });
+
+  // v1's parseChallenge returns null immediately when the PAYMENT-REQUIRED
+  // header is present (it treats that as a v2 response and declines). This
+  // means v1 and v2 are mutually exclusive by construction — a response
+  // accepted by v2Strategy will always be declined by v1Strategy, so the
+  // "v2 first" ordering in STRATEGIES is a policy anchor, not a tiebreaker.
+  it('routes a response with PAYMENT-REQUIRED header to v2 (v1 is mutually exclusive)', async () => {
+    const s = await detectStrategy(makeV2Response());
+    expect(s?.version).toBe(2);
+  });
 });
 
 describe('payAndFetch', () => {
@@ -48,5 +58,19 @@ describe('payAndFetch', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe('no_payment_options');
     vi.unstubAllGlobals();
+  });
+
+  it('fails loudly when a non-string body is supplied', async () => {
+    const result = await payAndFetch(
+      'https://example.com/api',
+      { method: 'POST', body: new URLSearchParams({ key: 'val' }) },
+      {} as never,
+      {},
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('error');
+      expect(result.detail).toMatch(/non-string bodies/);
+    }
   });
 });

@@ -39,24 +39,38 @@ export async function payAndFetch(
   wallets: WalletSet,
   opts: PayAndFetchOptions,
 ): Promise<PayResult> {
+  // Non-string bodies (Buffer, FormData, URLSearchParams, ReadableStream)
+  // cannot be safely re-sent on the paid retry — fail loudly rather than
+  // silently drop the body and probe without it.
+  if (
+    requestInit.body !== undefined &&
+    requestInit.body !== null &&
+    typeof requestInit.body !== 'string'
+  ) {
+    return {
+      ok: false,
+      reason: 'error',
+      detail:
+        'payAndFetch requires a string body; non-string bodies (Buffer, FormData, URLSearchParams, ReadableStream) cannot be safely re-sent on the paid retry',
+    };
+  }
+
   let probe: Response;
   try {
-    // Probe with a fresh request — body, if any, must be a string so it
-    // can be re-sent on the paid retry.
-    probe = await fetch(url, {
-      ...requestInit,
-      body:
-        typeof requestInit.body === 'string' ? requestInit.body : undefined,
-    });
+    // Probe with the original requestInit — body is guaranteed to be a
+    // string-or-nullish by the guard above, so it is safe to re-send.
+    probe = await fetch(url, { ...requestInit });
   } catch (err) {
     return {
       ok: false,
       reason: 'error',
-      detail: (err as Error).message,
+      detail: err instanceof Error ? err.message : String(err),
     };
   }
 
   if (probe.status !== 402) {
+    // not-applicable placeholder — a proper fix needs a types.ts change,
+    // out of Task 8 scope
     return {
       ok: true,
       response: probe,
