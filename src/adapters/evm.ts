@@ -119,6 +119,13 @@ export interface EvmWallet {
     gasPrice?: bigint;
     nonce?: number;
   }): Promise<string>;
+  /**
+   * Sign a plain message (EIP-191 personal_sign). Used by the SIW-X
+   * (Sign-In-With-X) seam for CAIP-122 / EIP-4361 identity proofs.
+   * Optional: browser wallets supply their own; keypair wallets get it
+   * from createEvmKeypairWallet.
+   */
+  signMessage?(params: { message: string }): Promise<string>;
 }
 
 /**

@@ -107,6 +107,8 @@ export async function createEvmKeypairWallet(privateKey: string): Promise<EvmWal
       nonce: params.nonce,
       type: 'legacy' as const,
     }),
+    signMessage: (params: { message: string }) =>
+      account.signMessage({ message: params.message }),
   };
 }
 
