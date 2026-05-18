@@ -15,6 +15,7 @@ import type {
 } from './types';
 import type { WalletSet } from '../adapters/types';
 import { toNetworkRef } from './network-map';
+import { createX402Client } from '../client/x402-client';
 
 function decodeHeader(raw: string): unknown {
   const padded = raw.replace(/-/g, '+').replace(/_/g, '/');
@@ -71,13 +72,77 @@ export const v2Strategy: PaymentStrategy = {
   },
 
   async pay(
-    _url: string,
-    _requestInit: RequestInit,
-    _challenge: PaymentChallenge,
-    _wallets: WalletSet,
-    _opts: PayAndFetchOptions,
+    url: string,
+    requestInit: RequestInit,
+    challenge: PaymentChallenge,
+    wallets: WalletSet,
+    opts: PayAndFetchOptions,
   ): Promise<PayResult> {
-    // Implemented in Task 5.
-    return { ok: false, reason: 'error', detail: 'pay not yet implemented' };
+    // Pick first option whose network family has a matching wallet.
+    const option: ChallengeOption | undefined = challenge.options.find(o => {
+      if (o.network.family === 'evm') return !!wallets.evm;
+      if (o.network.family === 'svm') return !!wallets.solana;
+      return false;
+    });
+
+    if (!option) {
+      return { ok: false, reason: 'unsupported_network' };
+    }
+
+    // Delegate to createX402Client which accepts a WalletSet directly.
+    // wrapFetch only accepts private key strings, so we go one level deeper.
+    const client = createX402Client({
+      wallets,
+      preferredNetwork: option.network.caip2,
+      maxAmountAtomic: opts.maxAmountAtomic,
+      fetch: globalThis.fetch,
+    });
+
+    // Build a fresh RequestInit — never reuse a potentially-consumed body.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      opts.timeoutMs ?? 15000,
+    );
+
+    const freshInit: RequestInit = {
+      method: requestInit.method ?? 'GET',
+      headers: requestInit.headers,
+      signal: controller.signal,
+    };
+    if (typeof requestInit.body === 'string') {
+      freshInit.body = requestInit.body;
+    }
+
+    try {
+      const response = await client.fetch(url, freshInit);
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        return {
+          ok: false,
+          reason: 'merchant_rejected',
+          detail: 'HTTP ' + response.status,
+        };
+      }
+
+      const txSignature =
+        response.headers.get('PAYMENT-RESPONSE') ?? undefined;
+
+      return {
+        ok: true,
+        response,
+        amountPaid: option.amount,
+        network: option.network,
+        txSignature,
+      };
+    } catch (err: unknown) {
+      clearTimeout(timeoutId);
+      const e = err as { name?: string; message?: string };
+      if (e?.name === 'AbortError') {
+        return { ok: false, reason: 'timeout' };
+      }
+      return { ok: false, reason: 'error', detail: e?.message ?? String(err) };
+    }
   },
 };
