@@ -153,10 +153,22 @@ export function buildResourceServer(input: ResourceServerInput): ResourceServerR
 
     // Build the framework-agnostic HTTP adapter from the Express request.
     const host = req.get('host') ?? '';
+    // Route lookup must use the MOUNT-ABSOLUTE path. `req.path` is relative to
+    // the mount point: under `app.use('/smoke', seller)` it is `/` while the
+    // route table key is `/smoke`, so a `req.path` lookup silently misses and
+    // the request falls through UNPAID with a 200. `req.baseUrl + req.path`
+    // reconstructs the absolute path the route table is keyed on, and reduces
+    // to plain `req.path` when the seller is mounted at the app root or via
+    // `app.get('/smoke', seller)` (empty baseUrl).
+    //
+    // `baseUrl` is coerced to '' — real Express always sets it, but a
+    // hand-built request double may omit it, and `undefined` would stringify
+    // into the literal "undefined/api/data" and miss every route.
+    const absolutePath = `${req.baseUrl ?? ''}${req.path}` || '/';
     const adapter: HTTPAdapter = {
       getHeader: (name: string) => req.headers[name.toLowerCase()] as string | undefined,
       getMethod: () => req.method,
-      getPath: () => req.path,
+      getPath: () => absolutePath,
       getUrl: () => `${req.protocol}://${host}${req.originalUrl}`,
       getAcceptHeader: () => (req.headers['accept'] as string | undefined) ?? '',
       getUserAgent: () => (req.headers['user-agent'] as string | undefined) ?? '',
@@ -178,7 +190,7 @@ export function buildResourceServer(input: ResourceServerInput): ResourceServerR
 
     const ctx: HTTPRequestContext = {
       adapter,
-      path: req.path,
+      path: absolutePath,
       method: req.method,
       paymentHeader,
     };

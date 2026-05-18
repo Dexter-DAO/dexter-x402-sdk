@@ -102,6 +102,17 @@ export interface PaymentReceipt {
   payer?: string;
   /** Protocol extensions (e.g., sponsored-access recommendations) */
   extensions?: Record<string, unknown>;
+  /**
+   * Amount actually paid, in atomic units (e.g. '10000' for 0.01 USDC).
+   * Sourced from the payment requirement the client settled — the facilitator's
+   * PAYMENT-RESPONSE receipt does not echo the amount, so the client records it.
+   */
+  amountAtomic?: string;
+  /**
+   * Decimals of the paid asset, so `amountAtomic` can be converted to a human
+   * amount: `Number(amountAtomic) / 10 ** assetDecimals`.
+   */
+  assetDecimals?: number;
 }
 
 /**
@@ -780,18 +791,29 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       );
     }
 
-    // Decode PAYMENT-RESPONSE header and store as typed receipt
+    // Decode PAYMENT-RESPONSE header and store as typed receipt. The facilitator
+    // receipt confirms settlement (success, tx hash) but does not echo the
+    // amount, so the client stamps in the atomic amount + decimals it just paid
+    // — making `getPaymentReceipt(response)` a complete record of the payment.
     const paymentResponseHeader = retryResponse.headers.get('PAYMENT-RESPONSE');
+    let receipt: PaymentReceipt | undefined;
     if (paymentResponseHeader) {
       try {
-        const receipt: PaymentReceipt = JSON.parse(atob(paymentResponseHeader));
-        receiptStore.set(retryResponse, receipt);
-        if (receipt.extensions) {
-          log('Settlement extensions:', Object.keys(receipt.extensions).join(', '));
-        }
+        receipt = JSON.parse(atob(paymentResponseHeader)) as PaymentReceipt;
       } catch {
-        // Non-critical: receipt decoding failed
+        // Non-critical: receipt decoding failed — fall through to a minimal receipt.
       }
+    }
+    // Reaching here means the paid retry was accepted (a rejection throws above).
+    // Always store a receipt with the amount, even if the facilitator sent no
+    // PAYMENT-RESPONSE header or it failed to decode — a settled payment must
+    // never look like a free call to `getPaymentReceipt`.
+    receipt ??= {};
+    receipt.amountAtomic = paymentAmount;
+    receipt.assetDecimals = decimals;
+    receiptStore.set(retryResponse, receipt);
+    if (receipt.extensions) {
+      log('Settlement extensions:', Object.keys(receipt.extensions).join(', '));
     }
 
     return retryResponse;
