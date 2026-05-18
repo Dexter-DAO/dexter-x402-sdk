@@ -15,7 +15,106 @@ import type {
   PayAndFetchOptions,
 } from './types';
 import type { WalletSet } from '../adapters/types';
+import type { EvmWallet } from '../adapters/evm';
 import { toNetworkRef } from './network-map';
+import { CHAIN_IDS } from '../constants';
+
+/**
+ * EIP-712 type set for the v1 `exact` EVM scheme. v1 signs an EIP-3009
+ * `TransferWithAuthorization` directly against the USDC contract — a
+ * different (simpler) structure than the v2 Permit2 witness scheme, so
+ * v1 cannot reuse the `src/adapters/evm.ts` Permit2 signing path and
+ * carries its own minimal helper here.
+ */
+const V1_AUTHORIZATION_TYPES = {
+  TransferWithAuthorization: [
+    { name: 'from', type: 'address' },
+    { name: 'to', type: 'address' },
+    { name: 'value', type: 'uint256' },
+    { name: 'validAfter', type: 'uint256' },
+    { name: 'validBefore', type: 'uint256' },
+    { name: 'nonce', type: 'bytes32' },
+  ],
+};
+
+/** A v1 EVM `exact` payment payload, ready for base64 encoding. */
+interface V1EvmPayment {
+  x402Version: number;
+  scheme: string;
+  network: string;
+  payload: {
+    signature: string;
+    authorization: {
+      from: string;
+      to: string;
+      value: string;
+      validAfter: string;
+      validBefore: string;
+      nonce: string;
+    };
+  };
+}
+
+/** Random 32-byte hex nonce for EIP-3009 replay protection. */
+function randomNonce(): string {
+  const bytes = new Uint8Array(32);
+  globalThis.crypto.getRandomValues(bytes);
+  return (
+    '0x' +
+    Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+  );
+}
+
+/**
+ * Build and sign a v1 `exact`-scheme EVM payment for one ChallengeOption.
+ *
+ * The `network` field written into the payload is the merchant's
+ * advertised v1 bare name verbatim — see the no-rewrite comment in `pay`.
+ */
+async function signV1EvmPayment(
+  wallet: EvmWallet,
+  option: ChallengeOption,
+  wireNetwork: string,
+): Promise<V1EvmPayment> {
+  if (typeof wallet.signTypedData !== 'function') {
+    throw new Error('EVM wallet does not support signTypedData');
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const validAfter = String(now - 600); // 10 min of clock skew tolerance
+  const validBefore = String(now + (option.maxTimeoutSeconds ?? 60));
+  const authorization = {
+    from: wallet.address,
+    to: option.payTo,
+    value: option.amount,
+    validAfter,
+    validBefore,
+    nonce: randomNonce(),
+  };
+  // chainId is derived from the CAIP-2 form purely to build the EIP-712
+  // domain separator — it never reaches the wire payload.
+  const chainId = CHAIN_IDS[option.network.caip2];
+  if (chainId === undefined) {
+    throw new Error(`unknown chain id for network ${option.network.caip2}`);
+  }
+  const extra = (option.extra ?? {}) as Record<string, unknown>;
+  const signature = await wallet.signTypedData({
+    domain: {
+      name: typeof extra.name === 'string' ? extra.name : 'USD Coin',
+      version: typeof extra.version === 'string' ? extra.version : '2',
+      chainId,
+      verifyingContract: option.asset,
+    },
+    types: V1_AUTHORIZATION_TYPES,
+    primaryType: 'TransferWithAuthorization',
+    message: authorization,
+  });
+  return {
+    x402Version: 1,
+    scheme: option.scheme,
+    network: wireNetwork,
+    payload: { signature, authorization },
+  };
+}
 
 function toOptions(accepts: unknown[]): ChallengeOption[] {
   const out: ChallengeOption[] = [];
@@ -62,13 +161,131 @@ export const v1Strategy: PaymentStrategy = {
   },
 
   async pay(
-    _url: string,
-    _requestInit: RequestInit,
-    _challenge: PaymentChallenge,
-    _wallets: WalletSet,
-    _opts: PayAndFetchOptions,
+    url: string,
+    requestInit: RequestInit,
+    challenge: PaymentChallenge,
+    wallets: WalletSet,
+    opts: PayAndFetchOptions,
   ): Promise<PayResult> {
-    // Implemented in Task 7.
-    return { ok: false, reason: 'error', detail: 'pay not yet implemented' };
+    // pay() MUST never throw — every path returns a typed PayResult.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      // 1. Pick the first option whose chain family has a usable wallet.
+      //    wallets.evm / wallets.solana may be a Promise (createEvmKeypairWallet
+      //    is async and callers commonly pass it un-awaited) — await before use.
+      let chosen: ChallengeOption | null = null;
+      let evmWallet: EvmWallet | null = null;
+      for (const option of challenge.options) {
+        if (option.network.family === 'evm' && wallets.evm) {
+          evmWallet = (await wallets.evm) as EvmWallet;
+          chosen = option;
+          break;
+        }
+        // SVM v1 signing is not implemented in this SDK (no v1 SVM
+        // exact-scheme path); such options are skipped, not chosen.
+      }
+      if (!chosen || !evmWallet) {
+        return { ok: false, reason: 'unsupported_network' };
+      }
+
+      // 2. Budget check.
+      if (opts.maxAmountAtomic !== undefined) {
+        if (BigInt(chosen.amount) > BigInt(opts.maxAmountAtomic)) {
+          return { ok: false, reason: 'budget_exceeded' };
+        }
+      }
+
+      // 3. Build the signed v1 `exact` payment payload.
+      //
+      //    CRITICAL — NO NETWORK REWRITE. The `network` field on the wire
+      //    MUST be the merchant's advertised v1 string verbatim. For a
+      //    genuine v1 merchant the advertised form is the BARE name, which
+      //    `parseChallenge` preserved as `network.bare`. The bare/CAIP-2
+      //    distinction in NetworkRef exists ONLY to choose the signer
+      //    family (and to derive the EIP-712 chainId) — it must NEVER be
+      //    used to convert or normalise the value placed on the wire. The
+      //    old verifier rewrote eip155:8453 -> base before signing, which
+      //    a v2-aware merchant rejected with invalid_payload. Do not
+      //    reintroduce that rewrite.
+      const wireNetwork = chosen.network.bare;
+      const payment = await signV1EvmPayment(evmWallet, chosen, wireNetwork);
+
+      // 4. Base64-encode the payload into the X-PAYMENT header value.
+      const paymentHeader = Buffer.from(
+        JSON.stringify(payment),
+        'utf8',
+      ).toString('base64');
+
+      // 5. Build a FRESH RequestInit — never reuse a consumed body.
+      const headers = new Headers(requestInit.headers ?? undefined);
+      headers.set('X-PAYMENT', paymentHeader);
+
+      const controller = new AbortController();
+      const timeoutMs = opts.timeoutMs ?? 15000;
+      timer = setTimeout(() => controller.abort(), timeoutMs);
+      const signal =
+        requestInit.signal != null
+          ? AbortSignal.any([requestInit.signal, controller.signal])
+          : controller.signal;
+
+      const freshInit: RequestInit = {
+        method: requestInit.method,
+        headers,
+        signal,
+      };
+      if (typeof requestInit.body === 'string') {
+        freshInit.body = requestInit.body;
+      }
+
+      // 6. Send and map the outcome.
+      const response = await fetch(url, freshInit);
+      if (response.ok) {
+        return {
+          ok: true,
+          response,
+          amountPaid: chosen.amount,
+          network: chosen.network,
+          txSignature: decodeTxSignature(response),
+        };
+      }
+      return {
+        ok: false,
+        reason: 'merchant_rejected',
+        detail: 'HTTP ' + response.status,
+      };
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        return { ok: false, reason: 'timeout' };
+      }
+      return {
+        ok: false,
+        reason: 'error',
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   },
 };
+
+/**
+ * Extract the settled transaction hash from an X-PAYMENT-RESPONSE header,
+ * if present. The header is a base64-encoded JSON settlement receipt.
+ * Returns undefined when absent or unparseable — never throws.
+ */
+function decodeTxSignature(response: Response): string | undefined {
+  const raw =
+    response.headers.get('x-payment-response') ??
+    response.headers.get('X-PAYMENT-RESPONSE');
+  if (!raw) return undefined;
+  try {
+    const decoded = JSON.parse(
+      Buffer.from(raw, 'base64').toString('utf8'),
+    ) as Record<string, unknown>;
+    const tx =
+      decoded.transaction ?? decoded.txHash ?? decoded.transactionHash;
+    return typeof tx === 'string' ? tx : undefined;
+  } catch {
+    return undefined;
+  }
+}

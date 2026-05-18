@@ -29,3 +29,68 @@ describe('v1Strategy.parseChallenge', () => {
     expect(v1Strategy.version).toBe(1);
   });
 });
+
+import { vi } from 'vitest';
+
+describe('v1Strategy.pay', () => {
+  it('preserves the merchant network in the signed payload', async () => {
+    // The merchant advertised bare "base". The signed X-PAYMENT payload
+    // sent on the retry must carry "base" — NOT a rewritten value.
+    let sentPaymentHeader: string | null = null;
+    const calls: number[] = [];
+    const mockFetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      calls.push(1);
+      // pay() receives an already-parsed challenge, so the request it makes
+      // carries an X-PAYMENT header — the paid retry. A request without one
+      // is an un-paid probe and gets the 402 challenge back.
+      const rawHeaders = init?.headers;
+      const h =
+        rawHeaders instanceof Headers
+          ? Object.fromEntries(rawHeaders.entries())
+          : ((rawHeaders ?? {}) as Record<string, string>);
+      sentPaymentHeader = h['X-PAYMENT'] ?? h['x-payment'] ?? null;
+      if (!sentPaymentHeader) {
+        const { makeV1Response } = await import('./fixtures');
+        return makeV1Response();
+      }
+      return new Response('{"ok":true}', { status: 200 });
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const { v1Strategy } = await import('../v1-strategy');
+    const challenge = await v1Strategy.parseChallenge(
+      (await import('./fixtures')).makeV1Response(),
+    );
+    const { createEvmKeypairWallet } = await import('../../client/evm-wallet');
+    const wallets = {
+      evm: createEvmKeypairWallet(
+        '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d',
+      ),
+    } as never;
+
+    const result = await v1Strategy.pay(
+      'https://example.com/api',
+      { method: 'GET' },
+      challenge!,
+      wallets,
+      { maxAmountAtomic: '100000' },
+    );
+
+    // pay() must return a typed result, never throw.
+    expect(result).toHaveProperty('ok');
+    // pay() must actually build and send a payment — the merchant retry
+    // must have happened with an X-PAYMENT header.
+    expect(result.ok).toBe(true);
+    // pay() makes exactly one request — the paid retry.
+    expect(calls.length).toBe(1);
+    expect(sentPaymentHeader).not.toBeNull();
+    // The decoded payload's network MUST be the merchant's advertised
+    // bare name "base" — NOT a rewritten value.
+    const decoded = JSON.parse(
+      Buffer.from(sentPaymentHeader!, 'base64').toString('utf8'),
+    );
+    const net = String(decoded.network ?? decoded.payload?.network ?? '');
+    expect(net).toBe('base');
+    vi.unstubAllGlobals();
+  });
+});
