@@ -214,12 +214,32 @@ const { closed } = await channel.close();
 // refunds the rest of your escrow automatically on the normal path.
 ```
 
+Each `openBatchChannel` call opens a **new** channel: a fresh random
+channel-config salt is generated, so a buyer can hold several independent
+channels with the same seller over time. The salt is exposed as
+`channel.salt` — persist it if you will later need to resume that exact
+channel.
+
+To resume a channel after a process restart, call `resumeBatchChannel` with
+the wallet, network, and the **salt** of the channel being resumed (the
+`channelId` alone is not enough — it cannot be reversed to a salt):
+
+```ts
+import { resumeBatchChannel } from '@dexterai/x402/batch-settlement';
+
+const channel = await resumeBatchChannel({
+  wallet: evmWallet,
+  network: 'eip155:8453',
+  salt: savedSalt,            // channel.salt captured at open time
+});
+```
+
 Channel state auto-persists (localStorage in the browser, a file under
-`~/.dexter-x402/channels` in Node). If the process restarts mid-session,
-calling `openBatchChannel` again with the same wallet, network, and store
-transparently resumes the open channel — the channel's state is recovered from
-storage, or from on-chain state if storage was lost. Pass a custom `store` (any
-`ChannelStore`) to persist elsewhere.
+`~/.dexter-x402/channels` in Node); the resumed channel's accounting is
+recovered from storage, or from on-chain state if storage was lost. Pass a
+custom `store` (any `ChannelStore`) to persist elsewhere. To deterministically
+reopen a specific channel instead of getting a fresh one, pass an explicit
+`salt` to `openBatchChannel`.
 
 #### Escape hatch — `forceWithdraw()` / `finalizeWithdraw()`
 

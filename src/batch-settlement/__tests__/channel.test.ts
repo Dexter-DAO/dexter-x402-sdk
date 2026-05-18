@@ -19,6 +19,7 @@ describe('__test_buildClientStack', () => {
       rpcUrl: 'https://example.invalid',
       store: getDefaultChannelStore(),
       depositAtomic: '300000',
+      salt: ('0x' + '22'.repeat(32)) as `0x${string}`,
     });
     expect(stack.httpClient).toBeDefined();
     expect(stack.scheme).toBeDefined();
@@ -33,6 +34,7 @@ describe('__test_buildClientStack', () => {
         rpcUrl: 'https://example.invalid',
         store: getDefaultChannelStore(),
         depositAtomic: '300000',
+      salt: ('0x' + '22'.repeat(32)) as `0x${string}`,
       }),
     ).toThrow(/not available on network/i);
   });

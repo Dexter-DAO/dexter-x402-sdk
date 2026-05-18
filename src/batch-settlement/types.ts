@@ -34,6 +34,16 @@ export interface OpenBatchChannelOptions {
   rpcUrl?: string;
   /** Channel persistence. Default: localStorage (browser) / file (Node). */
   store?: ChannelStore;
+  /**
+   * 32-byte hex channel-config salt. The salt is part of the deterministic
+   * `channelId`, so it distinguishes one channel from another between the
+   * same buyer and seller. Omit it and a fresh random salt is generated —
+   * the right default, since each `openBatchChannel` call means a new
+   * channel. Pass an explicit salt only to deterministically reopen a
+   * specific channel; persist it (alongside `channelId`) if you will later
+   * need to `resumeBatchChannel` after a process restart.
+   */
+  salt?: `0x${string}`;
 }
 
 /** Options for explicitly resuming an existing channel. */
@@ -43,6 +53,13 @@ export interface ResumeBatchChannelOptions {
   facilitatorUrl?: string;
   rpcUrl?: string;
   store?: ChannelStore;
+  /**
+   * 32-byte hex channel-config salt of the channel being resumed — REQUIRED.
+   * `channelId` cannot be reversed to a salt, so resuming a channel needs the
+   * exact salt it was opened with. Persist `channel.salt` at open time and
+   * pass it back here.
+   */
+  salt: `0x${string}`;
 }
 
 /**
@@ -76,6 +93,12 @@ export interface CloseResult {
 export interface BatchSettlementChannel {
   /** On-chain channel id (bytes32 hex). Empty until the first fetch resolves it. */
   readonly channelId: string;
+  /**
+   * The 32-byte channel-config salt this channel was opened with. Persist it
+   * if you will later need to `resumeBatchChannel` this exact channel — the
+   * `channelId` alone is not enough, resume requires the salt.
+   */
+  readonly salt: `0x${string}`;
   /** CAIP-2 network. */
   readonly network: string;
   /** Live channel accounting; updated after each fetch. */

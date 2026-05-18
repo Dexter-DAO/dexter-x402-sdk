@@ -4,6 +4,7 @@ import {
   publicActions,
   parseUnits,
   formatUnits,
+  toHex,
   type Chain,
 } from 'viem';
 import { base, arbitrum, polygon } from 'viem/chains';
@@ -47,6 +48,16 @@ export interface ClientStackInput {
   store: ChannelStore;
   /** Atomic-units deposit amount; the deposit strategy returns this on the first request. */
   depositAtomic: string;
+  /**
+   * 32-byte channel-config salt. The salt is one of the inputs to the
+   * deterministic `channelId` (payer, payerAuthorizer, receiver,
+   * receiverAuthorizer, token, withdrawDelay, salt). Two channels between the
+   * same buyer and seller for the same token therefore collide on `channelId`
+   * UNLESS they use different salts — opening a second channel would reopen
+   * the first. A unique salt per channel is what makes independent,
+   * sequential channels with one seller possible.
+   */
+  salt: `0x${string}`;
 }
 
 export interface ClientStack {
@@ -175,6 +186,11 @@ function buildClientStack(input: ClientStackInput): ClientStack {
     storage: input.store,
     depositPolicy: { depositMultiplier: 4 },
     depositStrategy: () => input.depositAtomic,
+    // Without an explicit salt the upstream scheme falls back to its
+    // zero-valued DEFAULT_SALT, making `channelId` identical for every channel
+    // between the same parties — so a second openBatchChannel silently reopens
+    // the first, exhausted channel. Passing a per-channel salt fixes this.
+    salt: input.salt,
   });
 
   const x402Cli = new x402Client();
@@ -253,6 +269,8 @@ interface ChannelHandleInput {
   network: string;
   /** Known deposit (atomic units). 0n on resume until the first fetch recovers it. */
   depositedAtomic: bigint;
+  /** The channel-config salt this channel was opened/resumed with. */
+  salt: `0x${string}`;
 }
 
 /**
@@ -295,6 +313,9 @@ function makeChannelHandle(input: ChannelHandleInput): BatchSettlementChannel {
   return {
     get channelId() {
       return channelId;
+    },
+    get salt() {
+      return input.salt;
     },
     get network() {
       return network;
@@ -431,10 +452,25 @@ function makeChannelHandle(input: ChannelHandleInput): BatchSettlementChannel {
  * @throws UnsupportedNetworkError when the network has no deployed contract.
  * @throws Error when `deposit` is not a positive amount.
  */
+/**
+ * Generates a fresh 32-byte channel-config salt. Uses the platform crypto RNG
+ * (`crypto.getRandomValues`) — available in Node 19+ and every browser. The
+ * salt feeds the deterministic `channelId`, so a random one guarantees a new
+ * channel that does not collide with any existing channel between the same
+ * buyer and seller.
+ */
+function generateChannelSalt(): `0x${string}` {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return toHex(bytes);
+}
+
 export async function openBatchChannel(
   options: OpenBatchChannelOptions,
 ): Promise<BatchSettlementChannel> {
   const store = options.store ?? getDefaultChannelStore();
+  // A unique salt per channel by default — see OpenBatchChannelOptions.salt.
+  const salt = options.salt ?? generateChannelSalt();
 
   let depositAtomic: bigint;
   try {
@@ -457,6 +493,7 @@ export async function openBatchChannel(
     rpcUrl: options.rpcUrl,
     store,
     depositAtomic: depositAtomic.toString(),
+    salt,
   });
 
   return makeChannelHandle({
@@ -464,6 +501,7 @@ export async function openBatchChannel(
     store,
     network: options.network,
     depositedAtomic: depositAtomic,
+    salt,
   });
 }
 
@@ -486,12 +524,16 @@ export async function resumeBatchChannel(
 
   // Resume never opens a fresh deposit — the deposit strategy returns 0; the
   // upstream scheme recovers the existing channel from storage / on-chain.
+  // The salt MUST match the channel being resumed: it is one of the inputs to
+  // `channelId`, so the wrong salt resumes the wrong (or a non-existent)
+  // channel.
   const stack = buildClientStack({
     wallet: options.wallet,
     network: options.network,
     rpcUrl: options.rpcUrl,
     store,
     depositAtomic: '0',
+    salt: options.salt,
   });
 
   return makeChannelHandle({
@@ -499,5 +541,6 @@ export async function resumeBatchChannel(
     store,
     network: options.network,
     depositedAtomic: 0n,
+    salt: options.salt,
   });
 }

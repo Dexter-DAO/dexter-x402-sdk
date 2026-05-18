@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.2] - 2026-05-18
+
+Fixes a batch-settlement channel-identity bug: every channel between the same
+buyer, seller, and token collided on a single deterministic id, so a buyer
+could never open a second channel with a seller they had already used —
+`openBatchChannel` would silently reopen the first, exhausted channel.
+
+### Fixed
+- **Batch-settlement channels now have unique identities.** `openBatchChannel` generates a fresh random channel-config salt for each channel, so the deterministic `channelId` differs per channel. A buyer can hold multiple independent channels with the same seller over time. Previously the SDK never passed a salt to the upstream scheme, so every channel fell back to the zero `DEFAULT_SALT` and collided.
+
+### Added
+- **`channel.salt`** — the 32-byte channel-config salt a channel was opened with, exposed on the `BatchSettlementChannel` handle. Persist it to later resume that exact channel.
+- **`OpenBatchChannelOptions.salt`** (optional) — pass an explicit salt to deterministically reopen a specific channel; omit it for a fresh random one.
+
+### Breaking
+- **`resumeBatchChannel` now requires `salt`.** Resuming a channel needs the exact salt it was opened with — a `channelId` cannot be reversed to a salt. Persist `channel.salt` at open time and pass it to `resumeBatchChannel`. (Resuming previously relied on the zero `DEFAULT_SALT`, which is the collision bug above; it could not correctly resume a distinct channel.)
+
 ## [3.4.0] - 2026-05-17
 
 Batch settlement is now functional end-to-end. 3.3.0 shipped a batch-settlement
