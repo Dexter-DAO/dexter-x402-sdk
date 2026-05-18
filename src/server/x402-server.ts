@@ -51,8 +51,39 @@ import {
   USDC_MINT,
   DEXTER_FACILITATOR_URL,
 } from '../types';
+import { USDC_ADDRESSES, BSC_STABLECOIN_ADDRESSES } from '../constants';
 import { FacilitatorClient, type SupportedKind } from './facilitator-client';
 import { encodeBase64Json, decodeBase64Json, isSolanaNetwork } from '../utils';
+
+/**
+ * Resolve the default payment asset (USDC) for a CAIP-2 network.
+ *
+ * The Dexter facilitator settles USDC on every supported chain, but USDC
+ * lives at a different contract on each one — and on BSC it has 18 decimals,
+ * not the 6 it uses everywhere else. When a caller passes a multi-chain
+ * `network` array without an explicit `asset`, each per-network gate must
+ * resolve its OWN chain's USDC; using one chain's mint for all of them
+ * tells a paying agent to send a token that does not exist on its chain.
+ *
+ * Returns the Solana USDC mint for Solana networks (and as a final fallback),
+ * the per-chain USDC contract for known EVM chains, with BSC's 18 decimals
+ * applied. The facilitator's `getNetworkExtra` can still override `decimals`
+ * downstream; the address is what only this map can supply.
+ */
+export function resolveDefaultAsset(network: string): { address: string; decimals: number } {
+  if (isSolanaNetwork(network)) {
+    return { address: USDC_MINT, decimals: 6 };
+  }
+  const evmUsdc = USDC_ADDRESSES[network];
+  if (evmUsdc) {
+    const decimals = BSC_STABLECOIN_ADDRESSES[evmUsdc]?.decimals ?? 6;
+    return { address: evmUsdc, decimals };
+  }
+  // Unknown network — fall back to the Solana mint (legacy behaviour).
+  // A network the SDK has no USDC address for is misconfiguration; the
+  // facilitator will reject settlement rather than mis-settle.
+  return { address: USDC_MINT, decimals: 6 };
+}
 
 /**
  * Best-effort extraction of amount from a PAYMENT-SIGNATURE header.
@@ -177,9 +208,14 @@ export function createX402Server(config: X402ServerConfig): X402Server {
     payTo,
     facilitatorUrl = DEXTER_FACILITATOR_URL,
     network = SOLANA_MAINNET_NETWORK,
-    asset = { address: USDC_MINT, decimals: 6 },
     defaultTimeoutSeconds = 60,
   } = config;
+
+  // When the caller passes no explicit `asset`, default to USDC *on this
+  // server's network* — not a hardcoded Solana mint. createX402Server is
+  // built per-network (the multi-chain middleware spins one up per chain),
+  // so `network` here is always a single concrete chain.
+  const asset = config.asset ?? resolveDefaultAsset(network);
 
   const scheme = config.scheme ?? 'exact';
 

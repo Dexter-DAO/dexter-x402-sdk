@@ -55,7 +55,7 @@
  * ```
  */
 
-export { createX402Server } from './x402-server';
+export { createX402Server, resolveDefaultAsset } from './x402-server';
 export type {
   X402ServerConfig,
   X402Server,
