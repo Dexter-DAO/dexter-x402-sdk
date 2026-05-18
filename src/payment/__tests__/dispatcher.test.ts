@@ -106,6 +106,45 @@ describe('payAndFetch', () => {
     vi.unstubAllGlobals();
   });
 
+  it('falls back to bare fetch and warns when @x402/extensions fails to load', async () => {
+    // Force the dynamic import of the SIW-X extension to throw, simulating
+    // a broken/missing @x402/extensions install. buildProbeFetch must catch
+    // it, warn loudly, and fall back to bare fetch so payment still works.
+    vi.resetModules();
+    vi.doMock('@x402/extensions/sign-in-with-x', () => {
+      throw new Error('simulated broken extension');
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const mockFetch = vi.fn(async () => new Response('{"ok":true}', { status: 200 }));
+    vi.stubGlobal('fetch', mockFetch);
+
+    // Re-import so the fresh module graph sees the doMock.
+    const { payAndFetch: freshPayAndFetch } = await import('../dispatcher');
+    const { createEvmKeypairWallet } = await import('../../client/evm-wallet');
+    const wallet = await createEvmKeypairWallet(
+      '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d',
+    );
+
+    const result = await freshPayAndFetch(
+      'https://example.com/data',
+      { method: 'GET' },
+      { evm: wallet },
+      {},
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.response.status).toBe(200);
+    expect(mockFetch).toHaveBeenCalled(); // bare-fetch fallback was used
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[x402] SIW-X unavailable'),
+    );
+
+    warnSpy.mockRestore();
+    vi.unstubAllGlobals();
+    vi.doUnmock('@x402/extensions/sign-in-with-x');
+    vi.resetModules();
+  });
+
   it('probes through the real SIW-X wrapper when a signer is derivable (pass-through on a non-SIW-X 200)', async () => {
     // Coverage target: buildProbeFetch's non-null-signer branch.
     //

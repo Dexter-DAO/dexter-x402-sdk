@@ -42,9 +42,16 @@ async function buildProbeFetch(wallets: WalletSet): Promise<typeof fetch> {
   try {
     const mod = await import('@x402/extensions/sign-in-with-x');
     return mod.wrapFetchWithSIWx(fetch, signer) as typeof fetch;
-  } catch {
+  } catch (err) {
     // If the extension cannot load, fall back to bare fetch — SIW-X
     // merchants will then fail their challenge, but payment still works.
+    // Warn loudly: a broken @x402/extensions install must not silently
+    // degrade every SIW-X merchant to no-auth with zero signal.
+    console.warn(
+      `[x402] SIW-X unavailable — @x402/extensions failed to load; ` +
+        `SIW-X merchants will not authenticate. ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
     return fetch;
   }
 }
