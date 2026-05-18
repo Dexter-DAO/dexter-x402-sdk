@@ -105,10 +105,16 @@ export const v2Strategy: PaymentStrategy = {
       opts.timeoutMs ?? 15000,
     );
 
+    // Compose the caller's own cancellation signal with the timeout signal so
+    // neither is lost. AbortSignal.any fires on the first signal to abort.
+    const composedSignal = requestInit.signal
+      ? AbortSignal.any([requestInit.signal, controller.signal])
+      : controller.signal;
+
     const freshInit: RequestInit = {
       method: requestInit.method ?? 'GET',
       headers: requestInit.headers,
-      signal: controller.signal,
+      signal: composedSignal,
     };
     if (typeof requestInit.body === 'string') {
       freshInit.body = requestInit.body;
@@ -126,8 +132,22 @@ export const v2Strategy: PaymentStrategy = {
         };
       }
 
-      const txSignature =
-        response.headers.get('PAYMENT-RESPONSE') ?? undefined;
+      // The PAYMENT-RESPONSE header is a base64-encoded JSON blob of the form
+      // {"success":true,"transaction":"<hash>","network":"..."}.
+      // Extract the `transaction` field as the actual tx hash; fall back to
+      // undefined rather than exposing the raw base64 blob to callers.
+      let txSignature: string | undefined;
+      const paymentResponseHeader = response.headers.get('PAYMENT-RESPONSE');
+      if (paymentResponseHeader) {
+        try {
+          const decoded = decodeHeader(paymentResponseHeader) as Record<string, unknown>;
+          if (decoded && typeof decoded.transaction === 'string') {
+            txSignature = decoded.transaction;
+          }
+        } catch {
+          // Malformed header — leave txSignature undefined.
+        }
+      }
 
       return {
         ok: true,
