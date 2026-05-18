@@ -70,6 +70,14 @@ export interface PayAndFetchOptions {
   maxAmountAtomic?: string;
   /** Per-request timeout in ms. Default 15000. */
   timeoutMs?: number;
+  /**
+   * Solana RPC endpoint for v1 SVM payment signing. v1 Solana `exact`
+   * signing builds a real transaction and needs RPC access (mint lookup,
+   * recent blockhash). Ignored for EVM-only flows. Defaults to the public
+   * Solana RPC when omitted — callers should pass their own for
+   * reliability.
+   */
+  solanaRpcUrl?: string;
 }
 
 /**
