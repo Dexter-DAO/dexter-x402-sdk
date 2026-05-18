@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { detectStrategy, payAndFetch } from '../dispatcher';
 import { makeV1Response, makeV2Response, makeEmptyResponse } from './fixtures';
+import { createEvmKeypairWallet } from '../../client/evm-wallet';
 
 describe('detectStrategy', () => {
   it('routes a v2 (header) response to the v2 strategy', async () => {
@@ -102,6 +103,48 @@ describe('payAndFetch', () => {
     const result = await payAndFetch('https://example.com/me', { method: 'GET' }, {}, {});
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.response.status).toBe(200);
+    vi.unstubAllGlobals();
+  });
+
+  it('probes through the real SIW-X wrapper when a signer is derivable (pass-through on a non-SIW-X 200)', async () => {
+    // Coverage target: buildProbeFetch's non-null-signer branch.
+    //
+    // The previous tests all supply an EMPTY wallet set, so toSiwxSigner returns
+    // null and the `await import('@x402/extensions/sign-in-with-x')` +
+    // `wrapFetchWithSIWx(fetch, signer)` call inside buildProbeFetch is NEVER
+    // reached. This test supplies a real EVM keypair wallet so toSiwxSigner
+    // returns a non-null signer, forcing buildProbeFetch down the dynamic-import
+    // branch. wrapFetchWithSIWx is intentionally NOT mocked — the whole point is
+    // that the real dynamic import succeeds and the real wrapFetchWithSIWx runs.
+    //
+    // wrapFetchWithSIWx is a transparent pass-through for any response with
+    // status !== 402. A plain 200 immediately returns the response unchanged
+    // (see @x402/extensions/dist/cjs/sign-in-with-x/index.js, wrapFetchWithSIWx
+    // implementation). So the stub returns a plain 200, the wrapped fetch
+    // delegates straight to the stub, and payAndFetch returns ok:true.
+    //
+    // If the dynamic import were broken or wrapFetchWithSIWx threw on
+    // construction, this test would fail — which is exactly the gap it closes.
+    // The full SIW-X handshake (a 402 with the extension) is covered by the
+    // live-merchant check in Task 13.
+    const THROWAWAY_PRIVATE_KEY =
+      '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
+    const wallet = await createEvmKeypairWallet(THROWAWAY_PRIVATE_KEY);
+
+    const mockFetch = vi.fn(async () => new Response('{"ok":true}', { status: 200 }));
+    vi.stubGlobal('fetch', mockFetch);
+
+    const result = await payAndFetch(
+      'https://example.com/data',
+      { method: 'GET' },
+      { evm: wallet },
+      {},
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.response.status).toBe(200);
+    expect(mockFetch).toHaveBeenCalled();
+
     vi.unstubAllGlobals();
   });
 });
