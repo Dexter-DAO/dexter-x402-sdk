@@ -5,6 +5,8 @@
  * never on a specific version module.
  */
 
+import type { WalletSet } from '../adapters/types';
+
 /** A network reference, kept in BOTH forms so neither version loses info. */
 export interface NetworkRef {
   /** CAIP-2 form, e.g. "eip155:8453", "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp". */
@@ -23,6 +25,7 @@ export interface ChallengeOption {
   amount: string;
   asset: string;
   payTo: string;
+  /** Optional — v1 challenges may omit it; a strategy supplies a default when absent. */
   maxTimeoutSeconds?: number;
   /** Scheme-specific extras, passed through verbatim from the merchant. */
   extra?: Record<string, unknown>;
@@ -84,7 +87,7 @@ export interface PaymentStrategy {
     url: string,
     requestInit: RequestInit,
     challenge: PaymentChallenge,
-    wallets: import('../adapters/types').WalletSet,
+    wallets: WalletSet,
     opts: PayAndFetchOptions,
   ): Promise<PayResult>;
 }
