@@ -58,10 +58,19 @@ interface V1EvmPayment {
   };
 }
 
-/** Random 32-byte hex nonce for EIP-3009 replay protection. */
-function randomNonce(): string {
+/**
+ * Random 32-byte hex nonce for EIP-3009 replay protection.
+ *
+ * `crypto` is only a global in browsers and Node 19+. The SDK supports Node
+ * 18 (`engines: >=18`), where the WebCrypto API must be imported from
+ * `node:crypto` — so resolve `globalThis.crypto` with a `webcrypto` fallback,
+ * matching the pattern used elsewhere in the SDK (e.g. `src/adapters/evm.ts`).
+ */
+async function randomNonce(): Promise<string> {
+  const webCrypto =
+    globalThis.crypto ?? (await import('crypto')).webcrypto;
   const bytes = new Uint8Array(32);
-  globalThis.crypto.getRandomValues(bytes);
+  webCrypto.getRandomValues(bytes);
   return (
     '0x' +
     Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
@@ -92,7 +101,7 @@ async function signV1EvmPayment(
     value: option.amount,
     validAfter,
     validBefore,
-    nonce: randomNonce(),
+    nonce: await randomNonce(),
   };
   // chainId is derived from the CAIP-2 form purely to build the EIP-712
   // domain separator — it never reaches the wire payload.

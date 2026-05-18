@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.4] - 2026-05-18
+
+### Fixed
+- **v1 `exact`-scheme EVM payments no longer crash on Node 18.** `buildV1PaymentHeader` generated its EIP-3009 replay nonce via `globalThis.crypto.getRandomValues`, which is undefined on Node 18 (`crypto` is only a global in browsers and Node 19+). The SDK supports Node 18 (`engines: >=18`). The nonce generator now resolves `globalThis.crypto` with a `node:crypto` `webcrypto` fallback, the same fix applied to the batch-settlement salt generator in 3.7.3.
+
 ## [3.7.3] - 2026-05-18
 
 ### Fixed
