@@ -453,15 +453,21 @@ function makeChannelHandle(input: ChannelHandleInput): BatchSettlementChannel {
  * @throws Error when `deposit` is not a positive amount.
  */
 /**
- * Generates a fresh 32-byte channel-config salt. Uses the platform crypto RNG
- * (`crypto.getRandomValues`) — available in Node 19+ and every browser. The
- * salt feeds the deterministic `channelId`, so a random one guarantees a new
- * channel that does not collide with any existing channel between the same
- * buyer and seller.
+ * Generates a fresh 32-byte channel-config salt. The salt feeds the
+ * deterministic `channelId`, so a random one guarantees a new channel that
+ * does not collide with any existing channel between the same buyer and
+ * seller.
+ *
+ * `crypto` is only a global in browsers and Node 19+. The SDK supports Node
+ * 18 (`engines: >=18`), where the WebCrypto API must be imported from
+ * `node:crypto` — so resolve `globalThis.crypto` with a `webcrypto` fallback,
+ * matching the pattern already used in `src/adapters/evm.ts`.
  */
-function generateChannelSalt(): `0x${string}` {
+async function generateChannelSalt(): Promise<`0x${string}`> {
+  const webCrypto =
+    globalThis.crypto ?? (await import('crypto')).webcrypto;
   const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
+  webCrypto.getRandomValues(bytes);
   return toHex(bytes);
 }
 
@@ -470,7 +476,7 @@ export async function openBatchChannel(
 ): Promise<BatchSettlementChannel> {
   const store = options.store ?? getDefaultChannelStore();
   // A unique salt per channel by default — see OpenBatchChannelOptions.salt.
-  const salt = options.salt ?? generateChannelSalt();
+  const salt = options.salt ?? (await generateChannelSalt());
 
   let depositAtomic: bigint;
   try {

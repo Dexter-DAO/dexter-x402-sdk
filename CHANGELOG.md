@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.3] - 2026-05-18
+
+### Fixed
+- **`openBatchChannel` no longer crashes on Node 18.** 3.7.2's channel-salt generator called `crypto.getRandomValues` on the global `crypto`, which is only defined in browsers and Node 19+. The SDK supports Node 18 (`engines: >=18`), so on Node 18 `openBatchChannel` threw `ReferenceError: crypto is not defined`. The salt generator now resolves `globalThis.crypto` with a `node:crypto` `webcrypto` fallback, matching the pattern used elsewhere in the SDK.
+
 ## [3.7.2] - 2026-05-18
 
 Fixes a batch-settlement channel-identity bug: every channel between the same
