@@ -9,6 +9,7 @@ import type { PaymentStrategy, PayResult, PayAndFetchOptions } from './types';
 import type { WalletSet } from '../adapters/types';
 import { v2Strategy } from './v2-strategy';
 import { v1Strategy } from './v1-strategy';
+import { toSiwxSigner } from './siwx-signer';
 
 // v2 first: it is the current protocol version. v1 is the fallback.
 const STRATEGIES: PaymentStrategy[] = [v2Strategy, v1Strategy];
@@ -25,6 +26,27 @@ export async function detectStrategy(
     if (challenge) return strategy;
   }
   return null;
+}
+
+/**
+ * Build the fetch used for the probe. When the WalletSet can produce a
+ * SIW-X signer, the probe goes through @x402/extensions' wrapFetchWithSIWx,
+ * which signs + retries Sign-In-With-X challenges and is a transparent
+ * pass-through for everything else. When no signer is derivable, the bare
+ * global fetch is used. wrapFetchWithSIWx is imported dynamically so
+ * consumers that never hit SIW-X do not pay its bundle cost.
+ */
+async function buildProbeFetch(wallets: WalletSet): Promise<typeof fetch> {
+  const signer = toSiwxSigner(wallets);
+  if (!signer) return fetch;
+  try {
+    const mod = await import('@x402/extensions/sign-in-with-x');
+    return mod.wrapFetchWithSIWx(fetch, signer) as typeof fetch;
+  } catch {
+    // If the extension cannot load, fall back to bare fetch — SIW-X
+    // merchants will then fail their challenge, but payment still works.
+    return fetch;
+  }
 }
 
 /**
@@ -57,9 +79,11 @@ export async function payAndFetch(
 
   let probe: Response;
   try {
-    // Probe with the original requestInit — body is guaranteed to be a
-    // string-or-nullish by the guard above, so it is safe to re-send.
-    probe = await fetch(url, { ...requestInit });
+    // Probe through a SIW-X-aware fetch — it signs Sign-In-With-X
+    // challenges transparently and is a pass-through otherwise. Body is
+    // guaranteed string-or-nullish by the guard above, safe to re-send.
+    const probeFetch = await buildProbeFetch(wallets);
+    probe = await probeFetch(url, { ...requestInit });
   } catch (err) {
     return {
       ok: false,

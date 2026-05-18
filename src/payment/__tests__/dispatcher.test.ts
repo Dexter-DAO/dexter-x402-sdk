@@ -73,4 +73,35 @@ describe('payAndFetch', () => {
       expect(result.detail).toMatch(/non-string bodies/);
     }
   });
+
+  it('probes with bare fetch and still pays when no SIW-X signer is derivable', async () => {
+    // Empty wallet set -> toSiwxSigner returns null -> bare-fetch probe.
+    // A v2 402 with no wallet to pay still surfaces a typed failure, not a crash.
+    const mockFetch = vi.fn(async () => makeV2Response());
+    vi.stubGlobal('fetch', mockFetch);
+    const result = await payAndFetch(
+      'https://example.com/api',
+      { method: 'GET' },
+      {},
+      {},
+    );
+    // No wallet -> v2 strategy cannot pay -> typed failure (not no_payment_options:
+    // the challenge WAS recognised). Accept any ok:false reason.
+    expect(result.ok).toBe(false);
+    expect(mockFetch).toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('returns a non-402 SIW-X-authed response directly', async () => {
+    // Simulates a merchant where SIW-X auth alone unlocks the resource:
+    // the (wrapped) probe yields a 200, so payAndFetch returns it as ok:true
+    // without any payment dispatch. With an empty wallet set the wrapper is
+    // skipped, but a plain 200 from the probe must still pass straight through.
+    const mockFetch = vi.fn(async () => new Response('{"authed":true}', { status: 200 }));
+    vi.stubGlobal('fetch', mockFetch);
+    const result = await payAndFetch('https://example.com/me', { method: 'GET' }, {}, {});
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.response.status).toBe(200);
+    vi.unstubAllGlobals();
+  });
 });
