@@ -38,8 +38,63 @@ import {
  * ```
  */
 export function toAtomicUnits(amount: number, decimals: number): string {
-  const multiplier = Math.pow(10, decimals);
-  return Math.floor(amount * multiplier).toString();
+  if (!Number.isFinite(amount)) {
+    throw new Error(`toAtomicUnits: amount must be finite, got ${amount}`);
+  }
+  if (!Number.isInteger(decimals) || decimals < 0) {
+    throw new Error(
+      `toAtomicUnits: decimals must be a non-negative integer, got ${decimals}`
+    );
+  }
+  // Scale via exact decimal-string arithmetic with BigInt — never
+  // `amount * 10**decimals`. Float math loses the low-order digits once
+  // the product exceeds 2^53, which 18-decimal tokens (e.g. BSC USDC)
+  // routinely do: amount * 1e18 is inexact for any amount >= ~0.009.
+  //
+  // `Number.prototype.toString()` prints the *shortest* decimal that
+  // round-trips back to the same IEEE-754 double, so (0.05).toString()
+  // is "0.05" — the float's noise digits are already discarded. We then
+  // scale that clean decimal string and truncate (floor) any fractional
+  // digit below the token's atomic resolution, matching the original
+  // Math.floor semantics exactly.
+  const negative = amount < 0;
+  const decimal = toPlainDecimalString(Math.abs(amount));
+  const [whole, frac = ''] = decimal.split('.');
+  const fracDigits = frac.slice(0, decimals).padEnd(decimals, '0');
+  const atomic = BigInt(whole + fracDigits);
+  return (negative ? -atomic : atomic).toString();
+}
+
+/**
+ * Render a finite number as a plain (non-exponential) decimal string.
+ *
+ * `Number.prototype.toString()` switches to exponential notation for very
+ * large or very small magnitudes (e.g. 1e21, 5e-7). BigInt() cannot parse
+ * those, so this expands the exponent into an explicit decimal string
+ * without any float math.
+ */
+function toPlainDecimalString(n: number): string {
+  const str = n.toString();
+  if (!/[eE]/.test(str)) return str;
+
+  const [mantissa, expPart] = str.split(/[eE]/);
+  const exponent = parseInt(expPart, 10);
+  const negative = mantissa.startsWith('-');
+  const unsigned = negative ? mantissa.slice(1) : mantissa;
+  const [intPart, fracPart = ''] = unsigned.split('.');
+  const digits = intPart + fracPart;
+  // Position of the decimal point relative to the start of `digits`.
+  const pointPos = intPart.length + exponent;
+
+  let result: string;
+  if (pointPos <= 0) {
+    result = '0.' + '0'.repeat(-pointPos) + digits;
+  } else if (pointPos >= digits.length) {
+    result = digits + '0'.repeat(pointPos - digits.length);
+  } else {
+    result = digits.slice(0, pointPos) + '.' + digits.slice(pointPos);
+  }
+  return (negative ? '-' : '') + result;
 }
 
 /**
