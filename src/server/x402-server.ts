@@ -192,6 +192,14 @@ export interface X402Server {
   /** Get network this server is configured for */
   readonly network: string;
 
+  /**
+   * Decimals of the payment asset on THIS server's network. USDC is 6
+   * decimals on every supported chain except BSC, where it is 18. The
+   * multi-chain middleware reads this to convert the USD price into the
+   * correct atomic amount per network.
+   */
+  readonly assetDecimals: number;
+
   /** Get facilitator client for advanced usage */
   readonly facilitator: FacilitatorClient;
 }
@@ -433,6 +441,7 @@ export function createX402Server(config: X402ServerConfig): X402Server {
     settlePayment,
     getPaymentAccept,
     network,
+    assetDecimals: asset.decimals,
     facilitator,
   };
 }
