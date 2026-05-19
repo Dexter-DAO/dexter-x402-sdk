@@ -143,17 +143,13 @@ export interface PaymentAccept {
 }
 
 /**
- * Full PaymentRequired structure.
- * v2 sends it in the base64 PAYMENT-REQUIRED header; v1 sent it in the
- * JSON 402 response body.
+ * Full PaymentRequired structure (sent in PAYMENT-REQUIRED header)
  */
 export interface PaymentRequired {
-  /** x402 version — 2 (challenge in the PAYMENT-REQUIRED header) or 1
-   *  (legacy: challenge in the JSON 402 body). */
-  x402Version: 1 | 2;
-  /** Resource being accessed. Optional — a v1 body may omit it; the client
-   *  falls back to the request URL. */
-  resource?: ResourceInfo;
+  /** x402 version (always 2) */
+  x402Version: 2;
+  /** Resource being accessed */
+  resource: ResourceInfo;
   /** Available payment options */
   accepts: PaymentAccept[];
   /** Optional error message */
@@ -298,7 +294,6 @@ export type X402ErrorCode =
   // Client errors
   | 'missing_payment_required_header'
   | 'invalid_payment_required'
-  | 'siwx_endpoint'
   | 'unsupported_network'
   | 'no_matching_payment_option'
   | 'missing_fee_payer'

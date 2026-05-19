@@ -599,66 +599,24 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       }
     }
 
-    // Parse the payment challenge. x402 v2 carries it in a base64-encoded
-    // `PAYMENT-REQUIRED` header; x402 v1 kept it in the JSON response body.
-    // The header is the happy path; when it is absent we fall back to the
-    // body so a v1 server is still payable. (The probe/check path already
-    // does exactly this — see x402-core check.ts. The payment path had
-    // never learned the v1 fallback, so v1 servers were unpayable.)
-    let requirements: PaymentRequired;
+    // Parse PAYMENT-REQUIRED header
     const paymentRequiredHeader = response.headers.get('PAYMENT-REQUIRED');
+    if (!paymentRequiredHeader) {
+      throw new X402Error(
+        'missing_payment_required_header',
+        'Server returned 402 but no PAYMENT-REQUIRED header'
+      );
+    }
 
-    if (paymentRequiredHeader) {
-      // v2 — challenge in the header.
-      try {
-        requirements = JSON.parse(atob(paymentRequiredHeader));
-      } catch {
-        throw new X402Error(
-          'invalid_payment_required',
-          'Failed to decode PAYMENT-REQUIRED header'
-        );
-      }
-    } else {
-      // No header — try the v1 body. Clone first: the body may be read
-      // again downstream, and a Response body is single-use.
-      let body: any = null;
-      try {
-        body = await response.clone().json();
-      } catch { /* non-JSON / empty 402 body */ }
-
-      const bodyAccepts = body?.accepts;
-      const hasPaidAccepts = Array.isArray(bodyAccepts) && bodyAccepts.length > 0;
-
-      if (hasPaidAccepts) {
-        // v1 server — the challenge lives in the body.
-        requirements = {
-          x402Version: body.x402Version ?? 1,
-          accepts: bodyAccepts,
-          resource: body.resource,
-          extensions: body.extensions,
-        } as PaymentRequired;
-      } else {
-        // No header, no payable accepts. If the 402 carries a
-        // sign-in-with-x extension, this is an identity-gated endpoint —
-        // it wants a wallet signature, not money. Fail with a clear,
-        // actionable error instead of a cryptic "missing accepts".
-        const ext = body?.extensions;
-        const hasSiwx =
-          ext && typeof ext === 'object' && 'sign-in-with-x' in ext;
-        if (hasSiwx) {
-          throw new X402Error(
-            'siwx_endpoint',
-            'This endpoint is identity-gated (Sign-In-With-X), not paid. ' +
-              'Authenticate with a wallet signature instead of paying — ' +
-              'use the access / SIWX flow, not the payment flow.'
-          );
-        }
-        throw new X402Error(
-          'missing_payment_required_header',
-          'Server returned 402 but no PAYMENT-REQUIRED header and no ' +
-            'payment options in the body.'
-        );
-      }
+    let requirements: PaymentRequired;
+    try {
+      const decoded = atob(paymentRequiredHeader);
+      requirements = JSON.parse(decoded);
+    } catch {
+      throw new X402Error(
+        'invalid_payment_required',
+        'Failed to decode PAYMENT-REQUIRED header'
+      );
     }
 
     log('Payment requirements:', requirements);
