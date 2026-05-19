@@ -16,6 +16,7 @@ import type {
 import type { WalletSet } from '../adapters/types';
 import { toNetworkRef } from './network-map';
 import { createX402Client } from '../client/x402-client';
+import { classifyPaidFailure } from './errors';
 
 function decodeHeader(raw: string): unknown {
   const padded = raw.replace(/-/g, '+').replace(/_/g, '/');
@@ -125,11 +126,10 @@ export const v2Strategy: PaymentStrategy = {
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        return {
-          ok: false,
-          reason: 'merchant_rejected',
-          detail: 'HTTP ' + response.status,
-        };
+        // Paid retry still failed — distinguish "merchant rejected our
+        // payment" from "merchant accepted it, their settlement failed",
+        // and carry their verbatim error so the caller sees whose fault.
+        return { ok: false, ...(await classifyPaidFailure(response)) };
       }
 
       // The PAYMENT-RESPONSE header is a base64-encoded JSON blob of the form

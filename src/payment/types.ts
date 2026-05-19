@@ -53,7 +53,13 @@ export type PayResult =
       reason:
         | 'unsupported_network'
         | 'insufficient_funds'
+        /** The merchant rejected the payment itself — bad/declined payload,
+         *  failed verification. Our side: check the payment. */
         | 'merchant_rejected'
+        /** The merchant ACCEPTED the payment shape but their own settlement
+         *  failed (their facilitator errored). Not our payload — a
+         *  merchant-side defect. `detail` carries their verbatim error. */
+        | 'settlement_failed'
         | 'no_payment_options'
         | 'timeout'
         | 'budget_exceeded'

@@ -17,7 +17,7 @@ import type {
 import type { WalletSet } from '../adapters/types';
 import { toNetworkRef } from './network-map';
 import { buildV1PaymentHeader } from './v1-header';
-import { errorDetail } from './errors';
+import { errorDetail, classifyPaidFailure } from './errors';
 
 function toOptions(accepts: unknown[]): ChallengeOption[] {
   const out: ChallengeOption[] = [];
@@ -113,11 +113,10 @@ export const v1Strategy: PaymentStrategy = {
           txSignature: decodeTxSignature(response),
         };
       }
-      return {
-        ok: false,
-        reason: 'merchant_rejected',
-        detail: 'HTTP ' + response.status,
-      };
+      // Paid retry still failed — distinguish "merchant rejected our
+      // payment" from "merchant accepted it, their settlement failed", and
+      // carry their verbatim error so the caller sees whose fault it is.
+      return { ok: false, ...(await classifyPaidFailure(response)) };
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         return { ok: false, reason: 'timeout' };
