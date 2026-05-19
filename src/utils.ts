@@ -41,6 +41,9 @@ export function toAtomicUnits(amount: number, decimals: number): string {
   if (!Number.isFinite(amount)) {
     throw new Error(`toAtomicUnits: amount must be finite, got ${amount}`);
   }
+  if (amount < 0) {
+    throw new Error(`toAtomicUnits: amount must be non-negative, got ${amount}`);
+  }
   if (!Number.isInteger(decimals) || decimals < 0) {
     throw new Error(
       `toAtomicUnits: decimals must be a non-negative integer, got ${decimals}`
@@ -55,14 +58,15 @@ export function toAtomicUnits(amount: number, decimals: number): string {
   // round-trips back to the same IEEE-754 double, so (0.05).toString()
   // is "0.05" — the float's noise digits are already discarded. We then
   // scale that clean decimal string and truncate (floor) any fractional
-  // digit below the token's atomic resolution, matching the original
-  // Math.floor semantics exactly.
-  const negative = amount < 0;
+  // digit below the token's atomic resolution. Negative amounts are
+  // rejected above, so for the (only allowed) non-negative domain this
+  // truncation is an exact floor. `Math.abs` normalizes -0 (which passes
+  // the negative guard since `-0 >= 0`) to 0 so it stringifies to "0".
   const decimal = toPlainDecimalString(Math.abs(amount));
   const [whole, frac = ''] = decimal.split('.');
   const fracDigits = frac.slice(0, decimals).padEnd(decimals, '0');
   const atomic = BigInt(whole + fracDigits);
-  return (negative ? -atomic : atomic).toString();
+  return atomic.toString();
 }
 
 /**

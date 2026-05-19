@@ -49,4 +49,30 @@ describe("toAtomicUnits — exact integer conversion", () => {
     expect(toAtomicUnits(0, 6)).toBe("0");
     expect(toAtomicUnits(0, 18)).toBe("0");
   });
+
+  it("expands exponential-notation inputs correctly", () => {
+    // Number.toString() emits exponential form for very small/large values;
+    // toAtomicUnits must expand it before BigInt parsing.
+    expect(toAtomicUnits(5e-7, 18)).toBe("500000000000"); // 0.0000005 × 10^18
+    expect(toAtomicUnits(1e-7, 18)).toBe("100000000000"); // 0.0000001 × 10^18
+    expect(toAtomicUnits(5e-7, 6)).toBe("0");             // below 6-dec atomic resolution
+    expect(toAtomicUnits(1e21, 6)).toBe("1000000000000000000000000000"); // 1e21 × 10^6
+  });
+
+  it("rejects negative amounts", () => {
+    expect(() => toAtomicUnits(-1, 6)).toThrow();
+    expect(() => toAtomicUnits(-0.05, 18)).toThrow();
+  });
+
+  it("rejects non-finite amounts and invalid decimals", () => {
+    expect(() => toAtomicUnits(NaN, 6)).toThrow();
+    expect(() => toAtomicUnits(Infinity, 6)).toThrow();
+    expect(() => toAtomicUnits(-Infinity, 6)).toThrow();
+    expect(() => toAtomicUnits(1, -1)).toThrow();
+    expect(() => toAtomicUnits(1, 1.5)).toThrow();
+  });
+
+  it("treats -0 as zero", () => {
+    expect(toAtomicUnits(-0, 6)).toBe("0");
+  });
 });
