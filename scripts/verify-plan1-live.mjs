@@ -84,7 +84,13 @@ async function run(label, url, opts) {
 
   const results = [];
   results.push(await run('v2 EVM  (Base)',   'https://wbgghlia.nx.link/api/top-pnl'));
-  results.push(await run('v1 EVM  (Base)',   'https://api.strale.io/x402/gas-price-check'));
+  // v1 EVM endpoint: must be one whose facilitator can actually SETTLE.
+  // The previous endpoint (api.strale.io/x402/gas-price-check) is a genuine
+  // v1 EVM server, but its own facilitator fails settlement with a generic
+  // "unknown_error" — a merchant-side defect, not ours (our X-PAYMENT
+  // payload + EIP-712 signature were verified valid; the signature recovers
+  // to the payer). 3of7zkdv.nx.link is v1, eip155:8453, and settles.
+  results.push(await run('v1 EVM  (Base)',   'https://3of7zkdv.nx.link/todos/1'));
   results.push(await run('v1 SVM  (Solana)', 'https://mpp.hyreagent.fun/defi/tvl'));
 
   console.log('\n════ SUMMARY ════');
