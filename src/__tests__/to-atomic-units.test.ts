@@ -28,6 +28,23 @@ describe("toAtomicUnits — exact integer conversion", () => {
     expect(toAtomicUnits(0.123456789, 6)).toBe("123456");
   });
 
+  it("is exact for amounts the old float implementation drifted on", () => {
+    // These amounts are TRUE regression guards: the old
+    // Math.floor(amount * Math.pow(10, 18)) produced wrong trailing digits
+    // because amount * 1e18 lands on a non-representable double.
+    //   0.07 * 1e18 -> 70000000000000010  (exact 70000000000000000)
+    //   0.14 * 1e18 -> 140000000000000020 (exact 140000000000000000)
+    //   0.55 * 1e18 -> 550000000000000060 (exact 550000000000000000)
+    //   0.57 * 1e18 -> 569999999999999940 (exact 570000000000000000)
+    //   1.11 * 1e18 -> 1110000000000000100 (exact 1110000000000000000)
+    // The expected values below are the exact integers (cents x 10^16).
+    expect(toAtomicUnits(0.07, 18)).toBe("70000000000000000");
+    expect(toAtomicUnits(0.14, 18)).toBe("140000000000000000");
+    expect(toAtomicUnits(0.55, 18)).toBe("550000000000000000");
+    expect(toAtomicUnits(0.57, 18)).toBe("570000000000000000");
+    expect(toAtomicUnits(1.11, 18)).toBe("1110000000000000000");
+  });
+
   it("converts zero", () => {
     expect(toAtomicUnits(0, 6)).toBe("0");
     expect(toAtomicUnits(0, 18)).toBe("0");
