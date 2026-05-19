@@ -29,7 +29,7 @@ import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import type { PayToProvider } from '../types';
 import { createX402Server, type BuildRequirementsOptions } from './x402-server';
 import { toAtomicUnits, encodeBase64Json } from '../utils';
-import { DEFAULT_NETWORK, USDC_DECIMALS } from '../constants';
+import { DEFAULT_NETWORK } from '../constants';
 import type { SponsoredRecommendation } from '@dexterai/x402-ads-types';
 import { getStripeProviderNetwork } from './stripe-payto';
 import { createBatchSettlementSeller } from '../batch-settlement/seller';
@@ -376,23 +376,26 @@ export function x402Middleware(
         const requestAmount = getAmount?.(req) ?? amount;
         const requestDescription = getDescription?.(req) ?? description;
 
-        // Convert USD to atomic units
-        const decimals = asset?.decimals ?? USDC_DECIMALS;
-        const amountAtomic = toAtomicUnits(parseFloat(requestAmount), decimals);
+        // Parse the USD price once; the atomic conversion happens PER
+        // NETWORK below — USDC is 6 decimals on every supported chain
+        // except BSC (18), so a single pre-converted amount would
+        // misquote BSC by 12 orders of magnitude.
+        const amountUsd = parseFloat(requestAmount);
 
-        const requirementsOptions: BuildRequirementsOptions = {
-          amountAtomic,
-          resourceUrl,
-          description: requestDescription,
-          mimeType,
-          timeoutSeconds,
-        };
-
-        // Build requirements from all network servers and merge accepts arrays
+        // Build requirements from all network servers and merge accepts
+        // arrays. Each server converts the USD price with ITS OWN asset
+        // decimals (server.assetDecimals).
         const allAccepts: import('../types').PaymentAccept[] = [];
         let requirements: import('../types').PaymentRequired | null = null;
         for (const [, srv] of servers) {
           try {
+            const requirementsOptions: BuildRequirementsOptions = {
+              amountAtomic: toAtomicUnits(amountUsd, srv.assetDecimals),
+              resourceUrl,
+              description: requestDescription,
+              mimeType,
+              timeoutSeconds,
+            };
             const reqs = await srv.buildRequirements(requirementsOptions);
             allAccepts.push(...reqs.accepts);
             if (!requirements) requirements = reqs;
