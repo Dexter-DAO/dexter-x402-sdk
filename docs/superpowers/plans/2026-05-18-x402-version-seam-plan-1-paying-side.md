@@ -846,7 +846,7 @@ writing this task's implementation, the engineer MUST read the upstream
 `x402` library's v1 payment code (`node_modules/x402/dist/cjs/` in
 `dexter-api` — functions `createPaymentHeader`, `preparePaymentHeader`,
 `signPaymentHeader`) and the v1 spec at
-`github.com/coinbase/x402/blob/main/specs/x402-specification-v1.md`.
+`github.com/x402-foundation/x402/blob/main/specs/x402-specification-v1.md`.
 The goal is to understand how v1 builds and signs the `X-PAYMENT`
 header (EIP-3009 `transferWithAuthorization` for EVM; the SVM
 equivalent), then reimplement it inside this module.
