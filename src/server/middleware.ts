@@ -34,6 +34,8 @@ import type { SponsoredRecommendation } from '@dexterai/x402-ads-types';
 import { getStripeProviderNetwork } from './stripe-payto';
 import { createBatchSettlementSeller } from '../batch-settlement/seller';
 import type { BatchSettlementSeller } from '../batch-settlement/seller';
+import { applyExtensions } from './extensions/registry';
+import type { ResourceServerExtension } from './extensions/types';
 
 /**
  * Middleware configuration
@@ -115,6 +117,20 @@ export interface X402MiddlewareConfig {
    * MIME type of the response
    */
   mimeType?: string;
+
+  /**
+   * Resource-server extensions to run when building a 402 response.
+   * Each extension's output is placed under `extensions[extension.key]`.
+   * Pair with `declarations`. Example: `[bazaarExtension()]`.
+   */
+  extensions?: ResourceServerExtension[];
+
+  /**
+   * Per-route extension declaration data, keyed by extension key.
+   * Build it with the extension's declare helper, e.g.
+   * `declarations: { ...declareDiscoveryExtension({ method: 'GET', ... }) }`.
+   */
+  declarations?: Record<string, unknown>;
 
   /**
    * Payment timeout in seconds
@@ -311,6 +327,8 @@ export function x402Middleware(
     getResourceUrl,
     getAmount,
     getDescription,
+    extensions: configuredExtensions,
+    declarations: configuredDeclarations,
   } = config;
 
   const log = verbose
@@ -408,6 +426,30 @@ export function x402Middleware(
           return;
         }
         requirements = { ...requirements, accepts: allAccepts };
+
+        // Run resource-server extensions (e.g. bazaar discovery). Their
+        // collected output is attached as `extensions` on BOTH the encoded
+        // PAYMENT-REQUIRED header and the JSON body, so a facilitator and a
+        // client see the same thing. A failing extension is isolated by
+        // applyExtensions — the 402 still goes out, just without that key.
+        if (configuredExtensions && configuredExtensions.length > 0) {
+          const ext = await applyExtensions(
+            configuredExtensions,
+            configuredDeclarations ?? {},
+            {
+              response: requirements,
+              request: {
+                method: req.method,
+                path: (req.route?.path as string | undefined) ?? req.path,
+                params: req.params as Record<string, string> | undefined,
+              },
+            },
+          );
+          if (ext) {
+            requirements = { ...requirements, extensions: ext };
+          }
+        }
+
         const encoded = primaryServer.encodeRequirements(requirements);
 
         res.setHeader('PAYMENT-REQUIRED', encoded);
@@ -415,6 +457,9 @@ export function x402Middleware(
           error: 'Payment required',
           accepts: requirements.accepts,
           resource: requirements.resource,
+          ...(requirements.extensions
+            ? { extensions: requirements.extensions }
+            : {}),
         });
         return;
       }
