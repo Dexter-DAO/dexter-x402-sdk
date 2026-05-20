@@ -6,6 +6,35 @@
  * method: query methods (GET/HEAD/DELETE) carry `queryParams`; body
  * methods (POST/PUT/PATCH) carry `bodyType` + `body`. `schema` is a JSON
  * Schema (Draft 2020-12) validating `info`.
+ *
+ * ─── Deliberate spec-compliance decision (2026-05-20) ───────────────────
+ *
+ * For query methods (GET/HEAD/DELETE), the spec's required fields are
+ * `["type", "method"]` ONLY (bazaar.md:75). `queryParams` is optional. On
+ * a path-param-only GET we emit `pathParams` and nothing else under
+ * `input` — exactly matching the spec's own dynamic-route example
+ * (bazaar.md:430-442) which shows a GET with only `pathParams`, no
+ * `queryParams`.
+ *
+ * `@agentcash/discovery` v1.7.0 (Merit Systems) flags these emissions
+ * with `SCHEMA_INPUT_MISSING` because its validator only reads `body` or
+ * `queryParams` (cli.cjs:15504) and has zero references to `pathParams`.
+ * Their validator implements an agent-ergonomics mental model that the
+ * spec did NOT adopt — the spec treats `pathParams` as first-class input.
+ *
+ * We are intentionally NOT emitting `queryParams: {}` defensively. Doing
+ * so would pollute every dynamic GET with an ambiguous empty object
+ * (does "{}" mean "nothing accepted" or "nothing required"?) just to
+ * silence a validator that's stricter than the spec authorizes.
+ *
+ * If a future engineer is tempted to "fix" the validator complaints by
+ * emitting empty fields here, read first:
+ *   - docs/competitive-intel/BRIDGING-SPEC-AND-AGENT-2026-05-20.md
+ *     (in the dexter-api repo)
+ *   - The bazaar.md spec, especially lines 75 and 410-442
+ *
+ * Maintained in this state on purpose. Do not change without revisiting
+ * the bridging-spec-and-agent decision.
  */
 
 import { isValidRouteTemplate } from './route-template';
