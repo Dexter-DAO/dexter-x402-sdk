@@ -50,26 +50,31 @@ These are the ones I want you to confirm before we start. Each has a clear yes/n
 
 ### D2. Keep / cut list
 
-| Symbol / file | 3.9 action | 4.0 action |
-|---|---|---|
-| `src/server/model-registry.ts` (789L) | **DELETE in 3.9** (no `@deprecated` cycle needed — 0 consumers, no migration to give) | already gone |
-| `src/server/access-pass.ts` | `@deprecated` | DELETE |
-| `src/react/useAccessPass.ts` | `@deprecated` | DELETE |
-| `src/server/dynamic-pricing.ts` | `@deprecated` | DELETE |
-| `src/server/browser-support.ts` | `@deprecated` | DELETE |
-| `src/client/budget-account.ts` | **Keep** — flag in JSDoc as "v1, rebuild planned for 4.0" | **REBUILD** (Budget Account 2.0, see D5) |
-| `src/client/sponsored-access.ts` | **Keep + promote** | Keep |
-| `src/server/token-pricing.ts` | Keep (3 consumers + likely default after Dynamic Pricing is gone) | Keep |
-| `src/payment/*` | Keep — this is the new baseline | Keep |
-| `src/batch-settlement/**` | Keep | Keep |
+| Symbol / file | 3.9 action | 4.0 action | 5.0 action |
+|---|---|---|---|
+| `src/server/model-registry.ts` (789L) | **DELETE in 3.9** (no `@deprecated` cycle needed — 0 consumers, no migration to give) | already gone | — |
+| `src/server/access-pass.ts` | `@deprecated` | DELETE | — |
+| `src/react/useAccessPass.ts` | `@deprecated` | DELETE | — |
+| `src/server/dynamic-pricing.ts` | `@deprecated` | DELETE | — |
+| `src/server/browser-support.ts` | `@deprecated` | DELETE | — |
+| `src/server/stripe-payto.ts` | `@deprecated` | DELETE | — |
+| `src/server/token-pricing.ts` (+ `MODEL_PRICING`) | `@deprecated` | DELETE | — |
+| `src/client/budget-account.ts` | **Keep** — flag in JSDoc as "v1, rebuild planned for 4.0" | **REBUILD** (Budget Account 2.0, see D5) | — |
+| `src/client/sponsored-access.ts` | **Keep + promote** | Keep | — |
+| `src/client/wrap-fetch.ts` (`wrapFetch`) | `@deprecated` — `payAndFetch` is canonical | Keep with deprecation | DELETE |
+| `src/client/x402-client.ts` (`createX402Client`) | `@deprecated` — `payAndFetch` is canonical | Keep with deprecation | DELETE |
+| `src/payment/*` (`payAndFetch` and friends) | Keep — this is the new baseline | Keep | Keep |
+| `src/batch-settlement/**` | Keep | Keep | Keep |
+| `src/server/extensions/**` (bazaar) | Keep — shipped in 3.8.0 | Keep | Keep |
 
 ### D3. README rewrite scope (3.9)
 
 - **Promote in Quick Start:** `payAndFetch` as the canonical client recipe.
-- **Promote in Why-This-SDK headline:** batch-settlement, sponsored-access (the MCP-tool reality), and `payAndFetch`.
-- **Demote to "Legacy capabilities" appendix:** Access Pass, Dynamic Pricing.
+- **Promote in Why-This-SDK headline:** batch-settlement, sponsored-access (the MCP-tool reality), the new bazaar discovery extension (3.8.0), and `payAndFetch`.
+- **Demote to "Legacy capabilities" appendix:** Access Pass, Dynamic Pricing, Token Pricing, `stripePayTo`. All four are v1-era hypotheses that x402 v2 + the bazaar extension supersede; mention they exist so consumers using them aren't blindsided by the deprecation warning, but don't sell them.
 - **Strengthen, don't cut:** Sponsored Access — concrete example showing the MCP `fetch` tool extracting and rendering recommendations.
 - **Delete entirely:** all README mentions of `MODEL_REGISTRY` and `model-registry` (no migration path, no JSDoc deprecation; the file is gone in 3.9).
+- **No static counts.** Strip "5,000+ paid APIs," any "N protocols supported," any other number that goes stale. Replace with qualitative phrasing ("tens of thousands of paid APIs," "every major EVM chain plus Solana"). Static counts go stale in weeks; the README rewrote in May 2026 already had a count 10× out of date.
 - **Keep, no change:** Quick Start install line, supported networks table, batch-settlement section (already excellent).
 
 ### D4. `client/index.ts` recommendation hierarchy (3.9)
@@ -90,11 +95,11 @@ export { getSponsoredRecommendations, getSponsoredAccessInfo, fireImpressionBeac
 // ── Agent budget controls ──
 export { createBudgetAccount } from './budget-account';  // v1, rebuild planned for 4.0
 
-// ── Legacy client APIs (predate payAndFetch — kept for migration) ──
+// ── @deprecated — predate payAndFetch; will be removed in 5.0 ──
 export { createX402Client, wrapFetch, getPaymentReceipt } from './x402-client';
 ```
 
-No `@deprecated` on `createX402Client` / `wrapFetch` — they have real consumers and a working role as the lower-level API.
+`createX402Client` and `wrapFetch` get `@deprecated` JSDoc in 3.9 pointing consumers at `payAndFetch`. They keep working through 4.x. They are removed in 5.0. `getPaymentReceipt` stays (still useful, no replacement needed).
 
 ### D5. Budget Account 2.0 scope
 
@@ -184,14 +189,20 @@ Each PR is independently revertable. Each PR is small. Each PR can ship on its o
 
 ### PR 2 — `@deprecated` markers (3.9)
 
-- Add `@deprecated` JSDoc to:
+- Add `@deprecated` JSDoc — **gone in 4.0**:
   - `src/server/access-pass.ts` exports
   - `src/server/dynamic-pricing.ts` exports
   - `src/server/browser-support.ts` exports
+  - `src/server/stripe-payto.ts` exports
+  - `src/server/token-pricing.ts` exports (incl. `MODEL_PRICING`)
   - `src/react/useAccessPass.ts`
+- Add `@deprecated` JSDoc — **gone in 5.0** (longer migration window because they have 7+3 real consumers):
+  - `src/client/wrap-fetch.ts` (`wrapFetch`, `WrapFetchOptions`)
+  - `src/client/x402-client.ts` (`createX402Client`, `X402ClientConfig`, `X402Client`)
+- Each `@deprecated` JSDoc points at the replacement (`payAndFetch` for the client APIs; "use x402 v2 dynamic pricing" for the v1 LLM pricers; "no replacement — feature retired" for `stripePayTo`, Access Pass, browser-support).
 - No runtime behavior changes.
-- CHANGELOG entry under "Deprecated."
-- Commit message: `chore(server,react): mark v1-era helpers @deprecated ahead of 4.0`
+- CHANGELOG entry under "Deprecated" with two subsections (4.0 removal target vs 5.0 removal target).
+- Commit message: `chore: mark v1-era helpers @deprecated ahead of 4.0 + 5.0`
 
 **Acceptance:** typecheck green, tests green. Consumers using the deprecated APIs see editor warnings but their code still runs.
 
@@ -254,13 +265,21 @@ Each PR is independently revertable. Each PR is small. Each PR can ship on its o
 
 ### PR 9 — Actual removals (4.0)
 
-- Delete `src/server/access-pass.ts`, `src/server/dynamic-pricing.ts`, `src/server/browser-support.ts`, `src/react/useAccessPass.ts`.
+- Delete:
+  - `src/server/access-pass.ts`
+  - `src/server/dynamic-pricing.ts`
+  - `src/server/browser-support.ts`
+  - `src/server/stripe-payto.ts`
+  - `src/server/token-pricing.ts`
+  - `src/react/useAccessPass.ts`
 - Remove their exports from `src/server/index.ts` and `src/react/index.ts`.
 - Remove their README sections entirely (already moved to legacy appendix in PR 5; now delete the appendix).
 - CHANGELOG entry under "Removed" with one bullet per file, citing the deprecation in 3.9.
-- Commit message: `refactor!: remove v1-era helpers deprecated in 3.9 (access-pass, dynamic-pricing, browser-support, useAccessPass)`
+- Commit message: `refactor!: remove v1-era helpers deprecated in 3.9 (access-pass, dynamic-pricing, browser-support, stripe-payto, token-pricing, useAccessPass)`
 
-**Acceptance:** typecheck green, tests green. Consumers who ignored the 3.9 deprecation warnings now get hard build errors with a CHANGELOG pointing them at the migration.
+`wrapFetch` and `createX402Client` STAY in 4.0 — their deprecation window runs through 4.x; removal lands in 5.0 (see PR 12 below).
+
+**Acceptance:** typecheck green, tests green. Consumers who ignored the 3.9 deprecation warnings for the 4.0-target items now get hard build errors with a CHANGELOG pointing them at the migration. `wrapFetch` / `createX402Client` consumers still build clean but keep seeing the deprecation warning.
 
 ### PR 10 — Budget Account 2.0 (4.0)
 
@@ -272,12 +291,23 @@ Each PR is independently revertable. Each PR is small. Each PR can ship on its o
 
 **Acceptance:** skillsmith-cli (the existing consumer) can adopt the new API with a deprecated alias path supported in 4.0.x; new consumers get the full surface.
 
-### PR 11 — Tag and publish 4.0.0
+### PR 11 — Write MIGRATION.md + tag and publish 4.0.0
 
+- Write `MIGRATION.md` at the repo root: one section per removed symbol, mapping it to its replacement. ~1 page total.
 - Final CHANGELOG with prominent "Breaking" section listing every removal and the Budget Account API change.
-- Migration guide section in the README.
+- Link MIGRATION.md from the README and CHANGELOG.
 - `npm version major` → 4.0.0.
 - `npm publish`.
+
+### PR 12 — Remove `wrapFetch` + `createX402Client` (5.0, ~6 months later)
+
+- Delete `src/client/wrap-fetch.ts` and `src/client/x402-client.ts` (`createX402Client`, `X402Client`, `X402ClientConfig`, `PaymentReceipt` types — keep `getPaymentReceipt` if it has a home elsewhere, otherwise migrate to a small `src/client/receipt.ts`).
+- Remove exports from `src/client/index.ts`.
+- Update MIGRATION.md with the 5.0 section pointing at `payAndFetch`.
+- CHANGELOG entry under "Removed" citing the 3.9 deprecation.
+- Commit message: `refactor!: remove createX402Client + wrapFetch deprecated in 3.9 (use payAndFetch)`
+
+**Acceptance:** consumers still on `wrapFetch` / `createX402Client` now get hard build errors. The 6-month window between 3.9 deprecation and 5.0 removal was enough for any active consumer to migrate.
 
 ---
 
@@ -293,28 +323,19 @@ Each PR is independently revertable. Each PR is small. Each PR can ship on its o
 
 ---
 
-## Open questions (resolve before PR 1)
+## Decisions made (2026-05-20)
 
-1. **`createX402Client` and `wrapFetch` — keep both forever, or eventually consolidate into `payAndFetch`?**
-   - Current plan: keep both, no `@deprecated`. They have real consumers and a lower-level role.
-   - Alternative: `@deprecated` them in 4.x with a 5.0 removal target.
-   - **Need your call.**
+The original "open questions" section is preserved here as decisions, with reasoning, so future readers see how we got here:
 
-2. **`stripePayTo` — what is this actually for?**
-   - 2 consumers, both dexter-fe. Not clear if it's a marketing demo or a real feature.
-   - Need to read it before deciding.
+1. **`createX402Client` and `wrapFetch` — `@deprecated` in 3.9, removed in 5.0.** Reasoning: `payAndFetch` is the only version-agnostic client. The others are v2-centric bridge code with the wrong shape (no discriminated-union return, no clean merchant-vs-settlement-failure split). Longer migration window than the 4.0 batch because they have 7 + 3 real consumers; 5.0 (~6 months later) gives them runway.
 
-3. **`token-pricing.ts` — keep or also deprecate?**
-   - 3 consumers (1 dexter-api, 2 dexter-fe).
-   - Currently planned: keep. If the dexter-api use is a real prod path, keep; if it's another demo, deprecate alongside the others.
+2. **`stripePayTo` — `@deprecated` in 3.9, removed in 4.0.** Reasoning: read the source. It's a Stripe `PaymentIntent` machine-payments provider for `x402Middleware`. Only consumers are the `/stripe` marketing page on dexter-fe. The audience for x402 in 2026 is "agents paying with USDC," not "merchants who want Stripe with crypto sprinkles."
 
-4. **README "Marketplace Discovery" section (currently §3) — accurate?**
-   - Sells "5,000+ paid APIs" auto-discovery. Is that still the marketplace state, or also a January-era number?
-   - Need to verify before the README rewrite.
+3. **`token-pricing.ts` — `@deprecated` in 3.9, removed in 4.0.** Reasoning: it's the tiktoken LLM-token pricer, same January-era v1 stopgap as Access Pass and Dynamic Pricing. x402 v2 dynamic pricing supersedes it. Removing it also resolves the `ModelPricing` name collision automatically.
 
-5. **Do we want a `MIGRATION.md` for 4.0?**
-   - Convention says yes for any 4.0.
-   - Scope = 1 page mapping each removed symbol to its replacement. Mostly auto-generatable from the deprecation list.
+4. **No static counts in the README.** The "5,000+ paid APIs" number was 10× out of date (current ~50,000). Static counts go stale faster than the README gets rewritten. Replace with qualitative phrasing ("tens of thousands of paid APIs").
+
+5. **`MIGRATION.md` — yes.** ~1 page, written at the very end of the 4.0 cycle (PR 11), one section per removed symbol mapping to its replacement.
 
 ---
 
@@ -323,7 +344,7 @@ Each PR is independently revertable. Each PR is small. Each PR can ship on its o
 **3.9 ships when:**
 
 - [ ] PR 1 merged: `model-registry.ts` removed
-- [ ] PR 2 merged: `@deprecated` markers on Access Pass / Dynamic Pricing / Browser Support / useAccessPass
+- [ ] PR 2 merged: `@deprecated` markers — 4.0-target (Access Pass / Dynamic Pricing / Browser Support / Stripe / Token Pricing / useAccessPass) AND 5.0-target (`wrapFetch` / `createX402Client`)
 - [ ] PR 3 merged: `client/index.ts` reorganized
 - [ ] PR 4 merged: `PayResult` no longer lies about network
 - [ ] PR 5 merged: README rewrite
@@ -336,13 +357,21 @@ Each PR is independently revertable. Each PR is small. Each PR can ship on its o
 **4.0 ships when:**
 
 - [ ] PR 8 merged: dexter-lab agent template updated and deployed
-- [ ] PR 9 merged: deprecated files deleted
+- [ ] PR 9 merged: deprecated files deleted (access-pass, dynamic-pricing, browser-support, stripe-payto, token-pricing, useAccessPass)
 - [ ] PR 10 merged: Budget Account 2.0
-- [ ] MIGRATION.md written (if D5 yes)
-- [ ] CHANGELOG entry for 4.0.0 with "Breaking" section
+- [ ] PR 11 merged: MIGRATION.md + 4.0.0 tag and publish
+- [ ] CHANGELOG entry for 4.0.0 with prominent "Breaking" section
 - [ ] Tests green
 - [ ] Published to npm
 - [ ] One umbrella repo upgrades to 4.0 and rebuilds clean
+
+**5.0 ships when (target: ~6 months after 4.0):**
+
+- [ ] PR 12 merged: `wrapFetch` + `createX402Client` removed
+- [ ] MIGRATION.md updated with the 5.0 section
+- [ ] CHANGELOG entry for 5.0.0 with "Breaking" section citing the 3.9 deprecation
+- [ ] Tests green
+- [ ] Published to npm
 
 ---
 
