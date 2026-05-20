@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-05-20
+
+Adds a resource-server extension system and the **bazaar discovery extension**, making `x402Middleware`-built 402 responses discoverable via the official x402 bazaar standard (`extensions.bazaar`). Fully backward compatible — calls without the new config fields emit a 402 byte-identical to today.
+
+### Added
+- **`ResourceServerExtension` contract** (`@dexterai/x402/server`) — generic interface ported from the upstream `@x402/core` extension model. An extension namespaces its output under its own `key` inside `PaymentRequired.extensions`. Future extensions (offer-receipt, payment-identifier, etc.) plug in the same way.
+- **Extension registry with failure isolation.** A throwing extension is caught, logged, and skipped — the 402 still goes out, just without that key. Never propagates, never 500s the payment path.
+- **`bazaarExtension()` factory** — the first concrete extension. When configured, the 402 response carries the spec-compliant `extensions.bazaar` block: `{ info, schema, routeTemplate? }`, with `info.input` discriminated by HTTP method (GET/HEAD/DELETE → `queryParams`; POST/PUT/PATCH → `bodyType` + `body`) and `schema` as a JSON Schema (Draft 2020-12) validating `info`. Path-parameterized routes carry `info.input.pathParams` and a top-level `routeTemplate`.
+- **`declareDiscoveryExtension(config)` helper** — wrap a route's discovery config as `{ bazaar: <config> }` for `x402Middleware`'s `declarations` map. Method may be omitted; the extension stamps the actual request method at 402 time.
+- **`X402MiddlewareConfig.extensions`** + **`X402MiddlewareConfig.declarations`** — new optional fields. Pair them to opt routes into the registry. Example:
+  ```ts
+  x402Middleware({
+    payTo, network, amount, facilitatorUrl,
+    extensions: [bazaarExtension()],
+    declarations: {
+      ...declareDiscoveryExtension({
+        method: 'POST',
+        bodyType: 'json',
+        inputSchema: { properties: { amount: { type: 'string' } }, required: ['amount'] },
+        output: { example: { campaign: {} } },
+      }),
+    },
+  });
+  ```
+- **`routeTemplate` validator** — enforces the bazaar spec's rules (non-empty, starts with `/`, allowed chars, no `..`/`://` even after percent-decoding). Invalid templates are dropped (`routeTemplate` is omitted), the 402 still ships.
+- **End-to-end test** (`bazaar-middleware.test.ts`) — drives the full middleware with a mocked facilitator and asserts the 402 body carries `extensions.bazaar` when configured, and is `extensions`-free when not.
+- **Public exports** from `@dexterai/x402/server`: `bazaarExtension`, `declareDiscoveryExtension`, and the types `ResourceServerExtension`, `PaymentRequiredContext`, `DiscoveryConfig`, `QueryDiscoveryConfig`, `BodyDiscoveryConfig`, `DiscoveryExtension`, `DeclareDiscoveryConfig`.
+
+### Notes
+- **Backward compatible.** A `x402Middleware` call with no `extensions`/`declarations` emits a 402 byte-identical to 3.7.8.
+- **HTTP only in v1.** MCP-tool discovery (`input.type: "mcp"`) is intentionally out of scope — a clean discriminated-union add-on later.
+- **Spec-conformant.** The emitted `extensions.bazaar` was cross-checked against `/tmp/x402-spec/specs/extensions/bazaar.md` (the official x402 bazaar spec) and the upstream test oracle — field-for-field match on `info.input`, `info.output`, `schema.$schema`, `schema.properties.input.required`, `schema.required`, and `routeTemplate`.
+- **272 tests passing.**
+
 ## [3.7.4] - 2026-05-18
 
 ### Fixed
