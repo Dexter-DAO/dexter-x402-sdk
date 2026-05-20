@@ -67,6 +67,20 @@ export type {
 export { x402Middleware } from './middleware';
 export type { X402MiddlewareConfig, X402Request } from './middleware';
 
+export { bazaarExtension } from './extensions/bazaar/index';
+export { declareDiscoveryExtension } from './extensions/bazaar/declare';
+export type {
+  ResourceServerExtension,
+  PaymentRequiredContext,
+} from './extensions/types';
+export type {
+  DiscoveryConfig,
+  QueryDiscoveryConfig,
+  BodyDiscoveryConfig,
+  DiscoveryExtension,
+} from './extensions/bazaar/types';
+export type { DeclareDiscoveryConfig } from './extensions/bazaar/declare';
+
 // Browser support -- renders HTML paywall for browser 402 responses
 export { x402BrowserSupport, escapeHtml } from './browser-support';
 export type { X402BrowserSupportConfig } from './browser-support';
