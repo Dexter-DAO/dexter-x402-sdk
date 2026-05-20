@@ -78,3 +78,53 @@ describe('buildDiscoveryExtension — schema self-consistency', () => {
     expect((ext.schema as { required: string[] }).required).toContain('input');
   });
 });
+
+import { declareDiscoveryExtension } from '../extensions/bazaar/declare';
+import { bazaarExtension } from '../extensions/bazaar/index';
+import type { PaymentRequiredContext } from '../extensions/types';
+import type { PaymentRequired } from '../../types';
+
+describe('declareDiscoveryExtension', () => {
+  it('wraps a config under the "bazaar" key', () => {
+    const decl = declareDiscoveryExtension({ method: 'GET' });
+    expect(Object.keys(decl)).toEqual(['bazaar']);
+    expect((decl.bazaar as { method: string }).method).toBe('GET');
+  });
+});
+
+describe('bazaarExtension', () => {
+  const baseCtx: PaymentRequiredContext = {
+    response: { x402Version: 2, accepts: [] } as unknown as PaymentRequired,
+    request: { method: 'GET', path: '/trust/wallet/:address', params: { address: 'X4o2' } },
+  };
+
+  it('has key "bazaar"', () => {
+    expect(bazaarExtension().key).toBe('bazaar');
+  });
+
+  it('produces a spec-shaped block from a declaration + context', async () => {
+    const ext = bazaarExtension();
+    const decl = declareDiscoveryExtension({
+      method: 'GET',
+      pathParamsSchema: { properties: { address: { type: 'string' } }, required: ['address'] },
+      output: { example: { ok: true } },
+    });
+    const out = (await ext.enrichPaymentRequiredResponse!(decl.bazaar, baseCtx)) as {
+      info: { input: Record<string, unknown> };
+      routeTemplate?: string;
+    };
+    expect(out.info.input.method).toBe('GET');
+    expect(out.info.input.pathParams).toEqual({ address: 'X4o2' });
+    expect(out.routeTemplate).toBe('/trust/wallet/:address');
+  });
+
+  it('uses the request method when the declaration omits it', async () => {
+    const ext = bazaarExtension();
+    // declaration with no method — the extension stamps it from the request
+    const out = (await ext.enrichPaymentRequiredResponse!(
+      { output: { example: { ok: 1 } } },
+      { ...baseCtx, request: { method: 'POST', path: '/trust/batch' } },
+    )) as { info: { input: Record<string, unknown> } };
+    expect(out.info.input.method).toBe('POST');
+  });
+});
