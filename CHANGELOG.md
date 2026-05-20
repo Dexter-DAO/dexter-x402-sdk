@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.1] - 2026-05-20
+
+### Fixed
+- **Bazaar `routeTemplate` now includes the mount path.** When `x402Middleware` is mounted on a sub-router via `app.use('/v1/agent', router)`, the bazaar extension previously emitted `routeTemplate: "/campaigns/:id"` instead of the full external-visible `"/v1/agent/campaigns/:id"`. The middleware now prepends `req.baseUrl` to `req.route.path`, so the emitted template matches the URL clients actually call. Without mounting, `req.baseUrl` is empty and behavior is unchanged.
+
 ## [3.8.0] - 2026-05-20
 
 Adds a resource-server extension system and the **bazaar discovery extension**, making `x402Middleware`-built 402 responses discoverable via the official x402 bazaar standard (`extensions.bazaar`). Fully backward compatible — calls without the new config fields emit a 402 byte-identical to today.

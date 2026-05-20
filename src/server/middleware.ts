@@ -440,7 +440,14 @@ export function x402Middleware(
               response: requirements,
               request: {
                 method: req.method,
-                path: (req.route?.path as string | undefined) ?? req.path,
+                // Prefer baseUrl + route.path so a router mounted under
+                // /v1/agent/ on /campaigns/:id emits routeTemplate as
+                // "/v1/agent/campaigns/:id" rather than just "/campaigns/:id".
+                // Express sets req.baseUrl to the mount path and req.route.path
+                // to the inner pattern; both default to empty when absent.
+                path:
+                  (req.baseUrl ?? '') +
+                  ((req.route?.path as string | undefined) ?? req.path),
                 params: req.params as Record<string, string> | undefined,
               },
             },
