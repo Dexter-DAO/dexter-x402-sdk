@@ -1,6 +1,14 @@
 /**
  * x402 v2 Client
  *
+ * `createX402Client`, `X402Client`, and `X402ClientConfig` are
+ * @deprecated — slated for removal in `@dexterai/x402` 5.0 (~6 months out;
+ * longer cycle than the 4.0 batch because there are real consumers). Use
+ * `payAndFetch` from `@dexterai/x402/client` instead — it's the version-
+ * agnostic 2026+ client with a discriminated-union return type. The
+ * `getPaymentReceipt` helper and `PaymentReceipt` type in this file are NOT
+ * deprecated; they continue to support receipt-reading on any paid response.
+ *
  * Chain-agnostic client for x402 v2 payments.
  * Automatically detects 402 responses, finds a matching payment option,
  * builds the transaction with the appropriate chain adapter, and retries.
@@ -124,6 +132,9 @@ export function getPaymentReceipt(response: Response): PaymentReceipt | undefine
 
 /**
  * Client configuration
+ *
+ * @deprecated Slated for removal in `@dexterai/x402` 5.0 alongside
+ * `createX402Client` and `X402Client`. Use `PayAndFetchOptions` instead.
  */
 export interface X402ClientConfig {
   /**
@@ -213,6 +224,9 @@ export interface X402ClientConfig {
 
 /**
  * x402 Client interface
+ *
+ * @deprecated Slated for removal in `@dexterai/x402` 5.0. Use `payAndFetch`
+ * directly instead of constructing a client object.
  */
 export interface X402Client {
   /**
@@ -233,6 +247,25 @@ interface MatchedPayment {
 
 /**
  * Create an x402 v2 client
+ *
+ * @deprecated Slated for removal in `@dexterai/x402` 5.0 (~6 months out — long
+ * cycle because of real production consumers). Use `payAndFetch` from
+ * `@dexterai/x402/client` instead — it's version-agnostic across x402 v1 and
+ * v2 and returns a discriminated union for cleaner error handling.
+ *
+ * Migration:
+ * ```typescript
+ * // Before
+ * const client = createX402Client({ wallets });
+ * const res = await client.fetch(url);
+ *
+ * // After
+ * import { payAndFetch } from '@dexterai/x402/client';
+ * const result = await payAndFetch(url, undefined, wallets);
+ * if (result.ok) {
+ *   const res = result.response;
+ * }
+ * ```
  */
 export function createX402Client(config: X402ClientConfig): X402Client {
   const {

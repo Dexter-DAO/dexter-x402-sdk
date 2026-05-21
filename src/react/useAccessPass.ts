@@ -1,6 +1,10 @@
 /**
  * React Hook for x402 Access Pass
  *
+ * @deprecated Slated for removal in `@dexterai/x402` 4.0 alongside the
+ * `x402AccessPass` middleware. No replacement — use `useX402Payment` for
+ * per-request payments.
+ *
  * Dedicated hook for managing the access pass lifecycle:
  * tier discovery, pass purchase, token caching, and auto-fetch with pass.
  *
@@ -109,6 +113,10 @@ export interface UseAccessPassReturn {
 // Hook Implementation
 // ============================================================================
 
+/**
+ * @deprecated Slated for removal in `@dexterai/x402` 4.0. Use `useX402Payment`
+ * for per-request payments instead.
+ */
 export function useAccessPass(config: UseAccessPassConfig): UseAccessPassReturn {
   const {
     wallets: walletSet,

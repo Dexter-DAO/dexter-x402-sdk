@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+
+Internal hygiene pass ahead of 4.0 and 5.0. No runtime behavior changes — every symbol below still works exactly as before. JSDoc `@deprecated` markers now surface editor warnings so consumers can migrate ahead of the removal releases.
+
+**Slated for removal in 4.0:**
+
+- `x402AccessPass`, `X402AccessPassConfig`, `X402AccessPassRequest` (`@dexterai/x402/server`) — use per-request `x402Middleware` with `payAndFetch` clients.
+- `useAccessPass`, `UseAccessPassConfig`, `UseAccessPassReturn` (`@dexterai/x402/react`) — use `useX402Payment` for per-request payments.
+- `createDynamicPricing`, `formatPricing`, `DynamicPricingConfig`, `DynamicPricing`, `PriceQuote` (`@dexterai/x402/server`) — compute the price per request in your handler and pass it to `x402Middleware`.
+- `createTokenPricing`, `countTokens`, `getAvailableModels`, `isValidModel`, `formatTokenPricing`, `MODEL_PRICING`, `TokenPricingConfig`, `TokenPricing`, `TokenPriceQuote`, `ModelPricing` (`@dexterai/x402/server`) — price requests with your model provider's live API and pass the amount to `x402Middleware`.
+- `MODEL_REGISTRY`, `MODEL_PRICING_MAP`, `getModel`, `findModel`, `isValidModelId`, `getAvailableModelIds`, `getModelsByTier`, `getModelsByFamily`, `getActiveModels`, `getTextModels`, `getCheapestModel`, `estimateCost`, `formatModelPricing`, and the related types (`@dexterai/x402/server`) — January 2026 hardcoded snapshot; goes stale fast.
+- `x402BrowserSupport`, `X402BrowserSupportConfig` (`@dexterai/x402/server`) — no replacement; build a custom paywall page if needed. (`escapeHtml` stays.)
+- `stripePayTo`, `StripePayToConfig`, `getStripeProviderNetwork` (`@dexterai/x402/server`) — integrate Stripe at the application layer if still needed. The Stripe-network check in `x402Middleware` is removed alongside this in 4.0.
+
+**Slated for removal in 5.0** (longer migration window because of real consumers):
+
+- `createX402Client`, `X402Client`, `X402ClientConfig` (`@dexterai/x402/client`) — use `payAndFetch` instead. Migration: `client.fetch(url)` → `(await payAndFetch(url, undefined, wallets)).response`.
+- `wrapFetch`, `WrapFetchOptions` (`@dexterai/x402/client`) — use `payAndFetch` with a wallet from `createKeypairWallet` / `createEvmKeypairWallet`.
+
+`getPaymentReceipt` and `PaymentReceipt` (`@dexterai/x402/client`) are NOT deprecated.
+
 ## [3.8.1] - 2026-05-20
 
 ### Fixed

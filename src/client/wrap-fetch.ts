@@ -1,6 +1,12 @@
 /**
  * Simple Fetch Wrapper for Node.js
  *
+ * @deprecated Slated for removal in `@dexterai/x402` 5.0 (~6 months out — the
+ * window is long because there are real production consumers).
+ * Use `payAndFetch` instead: it's version-agnostic across x402 v1 and v2,
+ * uses a discriminated-union return type, and cleanly separates merchant
+ * rejection from settlement failure.
+ *
  * The easiest way to make x402 payments from Node.js scripts.
  * Just provide a private key and it handles everything automatically.
  *
@@ -95,6 +101,12 @@ export interface WrapFetchOptions {
 
 /**
  * Wrap fetch with automatic x402 payment handling
+ *
+ * @deprecated Slated for removal in `@dexterai/x402` 5.0. Use `payAndFetch`
+ * instead — it's version-agnostic across x402 v1 and v2 and returns a
+ * discriminated union that separates merchant rejection from settlement
+ * failure. Migration: `wrapFetch(fetch, { walletPrivateKey })` →
+ * `payAndFetch(url, init, { solana: createKeypairWallet(pk) })`.
  *
  * @param fetchImpl - The fetch function to wrap (usually `fetch` or `node-fetch`)
  * @param options - Configuration options

@@ -1,9 +1,14 @@
 /**
  * Token-Based Pricing for x402
  *
+ * @deprecated Slated for removal in `@dexterai/x402` 4.0 (along with the
+ * underlying `model-registry.ts`). The hardcoded OpenAI pricing catalog goes
+ * stale within weeks; use x402 v2 dynamic pricing and price the request in
+ * your handler with live rates from your model provider.
+ *
  * Accurate LLM pricing using tiktoken for token counting.
  * Uses real OpenAI model rates for precise cost calculation.
- * 
+ *
  * Pricing data is sourced from the Model Registry (model-registry.ts).
  *
  * @example
@@ -68,11 +73,15 @@ export interface ModelPricing {
 
 /**
  * OpenAI Model Pricing - USD per million tokens
- * 
+ *
  * This is now sourced from the Model Registry (model-registry.ts).
  * The registry is the single source of truth for all model information.
- * 
+ *
  * Updated: January 2026
+ *
+ * @deprecated Slated for removal in `@dexterai/x402` 4.0. The catalog is a
+ * January 2026 snapshot and goes stale fast — price requests from your model
+ * provider's live API instead.
  */
 export const MODEL_PRICING: Record<string, ModelPricing> = MODEL_PRICING_MAP as Record<string, ModelPricing>;
 
@@ -245,6 +254,9 @@ function generateQuoteHash(prompt: string, model: string, rate: number, tokens: 
 
 /**
  * Create a token-based pricing calculator
+ *
+ * @deprecated Slated for removal in `@dexterai/x402` 4.0. Price requests with
+ * your model provider's live API and pass the amount to `x402Middleware`.
  */
 export function createTokenPricing(config: TokenPricingConfig = {}): TokenPricing {
   // Determine model name

@@ -1,9 +1,15 @@
 /**
  * OpenAI Model Registry
- * 
+ *
+ * @deprecated Slated for removal in `@dexterai/x402` 4.0 (bundled with the
+ * `token-pricing.ts` removal — `MODEL_PRICING_MAP` here is the underlying
+ * data source for token-pricing's `MODEL_PRICING` re-export). The hardcoded
+ * January 2026 snapshot goes stale fast; use your model provider's live API
+ * instead.
+ *
  * The single source of truth for all OpenAI models.
  * Contains pricing, capabilities, API requirements, and constraints.
- * 
+ *
  * Updated: January 2026
  * Source: https://platform.openai.com/docs/pricing
  * 
@@ -175,6 +181,9 @@ const PRO_REASONING_PARAMS: ModelParameters = {
 /**
  * Complete registry of all OpenAI models
  * Ordered by tier, then by capability rank (ascending)
+ *
+ * @deprecated Slated for removal in `@dexterai/x402` 4.0. Hardcoded January
+ * 2026 snapshot — use your model provider's live API instead.
  */
 export const MODEL_REGISTRY: ModelDefinition[] = [
   // =========================================================================
@@ -771,6 +780,9 @@ export function formatModelPricing(modelId: string): string {
 
 /**
  * Simple pricing map for token-pricing.ts compatibility
+ *
+ * @deprecated Slated for removal in `@dexterai/x402` 4.0 alongside
+ * `token-pricing.ts`. Hardcoded snapshot — use live provider rates instead.
  */
 export const MODEL_PRICING_MAP: Record<string, {
   input: number;

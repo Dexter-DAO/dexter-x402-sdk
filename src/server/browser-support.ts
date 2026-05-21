@@ -1,6 +1,10 @@
 /**
  * x402 Browser Support Middleware
  *
+ * @deprecated Slated for removal in `@dexterai/x402` 4.0. No replacement —
+ * the browser-paywall HTML page was a v1-era convenience that never picked
+ * up real consumers. Build a custom paywall page in your app if you need one.
+ *
  * Express middleware that automatically renders a branded HTML paywall page
  * when a browser (Accept: text/html) receives a 402 Payment Required response.
  * API clients continue to receive the standard JSON response unchanged.
@@ -409,6 +413,9 @@ ${PAY_SCRIPT}
  * instead of raw JSON.
  *
  * API clients are completely unaffected -- they receive normal JSON.
+ *
+ * @deprecated Slated for removal in `@dexterai/x402` 4.0. No replacement —
+ * build a custom browser paywall page in your application if you need one.
  */
 export function x402BrowserSupport(config: X402BrowserSupportConfig = {}): RequestHandler {
   const resolvedConfig = {

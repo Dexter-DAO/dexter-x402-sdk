@@ -1,6 +1,10 @@
 /**
  * Dynamic Pricing for x402
  *
+ * @deprecated Slated for removal in `@dexterai/x402` 4.0. Use x402 v2 dynamic
+ * pricing on the server (compute the amount per request and pass it to
+ * `x402Middleware`), which superseded this character-based v1 helper.
+ *
  * Calculate prices based on input length (characters, tokens, etc.)
  * Perfect for LLM/AI endpoints where cost scales with input size.
  *
@@ -122,6 +126,10 @@ const QUOTE_MAX_AGE_SECONDS = 300; // 5 minutes
 
 /**
  * Create a dynamic pricing calculator
+ *
+ * @deprecated Slated for removal in `@dexterai/x402` 4.0. Use x402 v2 dynamic
+ * pricing instead — compute the price per request in your handler and pass it
+ * to `x402Middleware`.
  */
 export function createDynamicPricing(config: DynamicPricingConfig): DynamicPricing {
   const fullConfig: Required<DynamicPricingConfig> = {

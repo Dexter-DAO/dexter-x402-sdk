@@ -1,6 +1,14 @@
 /**
  * Stripe Machine Payments — PayTo Provider
  *
+ * @deprecated Slated for removal in `@dexterai/x402` 4.0. No replacement —
+ * the Stripe machine-payments path was a v1-era hypothesis aimed at merchants
+ * who wanted to accept x402 with Stripe-as-acquirer. The current x402 audience
+ * is agents paying USDC directly; integrate Stripe at your own application
+ * layer if you still need it. The `getStripeProviderNetwork` helper and the
+ * Stripe-network check in `x402Middleware` are removed alongside this file in
+ * 4.0.
+ *
  * Generates per-request Stripe deposit addresses via PaymentIntents.
  * Payments land in your Stripe Dashboard with full reporting, taxes, and refunds.
  *
@@ -99,6 +107,9 @@ const CAIP2_NETWORKS: Record<string, string> = {
  *
  * @param secretKeyOrConfig - Stripe secret key string, or full config object
  * @returns A PayToProvider function with auto-configuration defaults
+ *
+ * @deprecated Slated for removal in `@dexterai/x402` 4.0. No replacement —
+ * integrate Stripe at your application layer if still needed.
  */
 export function stripePayTo(
   secretKeyOrConfig: string | StripePayToConfig,

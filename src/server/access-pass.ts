@@ -1,6 +1,11 @@
 /**
  * x402 Access Pass Middleware
  *
+ * @deprecated Slated for removal in `@dexterai/x402` 4.0. No replacement —
+ * Access Pass was a v1-era stopgap before x402 v2 dynamic pricing landed.
+ * The same product story is served better by per-request payments with
+ * `payAndFetch` on the client and `x402Middleware` on the server.
+ *
  * Pay once, get a time-limited JWT for unlimited API requests.
  * Supports both predefined tiers and custom durations.
  *
@@ -180,6 +185,9 @@ function verifyJwt(token: string, secret: Buffer): AccessPassClaims | null {
  *
  * Protects routes with time-limited access passes purchased via x402 payments.
  * Supports predefined tiers, custom durations, or both.
+ *
+ * @deprecated Slated for removal in `@dexterai/x402` 4.0. No replacement —
+ * use per-request `x402Middleware` with `payAndFetch` clients.
  */
 export function x402AccessPass(config: X402AccessPassConfig): RequestHandler {
   const {
