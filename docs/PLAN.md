@@ -1,13 +1,13 @@
-# `@dexterai/x402` 3.9 + 4.0 Plan
+# `@dexterai/x402` SDK Cleanup Plan
 
 **Status:** DRAFT — for internal planning only. Not for external/public framing.
 **Companion document:** [AUDIT-2026-05-20.md](./AUDIT-2026-05-20.md) — read first.
-**Updated:** 2026-05-21 (PR sequencing rewritten after internal-consumer recount surfaced that `model-registry.ts` is not actually deletable standalone — see AUDIT §0b).
-**Previously:** 2026-05-20 (rebaselined from 3.8 → 3.9 because the team shipped 3.8.0 + 3.8.1 — the bazaar discovery extension — between the audit and this plan).
+**Updated:** 2026-05-21 (committed scope narrowed to 3.9 only; post-3.9 work kept as a sketch, not a commitment).
+**Previously:** 2026-05-21 (PR sequencing rewritten after internal-consumer recount), 2026-05-20 (rebaselined from 3.8 → 3.9 because the team shipped 3.8.0 + 3.8.1).
 
 **Current published version:** 3.8.1
-**Target deprecation release:** 3.9.0
-**Target removal release:** 4.0.0
+**Committed scope:** 3.9.0 — see "3.9 cycle" below. Six PRs, one shipped (`@deprecated` markers).
+**Post-3.9 sketch (NOT a commitment):** the deletions could land as 3.10 (keep deprecated stuff callable, just hidden from docs), 4.0 (clean break), or something else. Decided after 3.9 ships and we see how the deprecation warnings land with real consumers. The "post-3.9 sketch" PR list below is preserved as a thinking-aid, not a roadmap.
 
 ---
 
@@ -259,7 +259,11 @@ Each PR is independently revertable. Each PR is small. Each PR can ship on its o
 
 ---
 
-## 4.0 PR plan (deferred ~1 month)
+## Post-3.9 sketch (NOT committed)
+
+What follows is a sketch of what the removal cycle *could* look like. It's a thinking-aid for the team, not a commitment. We'll decide the actual shape after 3.9 ships — could be 3.10 (deprecated symbols stay callable but disappear from the README), could be 4.0 (clean break), could be something else.
+
+The version numbers below (4.0, 5.0) are placeholders from when this was framed as a committed roadmap; read them as "first removal release" and "second removal release."
 
 ### PR 7 — Update dexter-lab agent template
 

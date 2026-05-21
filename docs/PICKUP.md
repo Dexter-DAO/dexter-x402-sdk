@@ -1,4 +1,4 @@
-# Pickup — SDK cleanup / 4.0 cycle
+# Pickup — SDK cleanup
 
 **For:** a fresh Claude (or human) picking up the SDK cleanup work after a context reset.
 **Updated:** 2026-05-21
@@ -7,18 +7,26 @@
 
 ## Read these two files first
 
-1. **[AUDIT-2026-05-20.md](./AUDIT-2026-05-20.md)** — what's in the SDK, what's good, what's wrong, what's dead.
-2. **[PLAN-4.0.md](./PLAN-4.0.md)** — the locked decisions and the PR-by-PR plan.
+1. **[AUDIT-2026-05-20.md](./AUDIT-2026-05-20.md)** — what's in the SDK, what's good, what's wrong, what's actually load-bearing.
+2. **[PLAN.md](./PLAN.md)** — the committed 3.9 scope and a sketch of what comes after.
 
-The audit's `§0`, `§0a`, and `§0b` errata blocks explain what the initial draft got wrong and why — read them so you don't repeat the same mistakes. **`§0b` is the most recent (2026-05-21) and the most important if you're about to start PR 1**: the original "delete `model-registry.ts`" PR was caught by a sanity grep right before it shipped because the file has an internal SDK consumer (`token-pricing.ts`). PR sequencing was rewritten as a result. The plan's "Decisions made" section captures why every call was made.
+The audit's `§0`, `§0a`, and `§0b` errata blocks explain what earlier drafts got wrong and why — read them so you don't repeat the same mistakes. **`§0b` is the most important if you're about to touch model-registry, stripe-payto, or token-pricing**: those files looked deletable on a surface read but turned out to have internal SDK consumers. PR sequencing was rewritten as a result.
+
+---
+
+## Scope reminder
+
+**Committed:** the 3.9 cycle (6 PRs). PR 1 has shipped.
+**Sketch (NOT committed):** the post-3.9 removal cycle. We'll decide whether removals land as 3.10, 4.0, or something else *after* 3.9 ships and we see how the deprecation warnings behave with real consumers. Don't treat the "post-3.9 sketch" section of PLAN.md as a roadmap — it's a thinking-aid.
+
+If a fresh agent reads this and gets excited about "4.0 cleanup," slow down — that's a placeholder name, not a decided release.
 
 ---
 
 ## State at this pickup point
 
 - **SDK version:** 3.8.1 (latest on npm).
-- **Last commit on `main`:** the 2026-05-21 audit + plan + pickup correction commit (sequencing rewrite — see §0b in the audit).
-- **All open questions resolved.** Nothing is blocking PR 1.
+- **Last commit on `main`:** `1722506 chore: mark v1-era helpers @deprecated ahead of 4.0 + 5.0` (PR 1 of the 3.9 cycle).
 - **Nothing in flight.** No uncommitted code changes. No PRs out.
 - **Test suite is green** at 272 passing.
 
@@ -26,78 +34,82 @@ The audit's `§0`, `§0a`, and `§0b` errata blocks explain what the initial dra
 
 ## What "we're doing" in one paragraph
 
-The SDK is a modern, well-engineered core (`payment/`, `batch-settlement/`, the 3.8 bazaar extension) wrapped around a January-era stopgap layer that's no longer load-bearing but still exported, still on the homepage, and confusing every new adopter. The plan is to ship **3.9.0** with `@deprecated` markers on the stopgaps + a README rewrite that promotes the canonical paths; then ship **4.0.0** ~1 month later with the actual removals + Budget Account 2.0; then ship **5.0.0** ~6 months after that with `wrapFetch` and `createX402Client` removed (longer cycle because they have real consumers).
+The SDK is a modern, well-engineered core (`payment/`, `batch-settlement/`, the 3.8 bazaar extension) wrapped around a January-era stopgap layer that's no longer load-bearing but still exported, still on the homepage, and confusing every new adopter. The 3.9 cycle adds `@deprecated` markers on the stopgaps, fixes one real bug (`PayResult` lies about network when no payment was required), reorganizes `client/index.ts` so `payAndFetch` is promoted as the canonical 2026+ entrypoint, and rewrites the README to match. Whether the actual deletions land as 3.10 or 4.0 gets decided after 3.9 ships.
 
 ---
 
-## Next action: PR 1 — the `@deprecated` markers pass
+## 3.9 progress
 
-**Add `@deprecated` JSDoc markers** to 9 files. Two target horizons:
-
-**Gone in 4.0** (deprecated now, removed in ~1 month):
-- `src/server/access-pass.ts` exports
-- `src/server/dynamic-pricing.ts` exports
-- `src/server/browser-support.ts` exports
-- `src/server/stripe-payto.ts` exports
-- `src/server/token-pricing.ts` exports (incl. `MODEL_PRICING`)
-- `src/server/model-registry.ts` exports (whole file — even though it has no direct external consumers, `MODEL_PRICING_MAP` is the data source for the public `MODEL_PRICING`. Both removed together in 4.0. See §0b for why this isn't a standalone PR 1 deletion anymore.)
-- `src/react/useAccessPass.ts`
-
-**Gone in 5.0** (deprecated now, removed in ~6 months; longer because they have 7+3 real consumers):
-- `src/client/wrap-fetch.ts` — `wrapFetch`, `WrapFetchOptions`
-- `src/client/x402-client.ts` — `createX402Client`, `X402ClientConfig`, `X402Client`
-
-Each `@deprecated` JSDoc points at the replacement (`payAndFetch` for the client APIs; "use x402 v2 dynamic pricing" for the v1 LLM pricers; "no replacement — feature retired" for Stripe/AccessPass/browser-support/model-registry).
-
-No runtime changes. Just JSDoc.
-
-Steps:
-
-1. Read AUDIT-2026-05-20.md and PLAN-4.0.md. They're not long. Read them.
-2. Edit each of the 9 files above. Add `@deprecated` JSDoc to every exported symbol — point at the replacement per the audit's §4.
-3. Add a CHANGELOG entry under "Deprecated" with two subsections (4.0 removal target vs 5.0 removal target).
-4. Re-run typecheck — should be clean.
-5. Re-run tests — should still be 272 passing.
-6. Commit message: `chore: mark v1-era helpers @deprecated ahead of 4.0 + 5.0`
-7. Push.
-
-**Acceptance:** typecheck green, tests green, consumers using deprecated APIs see editor warnings but their code still runs.
+| PR | Title | Status |
+|---|---|---|
+| 1 | `@deprecated` markers on 9 files | ✅ shipped `1722506` |
+| 2 | Reorganize `client/index.ts` recommendation hierarchy | next |
+| 3 | Fix `PayResult` lying about network when no payment required | pending |
+| 4 | README rewrite — promote `payAndFetch` + bazaar + sponsored-access | pending |
+| 5 | Consumer dep cleanup (dexter-facilitator drop, dexter-mcp bump) | pending |
+| 6 | Tag and publish 3.9.0 | pending |
 
 ---
 
-## Then PR 2-6
+## Next action: PR 2 — `client/index.ts` reorganization
 
-PR 2 (reorganize `client/index.ts`), PR 3 (fix `PayResult` lying about network), PR 4 (README rewrite), PR 5 (consumer dep cleanup in dexter-facilitator + dexter-mcp), PR 6 (publish 3.9.0). PRs 7-10 are the 4.0 cycle. PR 11 is the 5.0 cycle. All detailed in PLAN-4.0.md.
+Reorganize `src/client/index.ts` exports into commented sections matching PLAN.md §D4:
+
+```typescript
+// ── Canonical client (2026+) ──
+export { payAndFetch, detectStrategy, ... } from '../payment';
+
+// ── Wallet helpers ──
+export { createKeypairWallet, createEvmKeypairWallet, ... } from './keypair-wallet';
+
+// ── Sponsored Access (Instinct ad network buyer hooks) ──
+export { getSponsoredRecommendations, getSponsoredAccessInfo, fireImpressionBeacon } from './sponsored-access';
+
+// ── Agent budget controls ──
+export { createBudgetAccount } from './budget-account';
+
+// ── @deprecated — predate payAndFetch; will be removed in a future major ──
+export { createX402Client, wrapFetch, getPaymentReceipt } from './x402-client';
+```
+
+`getPaymentReceipt` is NOT deprecated — it stays in the deprecated section's export line because that's where the source file is, but the JSDoc on it should stay clean.
+
+**Steps:**
+
+1. Read the current `src/client/index.ts` to see what's there.
+2. Read `src/payment/index.ts` (or wherever `payAndFetch` lives) to confirm the export names.
+3. Reorganize. No symbol additions/removals — only reordering + comment headers.
+4. Typecheck + tests (expect 272 passing).
+5. Commit: `docs(client): group exports by role; promote payAndFetch as canonical 2026+ entry`
+6. Push.
 
 ---
 
 ## Hard rules — do not break
 
-These are restated from the plan because they're load-bearing:
-
-1. **No PR ships until the plan and audit have been read.** They're not long. Read them.
-2. **No commit message disparages an old feature.** Frame everything forward: "consolidate around the canonical path," "promote `payAndFetch` as recommended," "rebuild Budget Account for production use." Never "remove dead code" or "X was never used."
-3. **`@deprecated` in 3.9, removals in 4.0/5.0.** No mixing. Same cadence the team used for `X402ErrorCode.no_solana_accept` and `KeypairWallet.keypair` in 3.2.0.
-4. **No 4.0 removal until the dexter-lab agent-template references are updated.** Multiple emission sites in dexter-lab reference `createDynamicPricing` / `x402AccessPass` / `x402BrowserSupport` / `createTokenPricing` / `MODEL_PRICING` in generated code or agent prompts. Full list in PLAN §D6. PR 7 in the plan exists for this. Don't skip it.
+1. **No PR ships until the plan and audit have been read.** They're not long.
+2. **No commit message disparages an old feature.** Frame forward: "consolidate around the canonical path," "promote `payAndFetch` as recommended." Never "remove dead code" or "X was never used."
+3. **`@deprecated` in 3.9, removals in a later major.** No mixing.
+4. **No removal until the dexter-lab agent-template references are updated.** Multiple emission sites in dexter-lab reference `createDynamicPricing` / `x402AccessPass` / `x402BrowserSupport` / `createTokenPricing` / `MODEL_PRICING` in generated code or agent prompts. Full list in PLAN §D6.
 5. **Every PR is independently revertable.** Stopping after any PR leaves the SDK in a sane state.
 6. **Test suite stays green at every step.** 272 passing.
-7. **Public communication scope = the CHANGELOG and the README.** No blog post, no GitHub issue, no Twitter. This is internal hygiene.
+7. **Public communication scope = CHANGELOG and README.** No blog post, no GitHub issue, no Twitter. Internal hygiene.
 
 ---
 
 ## Things that look like loose ends but aren't
 
-- **Two version pins to bump** (`dexter-mcp` from `^2.0.0` to `^3.8.x`, `dexter-facilitator` to drop the dep entirely). That's PR 5, separate repos, separate commits. Not a blocker for PR 1.
-- **The audit's "Branch said 5 things, three needed legwork I haven't done yet"** — no, those got done. Q1-Q5 decisions are locked in the plan's "Decisions made" section with reasoning. Don't re-litigate.
-- **`sponsored-access` looking suspiciously like the kind of "dead" code we're deprecating** — it's not. 4 real production consumers (opendexter-ide MCP `fetch` tool, dexter-mcp x402-client + open-mcp-server, x402gle InstinctReceipt). All use `await import('@dexterai/x402/client')` — a static grep misses them. See the audit's `§0` errata.
-- **`model-registry.ts` looking like obviously dead code** — looks dead, isn't. `src/server/token-pricing.ts:30` imports `MODEL_PRICING_MAP` and re-exports it as `MODEL_PRICING`, which dexter-lab's agent imports. See `§0b` of the audit. Deletion is a 4.0 thing, not a 3.9 thing.
-- **`stripe-payto` looking like it can be `@deprecated` without touching middleware** — `src/server/middleware.ts:34` imports `getStripeProviderNetwork` from it. The `@deprecated` JSDoc is fine in 3.9 (no runtime change), but the 4.0 deletion takes middleware's Stripe codepath with it. PR 8 in the plan covers this explicitly.
+- **Two version pins to bump** (`dexter-mcp` from `^2.0.0` to `^3.8.x`, `dexter-facilitator` to drop the dep entirely). That's PR 5, separate repos, separate commits. Not a blocker for PR 2.
+- **`sponsored-access` looking suspiciously like deprecated code** — it's not. 4 real production consumers (opendexter-ide MCP `fetch` tool, dexter-mcp x402-client + open-mcp-server, x402gle InstinctReceipt). All use `await import('@dexterai/x402/client')` — a static grep misses them. See AUDIT `§0`.
+- **`model-registry.ts` looking like obviously dead code** — `token-pricing.ts:30` imports `MODEL_PRICING_MAP` and re-exports it as `MODEL_PRICING`, which dexter-lab's agent imports. See AUDIT `§0b`. Already `@deprecated` in PR 1; deletion is a later-major thing, not 3.9.
+- **`stripe-payto` looking deletable without touching middleware** — `middleware.ts:34` imports `getStripeProviderNetwork` from it. Already `@deprecated` in PR 1 (no runtime change); a future removal takes middleware's Stripe codepath with it. PLAN.md covers this.
+- **The "post-3.9 sketch" section of PLAN.md** — it has PR numbers and version targets (4.0, 5.0). Those are placeholders. Branch and I agreed in 2026-05-21 chat that the actual shape of the removal cycle gets decided *after* 3.9 ships. Don't treat the sketch as committed work.
 
 ---
 
 ## If a finding turns out to be wrong
 
-The audit was wrong about sponsored-access on first pass. It got corrected after Branch challenged it. If you find another wrong claim while executing the plan: **fix it in AUDIT-2026-05-20.md and PLAN-4.0.md first, then in the PR.** The docs are the source of truth; the code follows.
+The audit was wrong about sponsored-access on first pass. It was wrong about model-registry on second pass. Both got corrected after a recount. If you find another wrong claim while executing the plan: **fix it in AUDIT-2026-05-20.md and PLAN.md first, then in the PR.** The docs are the source of truth; the code follows.
 
 ---
 
