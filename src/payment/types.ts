@@ -38,15 +38,34 @@ export interface PaymentChallenge {
   resourceUrl?: string;
 }
 
-/** Result of a paid fetch. Never throws for an expected failure. */
+/**
+ * Result of a paid fetch. Never throws for an expected failure.
+ *
+ * The `ok: true` branch is further discriminated by `paid`:
+ *   - `paid: true`  — the endpoint demanded payment and we paid; `network`,
+ *                     `amountPaid`, and (optionally) `txSignature` are present.
+ *   - `paid: false` — the endpoint returned a non-402 directly; no payment
+ *                     was attempted. Only `response` is present, because no
+ *                     payment-related fields are meaningful in that case.
+ *
+ * Callers should narrow on `paid` before reading payment fields. Previously
+ * (3.8.x and earlier) the dispatcher returned a phantom `network` placeholder
+ * on the unpaid branch; the discriminator forces a correct read.
+ */
 export type PayResult =
   | {
       ok: true;
+      paid: true;
       response: Response;
       /** Atomic amount actually paid. */
       amountPaid: string;
       network: NetworkRef;
       txSignature?: string;
+    }
+  | {
+      ok: true;
+      paid: false;
+      response: Response;
     }
   | {
       ok: false;

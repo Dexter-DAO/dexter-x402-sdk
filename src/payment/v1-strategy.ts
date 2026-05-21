@@ -107,6 +107,7 @@ export const v1Strategy: PaymentStrategy = {
       if (response.ok) {
         return {
           ok: true,
+          paid: true,
           response,
           amountPaid: chosen.amount,
           network: chosen.network,

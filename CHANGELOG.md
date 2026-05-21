@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`PayResult` no longer reports a phantom network on unpaid responses.** When `payAndFetch` hits an endpoint that returns 200 (or any non-402) directly, the result is now `{ ok: true, paid: false, response }` instead of `{ ok: true, response, amountPaid: '0', network: { caip2: '', bare: '', family: 'evm' } }`. The old placeholder poisoned any downstream analytics that grouped by network — every free-endpoint hit registered as an empty-CAIP-2 EVM payment. The `ok: true` variant is now discriminated by `paid: true | false`; callers should narrow on `paid` before reading `network` / `amountPaid` / `txSignature`. Strategy implementations (v1, v2) also set `paid: true` on their success path. (Source: `payment/dispatcher.ts:104` had a `// not-applicable placeholder` self-flag that finally got the type-level fix it was waiting for.)
+
 ### Deprecated
 
 Internal hygiene pass ahead of 4.0 and 5.0. No runtime behavior changes — every symbol below still works exactly as before. JSDoc `@deprecated` markers now surface editor warnings so consumers can migrate ahead of the removal releases.

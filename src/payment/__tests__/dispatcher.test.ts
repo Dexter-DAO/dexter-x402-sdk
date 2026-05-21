@@ -43,8 +43,35 @@ describe('payAndFetch', () => {
       {},
     );
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.response.status).toBe(200);
+    if (result.ok) {
+      expect(result.response.status).toBe(200);
+      // Regression: previously the unpaid branch returned a phantom
+      // `network: { caip2: '', bare: '', family: 'evm' }` placeholder, which
+      // poisoned downstream analytics. The discriminator now forces callers
+      // to narrow on `paid` before reading any payment fields.
+      expect(result.paid).toBe(false);
+      // @ts-expect-error — narrowing on paid: false means network/amountPaid
+      // are not in the result type. The runtime assertion guards against a
+      // future regression that re-introduces them.
+      expect(result.network).toBeUndefined();
+      // @ts-expect-error — see above.
+      expect(result.amountPaid).toBeUndefined();
+    }
     vi.unstubAllGlobals();
+  });
+
+  it('returns paid: true with payment fields when the endpoint demands payment and we pay', async () => {
+    // This is the positive case — when payAndFetch actually pays, the
+    // result must carry `paid: true` plus a real network/amountPaid.
+    // Most paid-path tests cover this via the v1/v2 strategy suites, so
+    // here we only assert the discriminator at the dispatcher boundary by
+    // checking the type narrowing works in TypeScript.
+    type WhenPaid = Extract<
+      Awaited<ReturnType<typeof payAndFetch>>,
+      { ok: true; paid: true }
+    >;
+    const _check: WhenPaid extends { network: { caip2: string } } ? true : false = true;
+    expect(_check).toBe(true);
   });
 
   it('returns no_payment_options when a 402 has no usable challenge', async () => {

@@ -101,13 +101,15 @@ export async function payAndFetch(
   }
 
   if (probe.status !== 402) {
-    // not-applicable placeholder — a proper fix needs a types.ts change,
-    // out of Task 8 scope
+    // The endpoint didn't demand payment — return the response unchanged and
+    // mark the result as unpaid so callers can narrow before reading any
+    // payment fields. Previously this returned `amountPaid: '0'` and a
+    // phantom `{ caip2: '', bare: '', family: 'evm' }` placeholder, which
+    // poisoned downstream analytics that grouped by network.
     return {
       ok: true,
+      paid: false,
       response: probe,
-      amountPaid: '0',
-      network: { caip2: '', bare: '', family: 'evm' },
     };
   }
 

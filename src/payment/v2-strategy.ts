@@ -151,6 +151,7 @@ export const v2Strategy: PaymentStrategy = {
 
       return {
         ok: true,
+        paid: true,
         response,
         amountPaid: option.amount,
         network: option.network,
