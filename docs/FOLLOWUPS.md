@@ -47,7 +47,14 @@ fast-follow after publish.
 
 ---
 
-## F2 — dexter-api verifier must adapt to the new `PayResult` shape (PR 9b)
+## F2 — dexter-api verifier must adapt to the new `PayResult` shape (PR 9b) — ✅ DONE
+
+**Resolved:** 2026-05-21, commit `ce9267e` in `dexter-api`
+(`fix(verifier): adapt payment.ts to x402 3.9 PayResult contract`). The
+verifier now guards `r.response` before reading it, has an explicit
+`payment_unconfirmed` branch, handles the `!result.response` and
+`!result.paid` cases, and the SDK pin is bumped to `^3.9.0`. No action
+remaining. Kept here for the record.
 
 **Found:** 2026-05-21, while scoping the `payment_unconfirmed` consumer fixes.
 
