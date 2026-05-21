@@ -240,7 +240,35 @@ Each PR is independently revertable. Each PR is small. Each PR can ship on its o
 
 **Acceptance:** a new adopter reading the README top-down meets the canonical 2026+ paths (including the new bazaar discovery extension) in the first 200 lines.
 
-### PR 5 — Consumer dep cleanup (separate repos, not SDK)
+### PR 5 — Timeout double-charge: stop the lie (3.9)
+
+Inserted 2026-05-21 after a bake-off audit found `payAndFetch` reports `reason: 'timeout'` on payments that settled on-chain, against a merchant slower than the 15s deadline — causing a silent double-charge on retry. Full design: [DESIGN-timeout-double-charge.md](./DESIGN-timeout-double-charge.md). Report: `FINDINGS-pay-timeout-double-charge-2026-05-21.md`.
+
+- Split the `v2-strategy.ts` / `v1-strategy.ts` timeout into two phases: a short pre-payment deadline (`timeoutMs`, default 15000) and a long post-payment deadline (new `responseTimeoutMs`, default 120000).
+- Track `paymentDispatched` — set true the moment the `PAYMENT-SIGNATURE` request is sent.
+- Add `'payment_unconfirmed'` to the `PayResult` `ok: false` reason union.
+- A post-payment abort returns `payment_unconfirmed` (not `timeout`). No chain calls yet — PR 6 adds those.
+- Commit message: `fix(payment): two-phase timeout; post-payment abort no longer reports 'timeout'`
+
+**Acceptance:** a merchant slower than 15s no longer yields `reason: 'timeout'`; it yields `payment_unconfirmed`, whose `detail` does not read as "failed." Pre-payment timeouts still return `timeout`. Typecheck + tests green.
+
+### PR 6 — Timeout double-charge: chain confirmation (3.9)
+
+- Add the optional `ChainAdapter.confirmSettlement` method + `SettlementProbe` type.
+- EVM EIP-3009: confirm via `USDC.authorizationState(from, nonce)`. EVM Permit2: `nonceBitmap`. EVM exact-approval: no probe — falls back to `payment_unconfirmed`.
+- Solana: confirm via windowed `getSignaturesForAddress(destinationAta)`, matched on amount/asset, bounded by blockhash validity.
+- On a post-payment abort, run `confirmSettlement`: settled → `{ ok: true, paid: true, response: undefined, txSignature }`; not settled → `payment_unconfirmed`.
+- Commit message: `feat(payment): confirm settlement on-chain after a post-payment timeout`
+
+**Acceptance:** the m01 reproduction (EVM EIP-3009 on Base, >15s research endpoint) returns `paid: true` on the first call — no retry, no double-charge. Typecheck + tests green with branch coverage.
+
+### PR 7 — Timeout double-charge: x402-mcp-tools consumer fix (dexter-mcp, not SDK)
+
+- The `x402_fetch` handler stops rendering `Payment failed: ${reason}` for `payment_unconfirmed`; renders "payment likely settled, no data received, do not retry, check wallet."
+- Handles the `{ ok: true, paid: true, response: undefined }` shape — a paid result with no body is not an error.
+- Separate PR in the `dexter-mcp` repo. Should land close to PR 5.
+
+### PR 8 — Consumer dep cleanup (separate repos, not SDK)
 
 - `dexter-facilitator/package.json`: drop `@dexterai/x402` dependency entirely (not imported in source).
 - `dexter-mcp/package.json`: bump pin from `^2.0.0` to `^3.8.x` (current published).
@@ -248,14 +276,14 @@ Each PR is independently revertable. Each PR is small. Each PR can ship on its o
 
 **Acceptance:** both repos build, tests green, runtime behavior unchanged.
 
-### PR 6 — Tag and publish 3.9.0
+### PR 9 — Tag and publish 3.9.0
 
 - Final CHANGELOG pass.
 - `npm version minor` → 3.9.0.
 - `npm publish`.
 - Tag the commit.
 
-**Acceptance:** `npm install @dexterai/x402@3.9.0` works; consumers updating from 3.8.x see no breakage but get the deprecation warnings.
+**Acceptance:** `npm install @dexterai/x402@3.9.0` works; consumers updating from 3.8.x see no breakage but get the deprecation warnings + the timeout fix.
 
 ---
 
@@ -265,12 +293,14 @@ What follows is a sketch of what the removal cycle *could* look like. It's a thi
 
 The version numbers below (4.0, 5.0) are placeholders from when this was framed as a committed roadmap; read them as "first removal release" and "second removal release."
 
-### PR 7 — Update dexter-lab agent template
+*(PR numbers in this section use an `R` prefix — `R1`, `R2`, … — so they never collide with the committed 3.9 PR numbers above.)*
+
+### PR R1 — Update dexter-lab agent template
 
 - In `dexter-lab` (not the SDK repo): rewrite every emission site listed in D6 (table above) so generated code and agent prompts stop referencing the soon-removed symbols. Recommend canonical 2026+ paths instead (`payAndFetch`, batch-settlement, sponsored-access, x402 v2 dynamic pricing).
-- This PR **gates** PR 8 — must ship and be deployed first.
+- This PR **gates** PR R2 — must ship and be deployed first.
 
-### PR 8 — Actual removals (4.0)
+### PR R2 — Actual removals (first removal release)
 
 - Delete:
   - `src/server/access-pass.ts`
@@ -286,11 +316,11 @@ The version numbers below (4.0, 5.0) are placeholders from when this was framed 
 - CHANGELOG entry under "Removed" with one bullet per file, citing the deprecation in 3.9.
 - Commit message: `refactor!: remove v1-era helpers deprecated in 3.9 (access-pass, dynamic-pricing, browser-support, stripe-payto, token-pricing, model-registry, useAccessPass)`
 
-`wrapFetch` and `createX402Client` STAY in 4.0 — their deprecation window runs through 4.x; removal lands in 5.0 (see PR 11 below).
+`wrapFetch` and `createX402Client` STAY in the first removal release — their deprecation window runs longer; removal lands in the second removal release (see PR R5 below).
 
-**Acceptance:** typecheck green, tests green. Consumers who ignored the 3.9 deprecation warnings for the 4.0-target items now get hard build errors with a CHANGELOG pointing them at the migration. `wrapFetch` / `createX402Client` consumers still build clean but keep seeing the deprecation warning.
+**Acceptance:** typecheck green, tests green. Consumers who ignored the 3.9 deprecation warnings for the first-removal-target items now get hard build errors with a CHANGELOG pointing them at the migration. `wrapFetch` / `createX402Client` consumers still build clean but keep seeing the deprecation warning.
 
-### PR 9 — Budget Account 2.0 (4.0)
+### PR R3 — Budget Account 2.0 (first removal release)
 
 - Rewrite `src/client/budget-account.ts` per D5: envelopes, pluggable storage, observability hooks, approval flow, per-domain caps.
 - New `BudgetStorage` interface in `src/client/budget-storage.ts` mirroring `ChannelStorage`'s shape.
@@ -298,9 +328,9 @@ The version numbers below (4.0, 5.0) are placeholders from when this was framed 
 - README section updated with the new surface.
 - Commit message: `feat(client): Budget Account 2.0 — persistent, observable, envelopes, approval flow`
 
-**Acceptance:** skillsmith-cli (the existing consumer) can adopt the new API with a deprecated alias path supported in 4.0.x; new consumers get the full surface.
+**Acceptance:** skillsmith-cli (the existing consumer) can adopt the new API with a deprecated alias path supported in the first-removal-release's patch line; new consumers get the full surface.
 
-### PR 10 — Write MIGRATION.md + tag and publish 4.0.0
+### PR R4 — Write MIGRATION.md + tag and publish the first removal release
 
 - Write `MIGRATION.md` at the repo root: one section per removed symbol, mapping it to its replacement. ~1 page total.
 - Final CHANGELOG with prominent "Breaking" section listing every removal and the Budget Account API change.
@@ -308,7 +338,7 @@ The version numbers below (4.0, 5.0) are placeholders from when this was framed 
 - `npm version major` → 4.0.0.
 - `npm publish`.
 
-### PR 11 — Remove `wrapFetch` + `createX402Client` (5.0, ~6 months later)
+### PR R5 — Remove `wrapFetch` + `createX402Client` (second removal release, ~6 months later)
 
 - Delete `src/client/wrap-fetch.ts` and `src/client/x402-client.ts` (`createX402Client`, `X402Client`, `X402ClientConfig`, `PaymentReceipt` types — keep `getPaymentReceipt` if it has a home elsewhere, otherwise migrate to a small `src/client/receipt.ts`).
 - Remove exports from `src/client/index.ts`.
@@ -352,30 +382,33 @@ The original "open questions" section is preserved here as decisions, with reaso
 
 **3.9 ships when:**
 
-- [ ] PR 1 merged: `@deprecated` markers — 4.0-target (Access Pass / Dynamic Pricing / Browser Support / Stripe / Token Pricing / model-registry / useAccessPass) AND 5.0-target (`wrapFetch` / `createX402Client`)
-- [ ] PR 2 merged: `client/index.ts` reorganized
-- [ ] PR 3 merged: `PayResult` no longer lies about network
-- [ ] PR 4 merged: README rewrite
-- [ ] PR 5 merged: facilitator/mcp dep cleanup (separate repos)
+- [x] PR 1 merged: `@deprecated` markers — first-removal-target (Access Pass / Dynamic Pricing / Browser Support / Stripe / Token Pricing / model-registry / useAccessPass) AND second-removal-target (`wrapFetch` / `createX402Client`)
+- [x] PR 2 merged: `client/index.ts` reorganized
+- [x] PR 3 merged: `PayResult` no longer lies about network
+- [x] PR 4 merged: README rewrite
+- [ ] PR 5 merged: timeout double-charge — stop the lie (two-phase timeout, `payment_unconfirmed`)
+- [ ] PR 6 merged: timeout double-charge — chain confirmation
+- [ ] PR 7 merged: timeout double-charge — `x402-mcp-tools` consumer fix (dexter-mcp)
+- [ ] PR 8 merged: facilitator/mcp dep cleanup (separate repos)
 - [ ] CHANGELOG entry for 3.9.0 written
 - [ ] Tests green
-- [ ] Published to npm
+- [ ] Published to npm (PR 9)
 - [ ] One umbrella repo (dexter-fe or dexter-api) bumps to 3.9.0 and rebuilds clean
 
-**4.0 ships when:**
+**The post-3.9 removal cycle ships when (NOT committed — see "Post-3.9 sketch"):**
 
-- [ ] PR 7 merged: dexter-lab agent template updated and deployed (all D6 emission sites, including the `MODEL_PRICING` and `createTokenPricing` ones the original plan missed)
-- [ ] PR 8 merged: deprecated files deleted (access-pass, dynamic-pricing, browser-support, stripe-payto + middleware Stripe codepath, token-pricing, model-registry, useAccessPass)
-- [ ] PR 9 merged: Budget Account 2.0
-- [ ] PR 10 merged: MIGRATION.md + 4.0.0 tag and publish
-- [ ] CHANGELOG entry for 4.0.0 with prominent "Breaking" section
+- [ ] Sketch PR R1 merged: dexter-lab agent template updated and deployed (all D6 emission sites, including the `MODEL_PRICING` and `createTokenPricing` ones the original plan missed)
+- [ ] Sketch PR R2 merged: deprecated files deleted (access-pass, dynamic-pricing, browser-support, stripe-payto + middleware Stripe codepath, token-pricing, model-registry, useAccessPass)
+- [ ] Sketch PR R3 merged: Budget Account 2.0
+- [ ] Sketch PR R4 merged: MIGRATION.md + first-removal-release tag and publish
+- [ ] CHANGELOG entry with prominent "Breaking" section
 - [ ] Tests green
 - [ ] Published to npm
-- [ ] One umbrella repo upgrades to 4.0 and rebuilds clean
+- [ ] One umbrella repo upgrades and rebuilds clean
 
-**5.0 ships when (target: ~6 months after 4.0):**
+**The second removal release ships when (target: ~6 months later):**
 
-- [ ] PR 11 merged: `wrapFetch` + `createX402Client` removed
+- [ ] Sketch PR R5 merged: `wrapFetch` + `createX402Client` removed
 - [ ] MIGRATION.md updated with the 5.0 section
 - [ ] CHANGELOG entry for 5.0.0 with "Breaking" section citing the 3.9 deprecation
 - [ ] Tests green
