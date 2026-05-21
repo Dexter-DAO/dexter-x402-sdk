@@ -135,9 +135,11 @@ These are PRs 5, 6, 7 of the 3.9 cycle in [PLAN.md](./PLAN.md).
 |---|---|---|
 | **3.9 PR 5** ✅ | Stop the lie. Two-phase timeout + `paymentDispatched` tracking + `payment_unconfirmed` reason. No chain calls yet — a post-payment abort returns `payment_unconfirmed` unconditionally. This alone stops `x402-mcp-tools` printing "Payment failed" on a settled payment. Shipped `200be1d`. | SDK |
 | **3.9 PR 6** ✅ | Chain confirmation. `ChainAdapter.confirmSettlement`, the EVM + Solana implementations, `SettlementProbe` plumbing, shared `confirm-settlement.ts` helper. Upgrades a post-payment abort from always-`payment_unconfirmed` to `paid: true` wherever the chain can confirm. Both v1 and v2. | SDK |
-| **3.9 PR 7** | `x402-mcp-tools` consumer fix — stop rendering `Payment failed:` for `payment_unconfirmed`; handle the `paid: true, response: undefined` shape. | dexter-mcp |
+| **3.9 PR 9** | `payment_unconfirmed` consumer fixes — stop rendering `Payment failed:` for `payment_unconfirmed`, handle the `paid: true, response: undefined` shape. Two repos: `opendexter-ide` (the `x402-mcp-tools` `fetch` tool) and `dexter-api` (the verifier payment task). | opendexter-ide, dexter-api |
 
-PR 5 and PR 6 both ship in the 3.9 cycle, before the 3.9.0 publish. PR 7 is a paired fix in `dexter-mcp` and can ship independently but should land close to PR 5.
+PR 5 and PR 6 ship in the SDK before the 3.9.0 publish (PR 8). **The consumer fixes are PR 9 — they MUST come after publish:** the consumers pin `@dexterai/x402@^3.7.x`, and `payment_unconfirmed` / the `response: undefined` shape only exist once 3.9 is published. A consumer fix written before publish cannot typecheck against the installed SDK. Each consumer fix bumps its SDK pin to `^3.9.0` in the same commit.
+
+**`dexter-mcp` is NOT a consumer of this fix.** Its `x402_fetch` tool uses `wrapFetch`, which returns a plain `Response` (or throws) — it never exposes the discriminated `PayResult`, so it sees neither `payment_unconfirmed` nor the new `response` shape. (An earlier draft of this design listed `dexter-mcp` as the PR 7 target; that was wrong.)
 
 This pushes the dep-cleanup PR and the publish PR back. 3.9 ships a few days later than the cleanup-then-publish path implied. The bug is a money-loss correctness defect on the happy path of an entire endpoint category — it ships in 3.9.
 

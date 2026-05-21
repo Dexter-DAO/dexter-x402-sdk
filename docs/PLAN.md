@@ -262,13 +262,7 @@ Inserted 2026-05-21 after a bake-off audit found `payAndFetch` reports `reason: 
 
 **Acceptance:** the m01 reproduction (EVM EIP-3009 on Base, >15s research endpoint) returns `paid: true` on the first call — no retry, no double-charge. Typecheck + tests green with branch coverage.
 
-### PR 7 — Timeout double-charge: x402-mcp-tools consumer fix (dexter-mcp, not SDK)
-
-- The `x402_fetch` handler stops rendering `Payment failed: ${reason}` for `payment_unconfirmed`; renders "payment likely settled, no data received, do not retry, check wallet."
-- Handles the `{ ok: true, paid: true, response: undefined }` shape — a paid result with no body is not an error.
-- Separate PR in the `dexter-mcp` repo. Should land close to PR 5.
-
-### PR 8 — Consumer dep cleanup (separate repos, not SDK)
+### PR 7 — Consumer dep cleanup (separate repos, not SDK)
 
 - `dexter-facilitator/package.json`: drop `@dexterai/x402` dependency entirely (not imported in source).
 - `dexter-mcp/package.json`: bump pin from `^2.0.0` to `^3.8.x` (current published).
@@ -276,7 +270,7 @@ Inserted 2026-05-21 after a bake-off audit found `payAndFetch` reports `reason: 
 
 **Acceptance:** both repos build, tests green, runtime behavior unchanged.
 
-### PR 9 — Tag and publish 3.9.0
+### PR 8 — Tag and publish 3.9.0
 
 - Final CHANGELOG pass.
 - `npm version minor` → 3.9.0.
@@ -284,6 +278,18 @@ Inserted 2026-05-21 after a bake-off audit found `payAndFetch` reports `reason: 
 - Tag the commit.
 
 **Acceptance:** `npm install @dexterai/x402@3.9.0` works; consumers updating from 3.8.x see no breakage but get the deprecation warnings + the timeout fix.
+
+### PR 9 — `payment_unconfirmed` consumer fixes (separate repos, MUST be after PR 8)
+
+**Sequencing note (corrected 2026-05-21):** the consumer fixes were originally PR 7, ahead of publish. That was wrong — the consumers pin `@dexterai/x402@^3.7.x`, and `payment_unconfirmed` / the `response: undefined` shape do not exist until 3.9 is published. A consumer fix written before publish cannot typecheck against the installed SDK. So the consumer fixes move AFTER PR 8, and each one bumps its SDK pin to `^3.9.0` in the same commit.
+
+Two real consumers of `payAndFetch` (verified by a cross-monorepo grep — `dexter-mcp` is NOT one; it uses `wrapFetch`, which returns a plain `Response` and never exposes `PayResult`):
+
+**PR 9a — `opendexter-ide` x402-mcp-tools `fetch` tool.**
+`packages/x402-mcp-tools/src/tools/fetch.ts`. Currently: renders `payment_unconfirmed` as a generic `Payment failed: ${reason}` (invites a double-charging retry); reads `payResult.response` unconditionally (crashes on the confirmed-but-unanswered `paid: true, response: undefined` case). Fix: a dedicated `payment_unconfirmed` branch with an explicit do-not-retry message; a `paid && !response` branch that reports the confirmed spend without a data body. Bump `@dexterai/x402` pin to `^3.9.0`.
+
+**PR 9b — `dexter-api` verifier payment task.**
+`src/tasks/verifier/payment.ts`. Currently: `r.response.status` at the 405-retry check crashes when `response` is `undefined`; all post-result reads (`.headers`, `.arrayBuffer()`, `.ok`) assume a defined `response`. Fix: handle `payment_unconfirmed` and the `paid: true, response: undefined` case — for an automated endpoint verifier, "paid but no response" is a *failed verification of the endpoint*, recorded as such (not crashed, not scored as healthy). Bump `@dexterai/x402` pin to `^3.9.0`.
 
 ---
 

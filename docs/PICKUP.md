@@ -27,10 +27,10 @@ If a fresh agent reads this and gets excited about "4.0 cleanup," slow down — 
 
 ## State at this pickup point
 
-- **SDK version:** 3.8.1 (latest on npm).
-- **Last commit on `main`:** `24b928d docs(readme): restructure …` (PR 4 of the 3.9 cycle).
+- **SDK version:** 3.8.1 (latest on npm; 3.9 not yet published).
+- **Last commit on `main`:** `26658f8 feat(payment): confirm settlement on-chain …` (PR 6 of the 3.9 cycle).
 - **Nothing in flight.** No uncommitted code changes. No PRs out.
-- **Test suite is green** at 273 passing (PR 3 added one regression test).
+- **Test suite is green** at 278 passing.
 
 ---
 
@@ -48,29 +48,36 @@ The SDK is a modern, well-engineered core (`payment/`, `batch-settlement/`, the 
 | 2 | Reorganize `client/index.ts` | ✅ `d332b0e` |
 | 3 | Fix `PayResult` phantom network | ✅ `8d72512` |
 | 4 | README rewrite | ✅ `24b928d` |
-| 5 | Timeout double-charge — stop the lie (two-phase timeout, `payment_unconfirmed`) | next |
-| 6 | Timeout double-charge — chain confirmation | pending |
-| 7 | Timeout double-charge — `x402-mcp-tools` consumer fix (dexter-mcp repo) | pending |
-| 8 | Consumer dep cleanup (dexter-facilitator drop, dexter-mcp bump) | pending |
-| 9 | Tag and publish 3.9.0 | pending |
+| 5 | Timeout — stop the lie (two-phase timeout, `payment_unconfirmed`) | ✅ `200be1d` |
+| 6 | Timeout — chain confirmation | ✅ `26658f8` |
+| 7 | Consumer dep cleanup (dexter-facilitator drop, dexter-mcp bump) | next |
+| 8 | Tag and publish 3.9.0 | pending |
+| 9 | `payment_unconfirmed` consumer fixes — opendexter-ide + dexter-api (MUST be after PR 8) | pending |
 
 ---
 
-## Next action: PR 5 — timeout double-charge, stop the lie
+## Next action: PR 7 — consumer dep cleanup
 
-**Read [DESIGN-timeout-double-charge.md](./DESIGN-timeout-double-charge.md) first.** It carries the full design with locked decisions. The bug report is `FINDINGS-pay-timeout-double-charge-2026-05-21.md` at the repo root.
+Two `package.json` edits, in two other repos, each its own commit:
 
-The bug: `payAndFetch` arms one 15s timeout over the whole `client.fetch()` call, which both settles the on-chain payment AND waits for the merchant. A merchant slower than 15s gets the payment settled, then the abort fires and `payAndFetch` returns `{ ok: false, reason: 'timeout' }` — a lie. `x402-mcp-tools` renders "Payment failed," the agent retries, pays again. Proven on Base mainnet.
+- **`dexter-facilitator/package.json`** — drop the `@dexterai/x402` dependency entirely. It is pinned (`^1.7.2`) but not imported anywhere in source. Verify with a grep before removing.
+- **`dexter-mcp/package.json`** — bump the `@dexterai/x402` pin from `^2.0.0` to `^3.8.x`. dexter-mcp DOES use it at runtime (`await import('@dexterai/x402/client')` for `wrapFetch` + sponsored-access helpers), but the `^2.0.0` pin could resolve to a wildly old major.
 
-PR 5 is the smaller half of the fix (PR 6 adds chain confirmation):
+Neither is a blocker for anything; both are hygiene. Build + test each repo after.
 
-- Split the `v2-strategy.ts` / `v1-strategy.ts` timeout into two phases: short pre-payment deadline (`timeoutMs`, 15000), long post-payment deadline (new `responseTimeoutMs`, 120000).
-- Track `paymentDispatched` — true the moment the `PAYMENT-SIGNATURE` request is sent.
-- Add `'payment_unconfirmed'` to the `PayResult` `ok: false` reason union.
-- Post-payment abort → `payment_unconfirmed` (not `timeout`). No chain calls yet.
-- Commit: `fix(payment): two-phase timeout; post-payment abort no longer reports 'timeout'`
+### Then PR 8 — publish 3.9.0
 
-The build-time call flagged in the design: `v2-strategy.ts` currently delegates to `createX402Client`, which hides the probe/pay seam. Either thread a "payment dispatched" signal through `createX402Client`, or have the strategy drive probe + pay itself. Decide at implementation time; flag it in the PR.
+Final CHANGELOG pass, `npm version minor` → 3.9.0, `npm publish`, tag.
+
+### Then PR 9 — consumer fixes (only AFTER PR 8 publishes)
+
+**Why after publish:** the consumers pin `@dexterai/x402@^3.7.x`. `payment_unconfirmed` and the `response: undefined` shape only exist in 3.9. A consumer fix written before 3.9 is on npm cannot typecheck. Each PR 9 fix bumps its consumer's SDK pin to `^3.9.0` in the same commit.
+
+Two consumers (verified by cross-monorepo grep — `dexter-mcp` is NOT one, it uses `wrapFetch` which never exposes `PayResult`):
+- **`opendexter-ide`** `packages/x402-mcp-tools/src/tools/fetch.ts` — `payment_unconfirmed` currently renders as generic "Payment failed" (invites a double-charging retry); `payResult.response` read unconditionally (crashes on `paid: true, response: undefined`).
+- **`dexter-api`** `src/tasks/verifier/payment.ts` — `r.response.status` at the 405-retry check, and all post-result reads, crash on `undefined` response.
+
+Full detail in PLAN.md PR 9 and DESIGN-timeout-double-charge.md.
 
 ---
 
