@@ -2,7 +2,8 @@
 
 **Status:** DRAFT — for internal planning only. Not for external/public framing.
 **Companion document:** [AUDIT-2026-05-20.md](./AUDIT-2026-05-20.md) — read first.
-**Updated:** 2026-05-20 (rebaselined from 3.8 → 3.9 because the team shipped 3.8.0 + 3.8.1 — the bazaar discovery extension — between the audit and this plan).
+**Updated:** 2026-05-21 (PR sequencing rewritten after internal-consumer recount surfaced that `model-registry.ts` is not actually deletable standalone — see AUDIT §0b).
+**Previously:** 2026-05-20 (rebaselined from 3.8 → 3.9 because the team shipped 3.8.0 + 3.8.1 — the bazaar discovery extension — between the audit and this plan).
 
 **Current published version:** 3.8.1
 **Target deprecation release:** 3.9.0
@@ -14,8 +15,8 @@
 
 The audit identified a clear shape:
 
-- **One** file to delete outright (`model-registry.ts`, 789L, 0 consumers).
-- **Several** files to deprecate now and remove in 4.0 (the older feature-demos: Access Pass, Dynamic Pricing, Browser Support).
+- **Zero** files to delete outright in 3.9. (Original plan said "delete `model-registry.ts`" — see AUDIT §0b. The file has 1 internal consumer (`token-pricing.ts` re-exports `MODEL_PRICING_MAP` as `MODEL_PRICING`) and the resulting `MODEL_PRICING` has 2 real external consumers in dexter-lab. Deletion moves to 4.0 alongside token-pricing removal.)
+- **Several** files to deprecate now and remove in 4.0 (the older feature-demos: Access Pass, Dynamic Pricing, Browser Support, token-pricing, model-registry, Stripe, useAccessPass).
 - **Two** primitives to keep and **promote** (`sponsored-access`, `payAndFetch`).
 - **One** primitive to **rebuild** (`createBudgetAccount` → Budget Account 2.0).
 - **One** README rewrite to reorder the section hierarchy.
@@ -52,13 +53,14 @@ These are the ones I want you to confirm before we start. Each has a clear yes/n
 
 | Symbol / file | 3.9 action | 4.0 action | 5.0 action |
 |---|---|---|---|
-| `src/server/model-registry.ts` (789L) | **DELETE in 3.9** (no `@deprecated` cycle needed — 0 consumers, no migration to give) | already gone | — |
+| `src/server/model-registry.ts` (789L) | `@deprecated` (was "DELETE in 3.9" — corrected after internal-consumer recount; `token-pricing.ts` imports `MODEL_PRICING_MAP` and that flows through to dexter-lab) | DELETE alongside token-pricing | — |
 | `src/server/access-pass.ts` | `@deprecated` | DELETE | — |
 | `src/react/useAccessPass.ts` | `@deprecated` | DELETE | — |
 | `src/server/dynamic-pricing.ts` | `@deprecated` | DELETE | — |
 | `src/server/browser-support.ts` | `@deprecated` | DELETE | — |
-| `src/server/stripe-payto.ts` | `@deprecated` | DELETE | — |
+| `src/server/stripe-payto.ts` | `@deprecated` | DELETE (incl. `middleware.ts`'s Stripe codepath — `getStripeProviderNetwork` import + the runtime check at lines 357-360 + the JSDoc at 49-58) | — |
 | `src/server/token-pricing.ts` (+ `MODEL_PRICING`) | `@deprecated` | DELETE | — |
+| `test/model-eval/{run,types}.ts` | (no change — not shipped) | DELETE alongside model-registry, or migrate to a self-contained pricing fixture | — |
 | `src/client/budget-account.ts` | **Keep** — flag in JSDoc as "v1, rebuild planned for 4.0" | **REBUILD** (Budget Account 2.0, see D5) | — |
 | `src/client/sponsored-access.ts` | **Keep + promote** | Keep | — |
 | `src/client/wrap-fetch.ts` (`wrapFetch`) | `@deprecated` — `payAndFetch` is canonical | Keep with deprecation | DELETE |
@@ -157,14 +159,21 @@ agent.envelope('research').ledger;    // PaymentRecord[]
 
 ### D6. dexter-lab agent-template update
 
-The agent at `dexter-lab/app/lib/.server/agent/dexter-agent.ts:163-170` emits this advice into generated user code:
+The dexter-lab agent emits SDK references into generated user code. Full list of touchpoints, from the post-internal-recount grep (AUDIT §0b):
 
-> 2. **Dynamic Pricing** (`createDynamicPricing`) - Scales with input
-> 4. **Access Pass** (`x402AccessPass`) - Pay once, unlimited requests
+| File | Emits | Removed in 4.0? |
+|---|---|---|
+| `dexter-lab/app/lib/.server/agent/dexter-agent.ts:163-170` | `createDynamicPricing`, `x402AccessPass`, `MODEL_PRICING` (in agent prompt text) | yes — all three |
+| `dexter-lab/app/lib/.server/agent/mcp-tools.ts:275` | `createX402Server, createDynamicPricing` (import literal in generated code) | yes — `createDynamicPricing` |
+| `dexter-lab/app/lib/.server/agent/mcp-tools.ts:290-295` | `createTokenPricing, MODEL_PRICING` import + `MODEL_PRICING['gpt-4o'].input/output` access | yes — both |
+| `dexter-lab/app/utils/templates/agent.ts:16` | `createX402Server, createTokenPricing` | yes — `createTokenPricing` |
+| `dexter-lab/app/utils/templates/ai-resource.ts:12` | `createX402Server, createTokenPricing` | yes — `createTokenPricing` |
+| `dexter-lab/x402-ai-assistant/index.ts:2` | `createX402Server, createTokenPricing, createDynamicPricing` | yes — both |
+| `dexter-lab/app/lib/.server/deployment/deployment-service.ts:538-551` | `x402BrowserSupport` import injection into generated code | yes — `x402BrowserSupport` |
 
-Plus references in `app/lib/.server/agent/mcp-tools.ts` and `app/utils/templates/index.ts`.
+**Action:** before 4.0 ships, update **every one** of these references so the agent stops emitting the soon-removed symbols. This is a separate PR in the dexter-lab repo, not the SDK repo, but **gates the SDK's 4.0 release**.
 
-**Action:** before 4.0 ships, update the dexter-lab agent template to recommend the new canonical paths instead. This is a separate PR in the dexter-lab repo, not the SDK repo, but **gates the SDK's 4.0 release**.
+(Original plan listed only `createDynamicPricing` / `x402AccessPass` / `x402BrowserSupport`. The recount added `createTokenPricing` and `MODEL_PRICING` — the dexter-lab agent template uses the token-pricing pathway extensively, not just the dynamic-pricing one.)
 
 ### D7. Consumer pin updates
 
@@ -178,16 +187,9 @@ Plus references in `app/lib/.server/agent/mcp-tools.ts` and `app/utils/templates
 
 Each PR is independently revertable. Each PR is small. Each PR can ship on its own without depending on a later PR.
 
-### PR 1 — Delete `model-registry.ts` (3.9)
+### PR 1 — `@deprecated` markers (3.9)
 
-- Delete `src/server/model-registry.ts` (789L).
-- Remove its exports from `src/server/index.ts`.
-- CHANGELOG entry under "Removed."
-- Commit message: `refactor(server): remove unused model-registry; token-pricing is the canonical pricing helper`
-
-**Acceptance:** typecheck green, tests green, no consumer in the umbrella imports anything from `model-registry`.
-
-### PR 2 — `@deprecated` markers (3.9)
+(Original plan had this as PR 2 — the standalone "delete `model-registry.ts`" PR ahead of it was retired after the AUDIT §0b internal-consumer recount. PR 1 is now the deprecation pass.)
 
 - Add `@deprecated` JSDoc — **gone in 4.0**:
   - `src/server/access-pass.ts` exports
@@ -195,18 +197,19 @@ Each PR is independently revertable. Each PR is small. Each PR can ship on its o
   - `src/server/browser-support.ts` exports
   - `src/server/stripe-payto.ts` exports
   - `src/server/token-pricing.ts` exports (incl. `MODEL_PRICING`)
+  - `src/server/model-registry.ts` exports (entire file — even though it has no direct external consumers, its `MODEL_PRICING_MAP` is the underlying data for `MODEL_PRICING`; both ride the same removal cycle)
   - `src/react/useAccessPass.ts`
 - Add `@deprecated` JSDoc — **gone in 5.0** (longer migration window because they have 7+3 real consumers):
   - `src/client/wrap-fetch.ts` (`wrapFetch`, `WrapFetchOptions`)
   - `src/client/x402-client.ts` (`createX402Client`, `X402ClientConfig`, `X402Client`)
-- Each `@deprecated` JSDoc points at the replacement (`payAndFetch` for the client APIs; "use x402 v2 dynamic pricing" for the v1 LLM pricers; "no replacement — feature retired" for `stripePayTo`, Access Pass, browser-support).
+- Each `@deprecated` JSDoc points at the replacement (`payAndFetch` for the client APIs; "use x402 v2 dynamic pricing" for the v1 LLM pricers; "no replacement — feature retired" for `stripePayTo`, Access Pass, browser-support, model-registry).
 - No runtime behavior changes.
 - CHANGELOG entry under "Deprecated" with two subsections (4.0 removal target vs 5.0 removal target).
 - Commit message: `chore: mark v1-era helpers @deprecated ahead of 4.0 + 5.0`
 
 **Acceptance:** typecheck green, tests green. Consumers using the deprecated APIs see editor warnings but their code still runs.
 
-### PR 3 — `client/index.ts` hierarchy (3.9)
+### PR 2 — `client/index.ts` hierarchy (3.9)
 
 - Reorganize `client/index.ts` exports into the commented sections in D4.
 - No symbol additions/removals — only reordering + comments.
@@ -214,7 +217,7 @@ Each PR is independently revertable. Each PR is small. Each PR can ship on its o
 
 **Acceptance:** all existing imports still resolve, typecheck green, tests green.
 
-### PR 4 — `dispatcher.ts` PayResult fix (3.9)
+### PR 3 — `dispatcher.ts` PayResult fix (3.9)
 
 - Add `paid: true | false` discriminator to `PayResult` (or make `network` optional on the no-payment branch).
 - Fix the placeholder at `dispatcher.ts:104-112` so it returns truthful data.
@@ -225,7 +228,7 @@ Each PR is independently revertable. Each PR is small. Each PR can ship on its o
 
 **Acceptance:** consumers reading `result.network` on a non-paid response now get either `null` or a `paid: false` branch — never a phantom Base default.
 
-### PR 5 — README rewrite (3.9)
+### PR 4 — README rewrite (3.9)
 
 - Reorder sections per D3.
 - Promote `payAndFetch` to Quick Start.
@@ -237,7 +240,7 @@ Each PR is independently revertable. Each PR is small. Each PR can ship on its o
 
 **Acceptance:** a new adopter reading the README top-down meets the canonical 2026+ paths (including the new bazaar discovery extension) in the first 200 lines.
 
-### PR 6 — Consumer dep cleanup (separate repos, not SDK)
+### PR 5 — Consumer dep cleanup (separate repos, not SDK)
 
 - `dexter-facilitator/package.json`: drop `@dexterai/x402` dependency entirely (not imported in source).
 - `dexter-mcp/package.json`: bump pin from `^2.0.0` to `^3.8.x` (current published).
@@ -245,7 +248,7 @@ Each PR is independently revertable. Each PR is small. Each PR can ship on its o
 
 **Acceptance:** both repos build, tests green, runtime behavior unchanged.
 
-### PR 7 — Tag and publish 3.9.0
+### PR 6 — Tag and publish 3.9.0
 
 - Final CHANGELOG pass.
 - `npm version minor` → 3.9.0.
@@ -258,30 +261,32 @@ Each PR is independently revertable. Each PR is small. Each PR can ship on its o
 
 ## 4.0 PR plan (deferred ~1 month)
 
-### PR 8 — Update dexter-lab agent template
+### PR 7 — Update dexter-lab agent template
 
-- In `dexter-lab` (not the SDK repo): rewrite `app/lib/.server/agent/dexter-agent.ts:163-170` and the other template references so generated code recommends the canonical 2026+ paths (`payAndFetch`, batch-settlement, sponsored-access).
-- This PR **gates** PR 9 — must ship and be deployed first.
+- In `dexter-lab` (not the SDK repo): rewrite every emission site listed in D6 (table above) so generated code and agent prompts stop referencing the soon-removed symbols. Recommend canonical 2026+ paths instead (`payAndFetch`, batch-settlement, sponsored-access, x402 v2 dynamic pricing).
+- This PR **gates** PR 8 — must ship and be deployed first.
 
-### PR 9 — Actual removals (4.0)
+### PR 8 — Actual removals (4.0)
 
 - Delete:
   - `src/server/access-pass.ts`
   - `src/server/dynamic-pricing.ts`
   - `src/server/browser-support.ts`
-  - `src/server/stripe-payto.ts`
+  - `src/server/stripe-payto.ts` + middleware's Stripe codepath (`middleware.ts:34` import, `middleware.ts:49-58` JSDoc, `middleware.ts:357-360` runtime check). All three go together — `getStripeProviderNetwork` is dead with `stripePayTo` gone.
   - `src/server/token-pricing.ts`
+  - `src/server/model-registry.ts` (only safe to delete here because `token-pricing.ts` is going at the same time)
   - `src/react/useAccessPass.ts`
+  - `test/model-eval/{run,types}.ts` — internal harness, lost its data source when model-registry left. Either delete or rewrite against a self-contained fixture; the rewrite should NOT block 4.0.
 - Remove their exports from `src/server/index.ts` and `src/react/index.ts`.
-- Remove their README sections entirely (already moved to legacy appendix in PR 5; now delete the appendix).
+- Remove their README sections entirely (already moved to legacy appendix in PR 4; now delete the appendix).
 - CHANGELOG entry under "Removed" with one bullet per file, citing the deprecation in 3.9.
-- Commit message: `refactor!: remove v1-era helpers deprecated in 3.9 (access-pass, dynamic-pricing, browser-support, stripe-payto, token-pricing, useAccessPass)`
+- Commit message: `refactor!: remove v1-era helpers deprecated in 3.9 (access-pass, dynamic-pricing, browser-support, stripe-payto, token-pricing, model-registry, useAccessPass)`
 
-`wrapFetch` and `createX402Client` STAY in 4.0 — their deprecation window runs through 4.x; removal lands in 5.0 (see PR 12 below).
+`wrapFetch` and `createX402Client` STAY in 4.0 — their deprecation window runs through 4.x; removal lands in 5.0 (see PR 11 below).
 
 **Acceptance:** typecheck green, tests green. Consumers who ignored the 3.9 deprecation warnings for the 4.0-target items now get hard build errors with a CHANGELOG pointing them at the migration. `wrapFetch` / `createX402Client` consumers still build clean but keep seeing the deprecation warning.
 
-### PR 10 — Budget Account 2.0 (4.0)
+### PR 9 — Budget Account 2.0 (4.0)
 
 - Rewrite `src/client/budget-account.ts` per D5: envelopes, pluggable storage, observability hooks, approval flow, per-domain caps.
 - New `BudgetStorage` interface in `src/client/budget-storage.ts` mirroring `ChannelStorage`'s shape.
@@ -291,7 +296,7 @@ Each PR is independently revertable. Each PR is small. Each PR can ship on its o
 
 **Acceptance:** skillsmith-cli (the existing consumer) can adopt the new API with a deprecated alias path supported in 4.0.x; new consumers get the full surface.
 
-### PR 11 — Write MIGRATION.md + tag and publish 4.0.0
+### PR 10 — Write MIGRATION.md + tag and publish 4.0.0
 
 - Write `MIGRATION.md` at the repo root: one section per removed symbol, mapping it to its replacement. ~1 page total.
 - Final CHANGELOG with prominent "Breaking" section listing every removal and the Budget Account API change.
@@ -299,7 +304,7 @@ Each PR is independently revertable. Each PR is small. Each PR can ship on its o
 - `npm version major` → 4.0.0.
 - `npm publish`.
 
-### PR 12 — Remove `wrapFetch` + `createX402Client` (5.0, ~6 months later)
+### PR 11 — Remove `wrapFetch` + `createX402Client` (5.0, ~6 months later)
 
 - Delete `src/client/wrap-fetch.ts` and `src/client/x402-client.ts` (`createX402Client`, `X402Client`, `X402ClientConfig`, `PaymentReceipt` types — keep `getPaymentReceipt` if it has a home elsewhere, otherwise migrate to a small `src/client/receipt.ts`).
 - Remove exports from `src/client/index.ts`.
@@ -343,12 +348,11 @@ The original "open questions" section is preserved here as decisions, with reaso
 
 **3.9 ships when:**
 
-- [ ] PR 1 merged: `model-registry.ts` removed
-- [ ] PR 2 merged: `@deprecated` markers — 4.0-target (Access Pass / Dynamic Pricing / Browser Support / Stripe / Token Pricing / useAccessPass) AND 5.0-target (`wrapFetch` / `createX402Client`)
-- [ ] PR 3 merged: `client/index.ts` reorganized
-- [ ] PR 4 merged: `PayResult` no longer lies about network
-- [ ] PR 5 merged: README rewrite
-- [ ] PR 6 merged: facilitator/mcp dep cleanup (separate repos)
+- [ ] PR 1 merged: `@deprecated` markers — 4.0-target (Access Pass / Dynamic Pricing / Browser Support / Stripe / Token Pricing / model-registry / useAccessPass) AND 5.0-target (`wrapFetch` / `createX402Client`)
+- [ ] PR 2 merged: `client/index.ts` reorganized
+- [ ] PR 3 merged: `PayResult` no longer lies about network
+- [ ] PR 4 merged: README rewrite
+- [ ] PR 5 merged: facilitator/mcp dep cleanup (separate repos)
 - [ ] CHANGELOG entry for 3.9.0 written
 - [ ] Tests green
 - [ ] Published to npm
@@ -356,10 +360,10 @@ The original "open questions" section is preserved here as decisions, with reaso
 
 **4.0 ships when:**
 
-- [ ] PR 8 merged: dexter-lab agent template updated and deployed
-- [ ] PR 9 merged: deprecated files deleted (access-pass, dynamic-pricing, browser-support, stripe-payto, token-pricing, useAccessPass)
-- [ ] PR 10 merged: Budget Account 2.0
-- [ ] PR 11 merged: MIGRATION.md + 4.0.0 tag and publish
+- [ ] PR 7 merged: dexter-lab agent template updated and deployed (all D6 emission sites, including the `MODEL_PRICING` and `createTokenPricing` ones the original plan missed)
+- [ ] PR 8 merged: deprecated files deleted (access-pass, dynamic-pricing, browser-support, stripe-payto + middleware Stripe codepath, token-pricing, model-registry, useAccessPass)
+- [ ] PR 9 merged: Budget Account 2.0
+- [ ] PR 10 merged: MIGRATION.md + 4.0.0 tag and publish
 - [ ] CHANGELOG entry for 4.0.0 with prominent "Breaking" section
 - [ ] Tests green
 - [ ] Published to npm
@@ -367,7 +371,7 @@ The original "open questions" section is preserved here as decisions, with reaso
 
 **5.0 ships when (target: ~6 months after 4.0):**
 
-- [ ] PR 12 merged: `wrapFetch` + `createX402Client` removed
+- [ ] PR 11 merged: `wrapFetch` + `createX402Client` removed
 - [ ] MIGRATION.md updated with the 5.0 section
 - [ ] CHANGELOG entry for 5.0.0 with "Breaking" section citing the 3.9 deprecation
 - [ ] Tests green
