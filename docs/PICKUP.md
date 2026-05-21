@@ -10,6 +10,7 @@
 1. **[AUDIT-2026-05-20.md](./AUDIT-2026-05-20.md)** — what's in the SDK, what's good, what's wrong, what's actually load-bearing.
 2. **[PLAN.md](./PLAN.md)** — the committed 3.9 scope and a sketch of what comes after.
 3. **[DESIGN-timeout-double-charge.md](./DESIGN-timeout-double-charge.md)** — the design for PRs 5/6/7 (the money-loss bug fix). Read before touching `payment/`.
+4. **[FOLLOWUPS.md](./FOLLOWUPS.md)** — issues found mid-work and deliberately deferred. Check it before declaring anything "done" — there may be a known gap.
 
 The audit's `§0`, `§0a`, and `§0b` errata blocks explain what earlier drafts got wrong and why — read them so you don't repeat the same mistakes. **`§0b` is the most important if you're about to touch model-registry, stripe-payto, or token-pricing**: those files looked deletable on a surface read but turned out to have internal SDK consumers. PR sequencing was rewritten as a result.
 
