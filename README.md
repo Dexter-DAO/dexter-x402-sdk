@@ -5,14 +5,13 @@
 <h1 align="center">@dexterai/x402</h1>
 
 <p align="center">
-  <strong>Full-stack x402 SDK. Add paid API monetization to any endpoint. Solana, Base, Polygon, Arbitrum, Optimism, Avalanche, BSC, and SKALE.</strong>
+  <strong>HTTP-native micropayments for agents. Solana and the major EVM chains.</strong>
 </p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@dexterai/x402"><img src="https://img.shields.io/npm/v/@dexterai/x402.svg" alt="npm"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E=18-brightgreen.svg" alt="Node"></a>
   <a href="https://dexter.cash/sdk"><img src="https://img.shields.io/badge/Live_Demo-dexter.cash%2Fsdk-blueviolet" alt="Live Demo"></a>
-  <a href="https://dexter.cash/opendexter"><img src="https://img.shields.io/badge/Marketplace-5%2C000%2B_APIs-success" alt="Marketplace"></a>
 </p>
 
 <p align="center">
@@ -23,154 +22,109 @@
 
 ## What is x402?
 
-x402 is a protocol for HTTP-native micropayments. When a server returns HTTP status `402 Payment Required`, it includes payment details in a `PAYMENT-REQUIRED` header. The client signs a payment transaction and retries the request with a `PAYMENT-SIGNATURE` header. The server verifies and settles the payment, then returns the protected content.
+x402 is HTTP's missing payment protocol. A server returns `402 Payment Required` with a `PAYMENT-REQUIRED` header describing what it wants paid; the client signs a payment, retries with `PAYMENT-SIGNATURE`, and gets the resource.
 
-This SDK handles the entire flow automatically—you just call `fetch()` and payments happen transparently. With **Access Pass** mode, buyers pay once and get unlimited access for a time window—no per-request signing needed.
+The audience this is built for in 2026 is **agents**: Claude, ChatGPT, Cursor, and the rest, making paid HTTP calls on behalf of humans. This SDK is the buyer side and the seller side, with USDC on Solana and the major EVM chains, behind a single API.
 
----
-
-## Why This SDK?
-
-**Monetize any API in minutes.** Add payments to your server in ~10 lines. Clients pay automatically—no checkout pages, no subscriptions, no invoices. Just HTTP.
-
-**Dynamic pricing.** Charge based on usage: characters, tokens, records, pixels, API calls—whatever makes sense. Price scales with input, not fixed rates.
-
-**Token-accurate LLM pricing.** Built-in [tiktoken](https://github.com/openai/tiktoken) support prices AI requests by actual token count. Works with OpenAI models out of the box, or bring your own rates for Anthropic, Gemini, Mistral, or local models.
-
-**Access Pass.** Pay once, get unlimited access for a time window. Buyers connect a wallet, make one payment, and receive a JWT token that works like an API key—no per-request signing, no private keys in code. The Stripe replacement for crypto-native APIs.
-
-**Full-stack.** Client SDK for browsers, server SDK for backends. React hooks, Express middleware patterns, facilitator client—everything you need.
-
-**Multi-chain.** Solana plus seven EVM chains (Base, Polygon, Arbitrum, Optimism, Avalanche, BSC, SKALE Base) with the same API. Add wallets for both families and the SDK picks the right one automatically.
-
-**Works out of the box.** Built-in RPC proxy, pre-flight balance checks, automatic retry on 402. Uses the [Dexter facilitator](https://x402.dexter.cash) by default—Solana's most feature-rich x402 facilitator.
+You call `payAndFetch()` on the client. You add `x402Middleware()` on the server. Payments happen.
 
 ---
 
-## Automatic Marketplace Discovery
-
-When someone pays for your API through the Dexter facilitator, your endpoint is **automatically discovered and listed** in the [OpenDexter Marketplace](https://dexter.cash/opendexter) — a searchable directory of 5,000+ paid APIs used by AI agents.
-
-No registration step needed. The flow:
-
-1. You add `x402Middleware` to your endpoint (see Quick Start below)
-2. An agent pays for your API → the facilitator processes the settlement
-3. Your endpoint is auto-discovered, AI-named, and quality-verified
-4. Agents find it via `x402_search` in any MCP client (ChatGPT, Claude, Cursor, etc.)
-
-Quality-verified endpoints (score 75+) get promoted in search results. The verification bot tests your endpoint automatically — no action required on your part.
-
----
-
-## Quick Start
-
-### Install
+## Quick start
 
 ```bash
 npm install @dexterai/x402
 ```
 
-### Client (Node.js)
-
-The simplest way to make x402 payments from scripts:
+### Pay for a resource (Node.js, any chain)
 
 ```typescript
-import { wrapFetch } from '@dexterai/x402/client';
+import { payAndFetch, createKeypairWallet, createEvmKeypairWallet } from '@dexterai/x402/client';
 
-// Solana
-const x402Fetch = wrapFetch(fetch, {
-  walletPrivateKey: process.env.SOLANA_PRIVATE_KEY,
-});
+const solana = await createKeypairWallet(process.env.SOLANA_PRIVATE_KEY);
+const evm = await createEvmKeypairWallet(process.env.EVM_PRIVATE_KEY);  // requires: npm install viem
 
-// EVM (Base, Polygon, Arbitrum, Optimism, Avalanche, SKALE)
-const x402Fetch = wrapFetch(fetch, {
-  evmPrivateKey: process.env.EVM_PRIVATE_KEY,  // requires: npm install viem
-});
+const result = await payAndFetch(
+  'https://api.example.com/protected',
+  { method: 'GET' },
+  { solana, evm },
+  {},
+);
 
-// Both — SDK picks the chain with balance
-const x402Fetch = wrapFetch(fetch, {
-  walletPrivateKey: process.env.SOLANA_PRIVATE_KEY,
-  evmPrivateKey: process.env.EVM_PRIVATE_KEY,
-});
-
-// That's it. 402 responses are handled automatically.
-const response = await x402Fetch('https://api.example.com/protected');
-```
-
-Check the payment receipt:
-
-```typescript
-import { wrapFetch, getPaymentReceipt } from '@dexterai/x402/client';
-
-const x402Fetch = wrapFetch(fetch, { walletPrivateKey: process.env.SOLANA_PRIVATE_KEY });
-const response = await x402Fetch('https://api.example.com/protected');
-
-const receipt = getPaymentReceipt(response);
-if (receipt) {
-  console.log('Paid:', receipt.transaction, 'on', receipt.network);
+if (result.ok && result.paid) {
+  const data = await result.response.json();
+  console.log(`Paid ${result.amountPaid} on ${result.network.bare}, tx ${result.txSignature}`);
+} else if (result.ok && !result.paid) {
+  // Endpoint didn't demand payment; response came through unchanged.
+  const data = await result.response.json();
+} else {
+  console.error(result.reason, result.detail);
 }
 ```
 
-### Client (Browser)
+`payAndFetch` is version-agnostic (handles x402 v1 and v2 transparently) and returns a discriminated `PayResult`. The `ok: true` branch is further split by `paid: true | false`, so a free 200 response is distinguishable from an actually-paid one. No throws for expected failures.
 
-```typescript
-import { createX402Client } from '@dexterai/x402/client';
+### Pay for a resource (Browser, React)
 
-const client = createX402Client({
-  wallets: {
-    solana: solanaWallet,
-    evm: evmWallet,
-  },
-});
-
-// That's it. 402 responses are handled automatically.
-const response = await client.fetch('https://api.example.com/protected');
-```
-
-RPC URLs are optional—the SDK uses Dexter's RPC proxy by default. Override if needed:
-
-```typescript
-const client = createX402Client({
-  wallets: { solana: solanaWallet },
-  rpcUrls: {
-    'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp': 'https://your-rpc.com',
-  },
-});
-```
-
-### React
-
-Works with [`@solana/wallet-adapter-react`](https://github.com/anza-xyz/wallet-adapter) and [`wagmi`](https://wagmi.sh/) out of the box:
+`useX402Payment` accepts wallets from your existing providers (`@solana/wallet-adapter-react`, `wagmi`) and exposes a `fetch` that pays automatically.
 
 ```tsx
 import { useX402Payment } from '@dexterai/x402/react';
-import { useWallet } from '@solana/wallet-adapter-react';  // Solana
-import { useAccount } from 'wagmi';                        // EVM (Base)
+import { useWallet } from '@solana/wallet-adapter-react';
+import { useAccount } from 'wagmi';
 
-function PayButton() {
-  // Get wallets from your existing providers
+function PayButton({ url }: { url: string }) {
   const solanaWallet = useWallet();
   const evmWallet = useAccount();
 
   const { fetch, isLoading, balances, transactionUrl } = useX402Payment({
-    wallets: { 
-      solana: solanaWallet,  // Pass directly - SDK handles the interface
-      evm: evmWallet,
-    },
+    wallets: { solana: solanaWallet, evm: evmWallet },
   });
 
   return (
     <div>
       <p>Balance: ${balances[0]?.balance.toFixed(2)}</p>
-      <button 
-        onClick={() => fetch('/api/protected')} 
-        disabled={isLoading || !solanaWallet.connected}
-      >
-        {isLoading ? 'Paying...' : 'Pay'}
+      <button onClick={() => fetch(url)} disabled={isLoading}>
+        {isLoading ? 'Paying…' : 'Pay'}
       </button>
-      {transactionUrl && <a href={transactionUrl}>View Transaction</a>}
+      {transactionUrl && <a href={transactionUrl}>View transaction</a>}
     </div>
   );
+}
+```
+
+### Protect an endpoint (server)
+
+```typescript
+import express from 'express';
+import { x402Middleware } from '@dexterai/x402/server';
+
+const app = express();
+
+app.get(
+  '/api/protected',
+  x402Middleware({
+    payTo: 'YourReceivingAddress',
+    amount: '0.01',                // $0.01 USDC
+    network: 'eip155:8453',        // Base. Pass an array for multi-chain.
+  }),
+  (req, res) => res.json({ data: 'protected content' }),
+);
+```
+
+The handler only runs after a successful payment. Pass `network` as an array to accept across multiple chains; the buyer picks the chain they have balance on.
+
+### Reading the receipt
+
+`getPaymentReceipt(response)` returns the settled-payment info attached to any paid response (whether the payment came from `payAndFetch`, the legacy `wrapFetch`, or the React hook).
+
+```typescript
+import { payAndFetch, getPaymentReceipt } from '@dexterai/x402/client';
+
+const result = await payAndFetch(url, { method: 'GET' }, wallets, {});
+if (result.ok && result.paid) {
+  const receipt = getPaymentReceipt(result.response);
+  console.log('tx:', receipt?.transaction, 'on', receipt?.network);
 }
 ```
 
@@ -178,51 +132,32 @@ function PayButton() {
 
 ## Batch settlement (EVM)
 
-Batch settlement lets a buyer pre-fund an escrow channel once, make many
-**discrete** paid API calls against it with cheap off-chain vouchers, and then
-close the channel — the seller's many charges are batched into a handful of
-on-chain transactions instead of one per call. It amortizes gas across
-high-frequency discrete purchasing.
+Batch settlement lets a buyer pre-fund an escrow channel once, make many **discrete** paid API calls against it with cheap off-chain vouchers, and then close the channel. The seller's many charges are batched into a handful of on-chain transactions instead of one per call. It amortizes gas across high-frequency discrete purchasing.
 
-It is **not** a streaming primitive — it batches discrete purchases. EVM only
-(Base, Arbitrum, Polygon). The buyer never needs a gas token: every step
-(deposit, voucher, claim, settle, refund) is signature-based; the Dexter
-facilitator submits the transactions and pays the gas.
+It is **not** a streaming primitive; it batches discrete purchases. EVM only (Base, Arbitrum, Polygon). The buyer never needs a gas token: every step (deposit, voucher, claim, settle, refund) is signature-based; the Dexter facilitator submits the transactions and pays the gas.
 
 ### Buyer
 
 ```ts
 import { openBatchChannel } from '@dexterai/x402/batch-settlement';
 
-// Open a channel — signs an escrow deposit authorization (no gas needed).
 const channel = await openBatchChannel({
   wallet: evmWallet,            // any { address, signTypedData }
   network: 'eip155:8453',       // Base
   deposit: '0.30',              // USDC escrowed for this channel
 });
 
-// Each call signs a cumulative voucher against the channel.
 const a = await channel.fetch('https://api.example.com/v1/data');
 const b = await channel.fetch('https://api.example.com/v1/data');
 
 console.log(channel.state); // { deposited: '0.3', spent: '0.16', remaining: '0.14' }
 
-// Done buying — signal you're finished with the channel.
 const { closed } = await channel.close();
-// closed === true. This is an intent signal, not a settlement: it does not
-// move funds. The seller's settlement (below) claims what you spent and
-// refunds the rest of your escrow automatically on the normal path.
 ```
 
-Each `openBatchChannel` call opens a **new** channel: a fresh random
-channel-config salt is generated, so a buyer can hold several independent
-channels with the same seller over time. The salt is exposed as
-`channel.salt` — persist it if you will later need to resume that exact
-channel.
+Each `openBatchChannel` call opens a new channel: a fresh random channel-config salt is generated, so a buyer can hold several independent channels with the same seller over time. The salt is exposed as `channel.salt`; persist it if you will later need to resume that exact channel.
 
-To resume a channel after a process restart, call `resumeBatchChannel` with
-the wallet, network, and the **salt** of the channel being resumed (the
-`channelId` alone is not enough — it cannot be reversed to a salt):
+Resume after a process restart with the wallet, network, and the channel's salt:
 
 ```ts
 import { resumeBatchChannel } from '@dexterai/x402/batch-settlement';
@@ -230,89 +165,182 @@ import { resumeBatchChannel } from '@dexterai/x402/batch-settlement';
 const channel = await resumeBatchChannel({
   wallet: evmWallet,
   network: 'eip155:8453',
-  salt: savedSalt,            // channel.salt captured at open time
+  salt: savedSalt,
 });
 ```
 
-Channel state auto-persists (localStorage in the browser, a file under
-`~/.dexter-x402/channels` in Node); the resumed channel's accounting is
-recovered from storage, or from on-chain state if storage was lost. Pass a
-custom `store` (any `ChannelStore`) to persist elsewhere. To deterministically
-reopen a specific channel instead of getting a fresh one, pass an explicit
-`salt` to `openBatchChannel`.
+Channel state auto-persists (localStorage in the browser, a file under `~/.dexter-x402/channels` in Node); the resumed channel's accounting is recovered from storage, or from on-chain state if storage was lost.
 
-#### Escape hatch — `forceWithdraw()` / `finalizeWithdraw()`
+#### Escape hatch: `forceWithdraw()` / `finalizeWithdraw()`
 
-If the seller never settles, the buyer can reclaim unspent escrow directly via
-the channel contract's timed withdrawal:
+If the seller never settles, the buyer can reclaim unspent escrow directly via the channel contract's timed withdrawal:
 
 ```ts
-// 1. Start the on-chain timed withdrawal.
 await channel.forceWithdraw();
-
-// 2. After the channel's withdraw delay elapses, finalize it.
+// after the channel's withdraw delay elapses
 await channel.finalizeWithdraw();
 ```
 
-This is a last-resort safety net — **normal operation never needs it**, since
-the seller's settlement returns unspent escrow on the standard path. Unlike
-every other batch-settlement step, the escape hatch **costs the buyer gas**: it
-submits transactions itself, so the buyer's wallet must be transaction-capable
-(it must expose a `sendTransaction` method). A signature-only wallet cannot use
-the escape hatch.
+Last-resort safety net; normal operation never needs it. Unlike every other batch-settlement step, the escape hatch costs the buyer gas: the wallet must expose a `sendTransaction` method.
 
 ### Seller
 
-`createBatchSettlementSeller(config)` returns a callable object that **is** an
-Express request handler — mount it directly. It accepts batch-settlement
-payments (each incoming voucher is verified and persisted to channel storage)
-and collects them (claim → settle → refund). Dexter operates the delegate
-authorizer, so the seller manages no signing key:
+`createBatchSettlementSeller(config)` returns an Express request handler. Mount it directly; it accepts vouchers, persists them, and settles in the background. Dexter operates the delegate authorizer, so the seller manages no signing key.
 
 ```ts
 import { createBatchSettlementSeller } from '@dexterai/x402/batch-settlement/seller';
 
 const seller = createBatchSettlementSeller({
   payTo: '0xYourReceivingAddress',
-  network: 'eip155:8453',       // Base
-  price: '0.08',                // USDC per call
-});
-
-// The seller object IS the Express handler — mount it directly.
-app.use('/api/data', seller);
-
-// Auto-settlement runs in the background by default. On shutdown, stop the
-// seller — this flushes a final settle so no collected vouchers are lost.
-process.on('SIGTERM', async () => {
-  await seller.stop();
-});
-```
-
-Settlement happens automatically via a background loop (on by default). To
-settle on demand, call `seller.closeChannel(channelId)` for one channel or
-`seller.closeAll()` for every open channel.
-
-Mounting via `x402Middleware` also works — with `scheme: 'batch-settlement'` it
-returns the same callable seller object, so you still get a `.stop()` /
-`.closeAll()` / `.closeChannel()` handle:
-
-```ts
-import { x402Middleware } from '@dexterai/x402/server';
-
-const seller = x402Middleware({
-  payTo: '0xYourReceivingAddress',
-  amount: '0.08',
   network: 'eip155:8453',
-  scheme: 'batch-settlement',
+  price: '0.08',
 });
 
 app.use('/api/data', seller);
-// seller.stop() / seller.closeAll() are available here too.
+
+process.on('SIGTERM', async () => {
+  await seller.stop();   // flushes a final settle so no vouchers are lost
+});
 ```
+
+Mounting via `x402Middleware` also works. With `scheme: 'batch-settlement'` it returns the same callable seller object, so you keep the `.stop()` / `.closeAll()` / `.closeChannel()` handle.
 
 ---
 
-## Supported Networks
+## Discovery (bazaar extension)
+
+Shipped in 3.8.0. The bazaar extension makes any `x402Middleware`-protected route discoverable through the official x402 bazaar spec, so agents browsing a bazaar-compliant indexer find your endpoint by capability, not by URL.
+
+The 402 response carries a spec-compliant `extensions.bazaar` block describing the route's inputs, output schema, and template path. Discovery indexers read it and surface your endpoint in agent-facing catalogs.
+
+```typescript
+import {
+  x402Middleware,
+  bazaarExtension,
+  declareDiscoveryExtension,
+} from '@dexterai/x402/server';
+
+app.post(
+  '/v1/translate',
+  x402Middleware({
+    payTo: '...',
+    amount: '0.02',
+    network: 'eip155:8453',
+    extensions: [bazaarExtension()],
+    declarations: {
+      ...declareDiscoveryExtension({
+        method: 'POST',
+        bodyType: 'json',
+        inputSchema: {
+          properties: {
+            text: { type: 'string', description: 'Source text' },
+            targetLang: { type: 'string', description: 'ISO 639-1 code' },
+          },
+          required: ['text', 'targetLang'],
+        },
+        output: {
+          example: { translation: 'Bonjour' },
+        },
+      }),
+    },
+  }),
+  (req, res) => res.json({ translation: translate(req.body) }),
+);
+```
+
+`extensions` is opt-in: middleware without an `extensions` array emits a 402 byte-identical to pre-3.8.0 behavior. `method` may be omitted from `declareDiscoveryExtension`; the extension stamps the actual request method at 402 time.
+
+Failure isolation: if an extension throws, it's caught, logged, and skipped. The 402 still goes out, just without that key. The payment path is never affected.
+
+---
+
+## Sponsored Access (Instinct ad network)
+
+This is how MCP agents (Claude, ChatGPT, Cursor) see your sponsored placements. When an agent pays for an API through Dexter's facilitator, a matched recommendation can be injected into the settlement receipt; the agent's LLM reads it and may call the suggested resource next. Both blockchain transactions become proof of the conversion.
+
+The buyer-side helpers are wired into every MCP `fetch` tool in the Dexter ecosystem, plus the human-facing receipt UI on x402gle. If you're shipping an x402 endpoint, sponsored access is how you reach the agents already using paid APIs.
+
+### Seller: enable recommendation injection
+
+```typescript
+import { x402Middleware } from '@dexterai/x402/server';
+
+app.get(
+  '/api/data',
+  x402Middleware({
+    payTo: '...',
+    amount: '0.01',
+    sponsoredAccess: true,         // injects _x402_sponsored into JSON responses
+  }),
+  (req, res) => res.json({ data: 'content' }),
+);
+// Response: { _x402_sponsored: [{ resourceUrl, description, sponsor }], data: 'content' }
+```
+
+For custom placement (where in the body the recommendation appears, conversion logging, etc.), pass an object instead of `true`:
+
+```typescript
+sponsoredAccess: {
+  inject: (body, recs) => ({ ...body, related_tools: recs }),
+  onMatch: (recs, settlement) => log(`matched ${recs.length} for tx ${settlement.transaction}`),
+},
+```
+
+### Buyer: read recommendations off a paid response
+
+```typescript
+import {
+  payAndFetch,
+  getSponsoredRecommendations,
+  fireImpressionBeacon,
+} from '@dexterai/x402/client';
+
+const result = await payAndFetch(url, { method: 'GET' }, wallets, {});
+if (result.ok && result.paid) {
+  const recs = getSponsoredRecommendations(result.response);
+  if (recs) {
+    for (const rec of recs) {
+      console.log(`${rec.sponsor}: ${rec.description} (${rec.resourceUrl})`);
+    }
+    await fireImpressionBeacon(result.response);
+  }
+}
+```
+
+### React: recommendations in the hook
+
+```tsx
+import { useX402Payment } from '@dexterai/x402/react';
+
+function PayButton() {
+  const { fetch, isLoading, sponsoredRecommendations } = useX402Payment({ wallets });
+
+  return (
+    <div>
+      <button onClick={() => fetch(url)} disabled={isLoading}>Pay</button>
+      {sponsoredRecommendations?.map((rec, i) => (
+        <a key={i} href={rec.resourceUrl}>{rec.sponsor}: {rec.description}</a>
+      ))}
+    </div>
+  );
+}
+```
+
+### Advertise
+
+Campaign creation is x402-gated at `x402ads.io`. Your wallet is your identity. Full advertiser guide at [docs.dexter.cash/docs/sponsored-access/for-advertisers](https://docs.dexter.cash/docs/sponsored-access/for-advertisers).
+
+---
+
+## Auto-listing in OpenDexter
+
+When an agent pays for your API through the Dexter facilitator, your endpoint is auto-discovered, AI-named, and quality-tested. Quality-verified endpoints surface in `x402_search` results across MCP clients (ChatGPT, Claude, Cursor). No registration step.
+
+Browse the live catalog at [dexter.cash/opendexter](https://dexter.cash/opendexter).
+
+---
+
+## Supported networks
 
 All networks supported by the [Dexter facilitator](https://x402.dexter.cash/supported). USDC on every chain.
 
@@ -338,25 +366,9 @@ All networks supported by the [Dexter facilitator](https://x402.dexter.cash/supp
 | Base Sepolia | `eip155:84532` |
 | SKALE Base Sepolia | `eip155:324705682` |
 
-Accept payments on multiple chains simultaneously:
+Multi-chain endpoints accept payments on any chain in the list. The buyer picks:
 
 ```typescript
-// Same address across all EVM chains
-app.get('/api/data', x402Middleware({
-  payTo: '0xYourAddress',
-  amount: '0.01',
-  network: [
-    'eip155:8453',       // Base
-    'eip155:137',        // Polygon
-    'eip155:42161',      // Arbitrum
-    'eip155:10',         // Optimism
-    'eip155:43114',      // Avalanche
-    'eip155:56',         // BSC
-    'eip155:1187947933', // SKALE Base (zero gas)
-  ],
-}));
-
-// Different addresses per chain family
 app.get('/api/data', x402Middleware({
   payTo: {
     'solana:*': 'YourSolanaAddress...',
@@ -378,40 +390,32 @@ app.get('/api/data', x402Middleware({
 
 ---
 
-## Package Exports
+## Package exports
 
 ```typescript
-// Client - browser
-import { createX402Client } from '@dexterai/x402/client';
+// Client: canonical entrypoint
+import { payAndFetch, createKeypairWallet, createEvmKeypairWallet, getPaymentReceipt } from '@dexterai/x402/client';
 
-// Client - Node.js (private key wallet)
-import { wrapFetch, createKeypairWallet } from '@dexterai/x402/client';
+// Client: sponsored access reader
+import { getSponsoredRecommendations, fireImpressionBeacon } from '@dexterai/x402/client';
 
-// Batch settlement - EVM escrow channel buyer (gas amortization)
-import { openBatchChannel } from '@dexterai/x402/batch-settlement';
-
-// Batch settlement - EVM escrow channel seller runtime
-import { createBatchSettlementSeller } from '@dexterai/x402/batch-settlement/seller';
-
-// React hook
+// React
 import { useX402Payment } from '@dexterai/x402/react';
 
-// Server - Express middleware
+// Server: middleware
 import { x402Middleware } from '@dexterai/x402/server';
 
-// Server - Access Pass (pay once, unlimited requests)
-import { x402AccessPass } from '@dexterai/x402/server';
+// Server: discovery (bazaar extension)
+import { bazaarExtension, declareDiscoveryExtension } from '@dexterai/x402/server';
 
-// Server - manual control
+// Server: manual control
 import { createX402Server } from '@dexterai/x402/server';
 
-// Server - dynamic pricing
-import { createDynamicPricing, createTokenPricing } from '@dexterai/x402/server';
+// Batch settlement
+import { openBatchChannel, resumeBatchChannel } from '@dexterai/x402/batch-settlement';
+import { createBatchSettlementSeller } from '@dexterai/x402/batch-settlement/seller';
 
-// React - Access Pass hook
-import { useAccessPass } from '@dexterai/x402/react';
-
-// Chain adapters (advanced)
+// Adapters (advanced)
 import { createSolanaAdapter, createEvmAdapter } from '@dexterai/x402/adapters';
 
 // Utilities
@@ -425,142 +429,17 @@ import { toAtomicUnits, fromAtomicUnits } from '@dexterai/x402/utils';
 ```typescript
 import { toAtomicUnits, fromAtomicUnits } from '@dexterai/x402/utils';
 
-// Convert dollars to atomic units (for API calls)
-toAtomicUnits(0.05, 6);  // '50000'
-toAtomicUnits(1.50, 6);  // '1500000'
-
-// Convert atomic units back to dollars (for display)
-fromAtomicUnits('50000', 6);   // 0.05
-fromAtomicUnits(1500000n, 6);  // 1.5
+toAtomicUnits(0.05, 6);          // '50000'
+toAtomicUnits(1.50, 6);          // '1500000'
+fromAtomicUnits('50000', 6);     // 0.05
+fromAtomicUnits(1500000n, 6);    // 1.5
 ```
 
 ---
 
-## Server SDK
+## Manual server (advanced)
 
-### Express Middleware — NEW!
-
-One-liner payment protection for any Express endpoint:
-
-```typescript
-import express from 'express';
-import { x402Middleware } from '@dexterai/x402/server';
-
-const app = express();
-
-app.get('/api/protected',
-  x402Middleware({
-    payTo: 'YourSolanaAddress...',
-    amount: '0.01',  // $0.01 USD
-  }),
-  (req, res) => {
-    // This only runs after successful payment
-    res.json({ data: 'protected content' });
-  }
-);
-```
-
-Options:
-- `payTo` — Address to receive payments
-- `amount` — Price in USD (e.g., `'0.01'` for 1 cent)
-- `network` — CAIP-2 network (default: Solana mainnet)
-- `description` — Human-readable description
-- `facilitatorUrl` — Override facilitator (default: x402.dexter.cash)
-- `verbose` — Enable debug logging
-
-### Access Pass — Pay Once, Unlimited Requests
-
-Replace API keys with time-limited access passes. Buyers make one payment and get a JWT token for unlimited requests during a time window.
-
-**Server:**
-
-```typescript
-import express from 'express';
-import { x402AccessPass } from '@dexterai/x402/server';
-
-const app = express();
-
-// Protect all /api routes with access pass
-app.use('/api', x402AccessPass({
-  payTo: 'YourSolanaAddress...',
-  tiers: {
-    '1h':  '0.50',   // $0.50 for 1 hour
-    '24h': '2.00',   // $2.00 for 24 hours
-  },
-  ratePerHour: '0.50',  // also accept custom durations
-}));
-
-app.get('/api/data', (req, res) => {
-  // Only runs with a valid access pass
-  res.json({ data: 'premium content' });
-});
-```
-
-**Client (Node.js):**
-
-```typescript
-import { wrapFetch } from '@dexterai/x402/client';
-
-const x402Fetch = wrapFetch(fetch, {
-  walletPrivateKey: process.env.SOLANA_PRIVATE_KEY,
-  accessPass: { preferTier: '1h', maxSpend: '1.00' },
-});
-
-// First call: auto-purchases a 1-hour pass ($0.50 USDC)
-const res1 = await x402Fetch('https://api.example.com/api/data');
-
-// All subsequent calls for the next hour: uses cached JWT, zero payment
-const res2 = await x402Fetch('https://api.example.com/api/data');
-const res3 = await x402Fetch('https://api.example.com/api/data');
-```
-
-**React:**
-
-```tsx
-import { useAccessPass } from '@dexterai/x402/react';
-
-function Dashboard() {
-  const { tiers, pass, isPassValid, purchasePass, fetch: apFetch } = useAccessPass({
-    wallets: { solana: solanaWallet },
-    resourceUrl: 'https://api.example.com',
-  });
-
-  return (
-    <div>
-      {!isPassValid && tiers?.map(t => (
-        <button key={t.id} onClick={() => purchasePass(t.id)}>
-          {t.label} — ${t.price}
-        </button>
-      ))}
-      {isPassValid && <p>Pass active! {pass?.remainingSeconds}s remaining</p>}
-      <button onClick={() => apFetch('/api/data')}>Fetch Data</button>
-    </div>
-  );
-}
-```
-
-**How it works:**
-1. Client requests a protected endpoint → Server returns `402` with `X-ACCESS-PASS-TIERS` header
-2. Client selects a tier and pays via x402 → Server verifies, settles, issues a JWT
-3. Server returns `200` with `ACCESS-PASS` header containing the JWT
-4. Client caches the JWT and includes it as `Authorization: Bearer <token>` on all subsequent requests
-5. Server validates the JWT locally (no facilitator call) → instant response
-
-Options:
-- `payTo` — Address to receive payments
-- `tiers` — Named duration tiers with prices (e.g., `{ '1h': '0.50' }`)
-- `ratePerHour` — Rate for custom durations (buyer sends `?duration=<seconds>`)
-- `network` — CAIP-2 network (default: Solana mainnet)
-- `secret` — HMAC secret for JWT signing (auto-generated if not provided)
-- `facilitatorUrl` — Override facilitator (default: x402.dexter.cash)
-
-**[Live demo →](https://dexter.cash/access-pass)**
-
----
-
-### Manual Server (Advanced)
-
-For more control over the payment flow:
+For full control over the payment flow without `x402Middleware`:
 
 ```typescript
 import { createX402Server } from '@dexterai/x402/server';
@@ -570,7 +449,6 @@ const server = createX402Server({
   network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
 });
 
-// In your route handler
 app.post('/protected', async (req, res) => {
   const paymentSig = req.headers['payment-signature'];
 
@@ -588,392 +466,121 @@ app.post('/protected', async (req, res) => {
     return res.status(402).json({ error: result.errorReason });
   }
 
-  res.json({ data: 'Your protected content' });
+  res.json({ data: 'protected content' });
 });
 ```
 
 ---
 
-## Dynamic Pricing
+## Legacy capabilities
 
-**Generic pricing for any use case** - charge by characters, bytes, API calls, or any unit you define. No external dependencies.
+Several v1-era helpers ship with `@deprecated` markers in 3.9. They keep working. The markers exist to steer new code at the canonical paths. Each has a JSDoc pointing at its migration target.
 
-Works for:
-- LLM/AI endpoints (by character count)
-- Image processing (by pixel count or file size)
-- Data APIs (by record count)
-- Any service where cost scales with input
+| Symbol | Migration target |
+|---|---|
+| `wrapFetch` (`@dexterai/x402/client`) | `payAndFetch` (version-agnostic, discriminated return type) |
+| `createX402Client` (`@dexterai/x402/client`) | `payAndFetch` |
+| `x402AccessPass`, `useAccessPass` | No replacement. Per-request `x402Middleware` + `payAndFetch` covers the same usage pattern. |
+| `createDynamicPricing`, `createTokenPricing`, `MODEL_PRICING` | Price requests in your handler (use your model provider's live API for LLM cases) and pass the amount to `x402Middleware`. The v1 character-based and tiktoken-based helpers were stopgaps before x402 v2 dynamic pricing landed. |
+| `stripePayTo` | No replacement in the SDK. Integrate Stripe at your application layer if needed. |
+| `x402BrowserSupport` | No replacement. Build a custom paywall page if you need one. |
 
-```typescript
-import { createX402Server, createDynamicPricing } from '@dexterai/x402/server';
-
-const server = createX402Server({ payTo: '...', network: '...' });
-const pricing = createDynamicPricing({
-  unitSize: 1000,      // chars per unit
-  ratePerUnit: 0.01,   // $0.01 per unit
-  minUsd: 0.01,        // floor
-  maxUsd: 10.00,       // ceiling
-});
-
-app.post('/api/llm', async (req, res) => {
-  const { prompt } = req.body;
-  const paymentSig = req.headers['payment-signature'];
-
-  if (!paymentSig) {
-    const quote = pricing.calculate(prompt);
-    const requirements = await server.buildRequirements({
-      amountAtomic: quote.amountAtomic,
-      resourceUrl: req.originalUrl,
-    });
-    res.setHeader('PAYMENT-REQUIRED', server.encodeRequirements(requirements));
-    res.setHeader('X-Quote-Hash', quote.quoteHash);
-    return res.status(402).json({ usdAmount: quote.usdAmount });
-  }
-
-  // Validate quote hasn't changed (prevents prompt manipulation)
-  const quoteHash = req.headers['x-quote-hash'];
-  if (!pricing.validateQuote(prompt, quoteHash)) {
-    return res.status(400).json({ error: 'Prompt changed, re-quote required' });
-  }
-
-  const result = await server.settlePayment(paymentSig);
-  if (!result.success) return res.status(402).json({ error: result.errorReason });
-
-  const response = await runLLM(prompt);
-  res.json(response);
-});
-```
-
-The client SDK automatically forwards `X-Quote-Hash` on retry.
+Removal release is TBD. Decided after we see how 3.9 deprecation warnings land with real consumers. None of these will be removed in 3.x.
 
 ---
 
-## Token Pricing (LLM-Accurate)
+## API reference
 
-**Accurate token-based pricing for LLMs.** Uses tiktoken for token counting. Supports OpenAI models out of the box, plus custom rates for Anthropic, Gemini, Mistral, or any model.
+### `payAndFetch(url, init, wallets, opts) → Promise<PayResult>`
 
-```typescript
-import { createX402Server, createTokenPricing, MODEL_PRICING } from '@dexterai/x402/server';
+| Argument | Type | Description |
+|---|---|---|
+| `url` | `string` | Endpoint to fetch |
+| `init` | `RequestInit` | Standard fetch init. Body must be a string. |
+| `wallets` | `WalletSet` | `{ solana?, evm? }`. The SDK picks the chain by what the merchant accepts and what you can pay |
+| `opts` | `PayAndFetchOptions` | `maxAmountAtomic`, `timeoutMs`, `solanaRpcUrl` |
 
-const server = createX402Server({ payTo: '...', network: '...' });
-const pricing = createTokenPricing({
-  model: 'gpt-4o-mini',  // Uses real OpenAI rates
-  // minUsd: 0.001,      // Optional floor
-  // maxUsd: 50.0,       // Optional ceiling
-});
-
-app.post('/api/chat', async (req, res) => {
-  const { prompt, systemPrompt } = req.body;
-  const paymentSig = req.headers['payment-signature'];
-
-  if (!paymentSig) {
-    const quote = pricing.calculate(prompt, systemPrompt);
-    const requirements = await server.buildRequirements({
-      amountAtomic: quote.amountAtomic,
-      resourceUrl: req.originalUrl,
-      description: `${quote.model}: ${quote.inputTokens.toLocaleString()} tokens`,
-    });
-    res.setHeader('PAYMENT-REQUIRED', server.encodeRequirements(requirements));
-    res.setHeader('X-Quote-Hash', quote.quoteHash);
-    return res.status(402).json({
-      inputTokens: quote.inputTokens,
-      usdAmount: quote.usdAmount,
-      model: quote.model,
-      tier: quote.tier,
-    });
-  }
-
-  // Validate quote hasn't changed
-  const quoteHash = req.headers['x-quote-hash'];
-  if (!pricing.validateQuote(prompt, quoteHash)) {
-    return res.status(400).json({ error: 'Prompt changed, re-quote required' });
-  }
-
-  const result = await server.settlePayment(paymentSig);
-  if (!result.success) return res.status(402).json({ error: result.errorReason });
-
-  const response = await openai.chat.completions.create({
-    model: pricing.config.model,
-    messages: [{ role: 'user', content: prompt }],
-    max_completion_tokens: pricing.modelInfo.maxTokens,
-  });
-
-  res.json({ 
-    response: response.choices[0].message.content,
-    transaction: result.transaction,
-  });
-});
-```
-
-### Available Models
+`PayResult` is a discriminated union. Narrow on `ok` first, then on `paid`:
 
 ```typescript
-import { MODEL_PRICING, getAvailableModels } from '@dexterai/x402/server';
-
-// Get all models sorted by tier and price
-const models = getAvailableModels();
-// → [{ model: 'gpt-5-nano', inputRate: 0.05, tier: 'fast' }, ...]
-
-// Check pricing for a specific model
-MODEL_PRICING['gpt-4o-mini'];
-// → { input: 0.15, output: 0.6, maxTokens: 4096, tier: 'fast' }
-```
-
-**Supported tiers:** `fast`, `standard`, `reasoning`, `premium`, `custom`
-
-### Custom Models (Anthropic, Gemini, etc.)
-
-Not using OpenAI? Pass your own rates:
-
-```typescript
-// Anthropic Claude
-const pricing = createTokenPricing({
-  model: 'claude-3-sonnet',
-  inputRate: 3.0,    // $3.00 per 1M input tokens
-  outputRate: 15.0,  // $15.00 per 1M output tokens
-  maxTokens: 4096,
-});
-
-// Google Gemini
-const pricing = createTokenPricing({
-  model: 'gemini-1.5-pro',
-  inputRate: 1.25,
-  outputRate: 5.0,
-});
-
-// Custom/local model with custom tokenizer
-const pricing = createTokenPricing({
-  model: 'llama-3-70b',
-  inputRate: 0.50,
-  tokenizer: (text) => llamaTokenizer.encode(text).length,
-});
-```
-
-tiktoken's default encoding works well for most transformer models. Only use a custom tokenizer if your model has significantly different tokenization.
-
----
-
-## Sponsored Access (Ads for Agents)
-
-Sponsored Access delivers targeted resource recommendations through x402 payments. When an agent pays for an API, the facilitator can inject a recommendation for a related tool in the settlement receipt. The agent sees the recommendation and can call it immediately -- the subsequent call is tracked as a conversion with both blockchain transaction hashes as proof.
-
-### Server — Enable Recommendation Injection
-
-Add `sponsoredAccess: true` to your middleware config. This reads `extensions["sponsored-access"]` from the facilitator's settlement response and injects `_x402_sponsored` into the JSON response body so the agent's LLM can see the recommendations (headers are invisible to LLMs).
-
-```typescript
-import { x402Middleware } from '@dexterai/x402/server';
-
-// Default injection: adds _x402_sponsored field to JSON response
-app.get('/api/data',
-  x402Middleware({
-    payTo: '...', amount: '0.01',
-    sponsoredAccess: true,
-  }),
-  (req, res) => res.json({ data: 'content' })
-);
-// Agent receives: { _x402_sponsored: [{ resourceUrl, description, sponsor }], data: 'content' }
-
-// Custom injection: control where recommendations appear
-app.get('/api/data',
-  x402Middleware({
-    payTo: '...', amount: '0.01',
-    sponsoredAccess: {
-      inject: (body, recs) => ({ ...body, related_tools: recs }),
-      onMatch: (recs, settlement) => {
-        console.log(`Matched ${recs.length} recommendations for tx ${settlement.transaction}`);
-      },
-    },
-  }),
-  (req, res) => res.json({ data: 'content' })
-);
-```
-
-### Client — Read Recommendations
-
-```typescript
-import {
-  wrapFetch,
-  getSponsoredRecommendations,
-  fireImpressionBeacon,
-} from '@dexterai/x402/client';
-
-const x402Fetch = wrapFetch(fetch, { walletPrivateKey: key });
-const response = await x402Fetch('https://api.example.com/data');
-
-// Extract typed recommendations from the payment receipt
-const recs = getSponsoredRecommendations(response);
-if (recs) {
-  for (const rec of recs) {
-    console.log(`${rec.sponsor}: ${rec.description} -- ${rec.resourceUrl}`);
-  }
-  // Confirm delivery to the ad network
-  await fireImpressionBeacon(response);
+if (result.ok && result.paid) {
+  result.response;       // the merchant's response
+  result.amountPaid;     // amount actually paid, in the token's smallest denomination
+  result.network;        // NetworkRef { caip2, bare, family }
+  result.txSignature;    // optional; tx hash where the chain reports one
+} else if (result.ok && !result.paid) {
+  result.response;       // the merchant didn't demand payment; pass-through
+} else {
+  result.reason;         // 'merchant_rejected' | 'settlement_failed' | 'timeout' | ...
+  result.detail;         // verbatim merchant error for settlement_failed
 }
 ```
 
-### React — Recommendations in Hooks
-
-```tsx
-import { useX402Payment } from '@dexterai/x402/react';
-
-function PayButton() {
-  const {
-    fetch,
-    isLoading,
-    sponsoredRecommendations,  // auto-populated after payment
-  } = useX402Payment({ wallets });
-
-  return (
-    <div>
-      <button onClick={() => fetch(url)} disabled={isLoading}>Pay</button>
-      {sponsoredRecommendations?.map((rec, i) => (
-        <a key={i} href={rec.resourceUrl}>{rec.sponsor}: {rec.description}</a>
-      ))}
-    </div>
-  );
-}
-```
-
-### Types
-
-All types are re-exported from `@dexterai/x402-ads-types`:
-
-```typescript
-import type { SponsoredRecommendation, SponsoredAccessSettlementInfo } from '@dexterai/x402/client';
-
-interface SponsoredRecommendation {
-  resourceUrl: string;    // The URL to call
-  description: string;    // Agent-readable description
-  sponsor: string;        // Brand name
-  bazaarId?: string;      // Bazaar catalog ID
-  price?: string;         // Cost in atomic units
-  currency?: string;      // e.g., "USDC"
-}
-```
-
-### How It Works
-
-1. Agent pays for an API via x402
-2. Facilitator settles payment and calls the ad network's match API
-3. If a campaign matches (by URL pattern, category, network), a recommendation is injected into `SettlementResponse.extensions["sponsored-access"]`
-4. Publisher middleware (with `sponsoredAccess: true`) injects it into the JSON response body
-5. Agent's LLM sees the recommendation and can call the suggested resource
-6. If the agent calls it, the facilitator records a conversion with both tx hashes as proof
-
-### Advertise Your API
-
-Want your API recommended to agents across the x402 network? Create and fund campaigns through the Agent API — no signup, no accounts. Your wallet is your identity.
-
-```typescript
-// All campaign management is x402-gated at x402ads.io
-const x402Fetch = wrapFetch(fetch, { walletPrivateKey: key });
-
-// Create a campaign ($0.10 USDC)
-const res = await x402Fetch('https://x402ads.io/v1/agent/campaigns', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    name: 'Promote My API',
-    rec_resource_url: 'https://api.example.com/data',
-    rec_description: 'Real-time market data',
-    rec_sponsor_name: 'Example Corp',
-    target_categories: ['defi', 'data'],
-    bid_strategy: 'cpa',
-    max_bid_amount: '50000',
-    budget_daily: '5000000',
-  }),
-});
-```
-
-Full advertiser guide: [docs.dexter.cash/docs/sponsored-access/for-advertisers](https://docs.dexter.cash/docs/sponsored-access/for-advertisers)
-
----
-
-## API Reference
-
-### `createX402Client(options)`
+### `x402Middleware(config)`
 
 | Option | Type | Required | Description |
-|--------|------|----------|-------------|
-| `wallets` | `{ solana?, evm? }` | Yes | Multi-chain wallets |
-| `wallet` | `SolanaWallet` | No | Single Solana wallet (legacy) |
-| `preferredNetwork` | `string` | No | Prefer this network when multiple options available |
-| `rpcUrls` | `Record<string, string>` | No | RPC endpoints per network (defaults to Dexter proxy) |
-| `maxAmountAtomic` | `string` | No | Maximum payment cap |
-| `verbose` | `boolean` | No | Enable debug logging |
+|---|---|---|---|
+| `payTo` | `string \| { 'solana:*'?, 'eip155:*'?, [caip2]? }` | Yes | Receiver address; map for per-chain receivers |
+| `amount` | `string` | Yes | USD amount, e.g., `'0.01'` |
+| `network` | `string \| string[]` | No | CAIP-2 network(s). Default: Solana mainnet |
+| `description` | `string` | No | Human-readable description |
+| `scheme` | `'exact' \| 'batch-settlement'` | No | Use `'batch-settlement'` to mount as a batch-settlement seller |
+| `extensions` | `ResourceServerExtension[]` | No | E.g., `[bazaarExtension()]` |
+| `declarations` | `Record<string, unknown>` | No | Per-route extension config (see `declareDiscoveryExtension`) |
+| `sponsoredAccess` | `boolean \| { inject?, onMatch? }` | No | Enable Instinct ad-network recommendation injection |
+| `facilitatorUrl` | `string` | No | Override facilitator (default: `x402.dexter.cash`) |
+| `verbose` | `boolean` | No | Debug logging |
 
-### `x402AccessPass(options)`
+### `useX402Payment({ wallets })`
 
-| Option | Type | Required | Description |
-|--------|------|----------|-------------|
-| `payTo` | `string` | Yes | Address to receive payments |
-| `tiers` | `Record<string, string>` | One of `tiers` or `ratePerHour` | Named tiers (e.g., `{ '1h': '0.50' }`) |
-| `ratePerHour` | `string` | One of `tiers` or `ratePerHour` | USD rate for custom durations |
-| `network` | `string` | No | CAIP-2 network (default: Solana mainnet) |
-| `secret` | `Buffer` | No | HMAC secret for JWT (auto-generated) |
-| `facilitatorUrl` | `string` | No | Facilitator URL (default: x402.dexter.cash) |
-| `verbose` | `boolean` | No | Enable debug logging |
+Returns `{ fetch, isLoading, status, error, transactionId, transactionUrl, balances, refreshBalances, reset, sponsoredRecommendations }`. Accepts wallets directly from `@solana/wallet-adapter-react` and `wagmi`, with no manual adapter wrapping.
 
-### `useX402Payment(options)`
+### `createBatchSettlementSeller(config)`
 
-Returns:
+| Option | Type | Description |
+|---|---|---|
+| `payTo` | `string` | EVM receiver |
+| `network` | `string` | CAIP-2 network |
+| `price` | `string` | Per-call USD price |
+| `storage` | `ChannelStorage` | Optional. Defaults to file storage under `~/.dexter-x402/channels` |
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `fetch` | `function` | Payment-aware fetch |
-| `isLoading` | `boolean` | Payment in progress |
-| `status` | `string` | `'idle'` \| `'pending'` \| `'success'` \| `'error'` |
-| `error` | `X402Error?` | Error details if failed |
-| `transactionId` | `string?` | Transaction signature |
-| `transactionUrl` | `string?` | Block explorer link |
-| `balances` | `Balance[]` | Token balances per chain |
-| `refreshBalances` | `function` | Manual refresh |
-| `reset` | `function` | Clear state |
-| `accessPass` | `object?` | Active pass state (tier, expiresAt, remainingSeconds) |
+Returns an Express handler with `.stop()`, `.closeAll()`, `.closeChannel(channelId)`.
 
-### `useAccessPass(options)`
+### `bazaarExtension()` / `declareDiscoveryExtension(config)`
 
-| Option | Type | Required | Description |
-|--------|------|----------|-------------|
-| `wallets` | `{ solana?, evm? }` | Yes | Multi-chain wallets |
-| `resourceUrl` | `string` | Yes | The x402 resource base URL |
-| `preferredNetwork` | `string` | No | Prefer this network |
-| `autoConnect` | `boolean` | No | Auto-fetch tiers on mount (default: true) |
+The bazaar extension factory takes no arguments. Per-route discovery config is supplied through `declareDiscoveryExtension(config)`:
 
-Returns:
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `tiers` | `AccessPassTier[]?` | Available tiers from server |
-| `pass` | `object?` | Active pass (jwt, tier, expiresAt, remainingSeconds) |
-| `isPassValid` | `boolean` | Whether pass is active and not expired |
-| `purchasePass` | `function` | Buy a pass for a tier or custom duration |
-| `isPurchasing` | `boolean` | Purchase in progress |
-| `fetch` | `function` | Fetch with auto pass inclusion |
+| Field | Type | Notes |
+|---|---|---|
+| `method` | `'GET' \| 'HEAD' \| 'DELETE' \| 'POST' \| 'PUT' \| 'PATCH'` | Optional. If omitted, the actual request method is used. |
+| `queryParams` | `Record<string, ParamSpec>` | For GET/HEAD/DELETE routes |
+| `bodyType` | `'json' \| 'form'` | For POST/PUT/PATCH routes |
+| `body` | `Record<string, ParamSpec>` | For POST/PUT/PATCH routes |
+| `inputSchema` | JSON Schema (Draft 2020-12) | Validates `info` |
+| `output` | `{ example, schema? }` | Example response payload |
 
 ---
 
 ## Development
 
 ```bash
-npm run build      # Build ESM + CJS
+npm run build      # ESM + CJS
 npm run dev        # Watch mode
-npm run typecheck  # TypeScript checks
+npm run typecheck
+npm test           # 273 vitest tests
 ```
 
 ---
 
 ## License
 
-MIT — see [LICENSE](./LICENSE)
+MIT. See [LICENSE](./LICENSE).
 
 ---
 
 <p align="center">
-  <a href="https://x402.dexter.cash">Dexter Facilitator</a> · 
-  <a href="https://dexter.cash/opendexter">OpenDexter Marketplace</a> · 
-  <a href="https://dexter.cash/sdk">Live Demo</a> · 
-  <a href="https://dexter.cash/access-pass">Access Pass Demo</a> · 
+  <a href="https://x402.dexter.cash">Dexter Facilitator</a> ·
+  <a href="https://dexter.cash/opendexter">OpenDexter Marketplace</a> ·
+  <a href="https://dexter.cash/sdk">Live Demo</a> ·
   <a href="https://dexter.cash/onboard">Become a Seller</a>
 </p>
