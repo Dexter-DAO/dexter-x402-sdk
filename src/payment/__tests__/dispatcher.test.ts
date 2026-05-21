@@ -43,13 +43,14 @@ describe('payAndFetch', () => {
       {},
     );
     expect(result.ok).toBe(true);
-    if (result.ok) {
+    // Regression: previously the unpaid branch returned a phantom
+    // `network: { caip2: '', bare: '', family: 'evm' }` placeholder, which
+    // poisoned downstream analytics. The discriminator now forces callers
+    // to narrow on `paid` before reading any payment fields.
+    expect(result.ok && result.paid).toBe(false);
+    if (result.ok && !result.paid) {
+      // On the paid:false branch `response` is always defined.
       expect(result.response.status).toBe(200);
-      // Regression: previously the unpaid branch returned a phantom
-      // `network: { caip2: '', bare: '', family: 'evm' }` placeholder, which
-      // poisoned downstream analytics. The discriminator now forces callers
-      // to narrow on `paid` before reading any payment fields.
-      expect(result.paid).toBe(false);
       // @ts-expect-error — narrowing on paid: false means network/amountPaid
       // are not in the result type. The runtime assertion guards against a
       // future regression that re-introduces them.
@@ -129,7 +130,7 @@ describe('payAndFetch', () => {
     vi.stubGlobal('fetch', mockFetch);
     const result = await payAndFetch('https://example.com/me', { method: 'GET' }, {}, {});
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.response.status).toBe(200);
+    if (result.ok && !result.paid) expect(result.response.status).toBe(200);
     vi.unstubAllGlobals();
   });
 
@@ -160,7 +161,7 @@ describe('payAndFetch', () => {
     );
 
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.response.status).toBe(200);
+    if (result.ok && !result.paid) expect(result.response.status).toBe(200);
     expect(mockFetch).toHaveBeenCalled(); // bare-fetch fallback was used
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('[x402] SIW-X unavailable'),
@@ -208,7 +209,7 @@ describe('payAndFetch', () => {
     );
 
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.response.status).toBe(200);
+    if (result.ok && !result.paid) expect(result.response.status).toBe(200);
     expect(mockFetch).toHaveBeenCalled();
 
     vi.unstubAllGlobals();

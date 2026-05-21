@@ -71,9 +71,21 @@ export const v1Strategy: PaymentStrategy = {
     opts: PayAndFetchOptions,
   ): Promise<PayResult> {
     // pay() MUST never throw — every path returns a typed PayResult.
+    //
+    // Two-phase timeout (see DESIGN-timeout-double-charge.md): the unpaid
+    // build/sign runs under a short pre-payment deadline; the `fetch()` that
+    // carries the X-PAYMENT header runs under a long post-payment deadline,
+    // because once that header is sent the facilitator may settle and a
+    // timeout can no longer be read as "no money moved".
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const controller = new AbortController();
+    let paymentDispatched = false;
     try {
       // 1-5. Build the signed v1 X-PAYMENT header value.
+      // Pre-payment phase — short deadline. Nothing is committed yet.
+      const preTimeoutMs = opts.timeoutMs ?? 15000;
+      timer = setTimeout(() => controller.abort(), preTimeoutMs);
+
       const headerResult = await buildV1PaymentHeader(challenge, wallets, opts);
       if (!headerResult.ok) {
         return { ok: false, reason: headerResult.reason, detail: headerResult.detail };
@@ -85,9 +97,6 @@ export const v1Strategy: PaymentStrategy = {
       const headers = new Headers(requestInit.headers ?? undefined);
       headers.set('X-PAYMENT', paymentHeader);
 
-      const controller = new AbortController();
-      const timeoutMs = opts.timeoutMs ?? 15000;
-      timer = setTimeout(() => controller.abort(), timeoutMs);
       const signal =
         requestInit.signal != null
           ? AbortSignal.any([requestInit.signal, controller.signal])
@@ -102,7 +111,14 @@ export const v1Strategy: PaymentStrategy = {
         freshInit.body = requestInit.body;
       }
 
-      // 7. Send and map the outcome.
+      // 7. Send and map the outcome. Crossing the seam: the X-PAYMENT header
+      // is about to leave our hands — swap the short pre-payment deadline for
+      // the long post-payment one.
+      paymentDispatched = true;
+      clearTimeout(timer);
+      const postTimeoutMs = opts.responseTimeoutMs ?? 120000;
+      timer = setTimeout(() => controller.abort(), postTimeoutMs);
+
       const response = await fetch(url, freshInit);
       if (response.ok) {
         return {
@@ -120,7 +136,22 @@ export const v1Strategy: PaymentStrategy = {
       return { ok: false, ...(await classifyPaidFailure(response)) };
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
-        return { ok: false, reason: 'timeout' };
+        if (!paymentDispatched) {
+          // Pre-payment abort: no X-PAYMENT header was sent. No money moved.
+          return { ok: false, reason: 'timeout' };
+        }
+        // Post-payment abort: the X-PAYMENT header was already sent. The
+        // facilitator may have settled — report the honest unconfirmed
+        // state, never 'timeout'. (Chain confirmation lands in the next PR.)
+        return {
+          ok: false,
+          reason: 'payment_unconfirmed',
+          detail:
+            'Payment authorization was sent, but the merchant did not respond ' +
+            'within the timeout. The payment may have settled on-chain — do not ' +
+            'retry without checking. Inspect the funding wallet for a USDC ' +
+            'transfer to the merchant before attempting payment again.',
+        };
       }
       return {
         ok: false,

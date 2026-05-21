@@ -42,8 +42,13 @@ export interface PaymentChallenge {
  * Result of a paid fetch. Never throws for an expected failure.
  *
  * The `ok: true` branch is further discriminated by `paid`:
- *   - `paid: true`  — the endpoint demanded payment and we paid; `network`,
- *                     `amountPaid`, and (optionally) `txSignature` are present.
+ *   - `paid: true`  — the endpoint demanded payment and we paid; `amountPaid`
+ *                     and `network` are present, `txSignature` optional.
+ *                     `response` is usually the merchant's response, but is
+ *                     `undefined` when the payment settled and the merchant
+ *                     never delivered a response before the deadline (a
+ *                     confirmed-but-unanswered payment — see `payment_unconfirmed`
+ *                     below for the unconfirmed counterpart).
  *   - `paid: false` — the endpoint returned a non-402 directly; no payment
  *                     was attempted. Only `response` is present, because no
  *                     payment-related fields are meaningful in that case.
@@ -56,7 +61,12 @@ export type PayResult =
   | {
       ok: true;
       paid: true;
-      response: Response;
+      /**
+       * The merchant's response. `undefined` when the payment was confirmed
+       * settled but the merchant did not respond before the deadline — you
+       * paid, the merchant never answered. Always check before use.
+       */
+      response: Response | undefined;
       /** Atomic amount actually paid. */
       amountPaid: string;
       network: NetworkRef;
@@ -80,7 +90,16 @@ export type PayResult =
          *  merchant-side defect. `detail` carries their verbatim error. */
         | 'settlement_failed'
         | 'no_payment_options'
+        /** No payment was sent before the deadline — the unpaid probe (or
+         *  build/sign) ran past the pre-payment timeout. No money moved;
+         *  safe to retry. */
         | 'timeout'
+        /** The payment authorization WAS sent to the merchant, the merchant
+         *  did not respond before the deadline, and settlement could not be
+         *  confirmed. The payment MAY have settled on-chain. DO NOT
+         *  blind-retry — a retry signs a fresh authorization and can pay
+         *  again. `detail` explains the state. */
+        | 'payment_unconfirmed'
         | 'budget_exceeded'
         | 'error';
       detail?: string;
@@ -93,8 +112,29 @@ export type { WalletSet } from '../adapters/types';
 export interface PayAndFetchOptions {
   /** Max total atomic spend for this call. */
   maxAmountAtomic?: string;
-  /** Per-request timeout in ms. Default 15000. */
+  /**
+   * Pre-payment timeout in ms — the deadline for the unpaid probe and the
+   * build/sign step, i.e. everything BEFORE the payment authorization is
+   * sent. Exceeding it yields `reason: 'timeout'` (no money moved, safe to
+   * retry). Default 15000.
+   *
+   * This does NOT bound the wait for the merchant's response once payment
+   * has been dispatched — see `responseTimeoutMs`. The two phases have
+   * separate deadlines on purpose: once the payment is out the door,
+   * aborting the wait does not un-spend the money.
+   */
   timeoutMs?: number;
+  /**
+   * Post-payment timeout in ms — the deadline for the merchant's response
+   * AFTER the payment authorization has been sent. Exceeding it does not
+   * yield `'timeout'`; it yields `'payment_unconfirmed'` (or, once on-chain
+   * confirmation lands, a confirmed `paid: true`). Default 120000.
+   *
+   * Generous by design: research / scout / agent endpoints routinely take
+   * tens of seconds, and the money is already committed once this phase
+   * begins — there is no benefit to a tight deadline here.
+   */
+  responseTimeoutMs?: number;
   /**
    * Solana RPC endpoint for v1 SVM payment signing. v1 Solana `exact`
    * signing builds a real transaction and needs RPC access (mint lookup,

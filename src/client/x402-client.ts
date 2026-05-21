@@ -209,6 +209,22 @@ export interface X402ClientConfig {
   onPaymentRequired?: (requirements: PaymentAccept) => boolean | Promise<boolean>;
 
   /**
+   * Called the instant the signed payment authorization is sent to the
+   * merchant — after `buildTransaction`, immediately before the paid retry
+   * fetch. This is the point past which a timeout can no longer be treated
+   * as "no money moved": the facilitator may settle at any time once the
+   * authorization is in its hands.
+   *
+   * The callback receives the `accept` it is paying against (network, asset,
+   * amount, payTo). Used by `payAndFetch` to mark a payment as dispatched so
+   * a post-payment abort is not misreported as a plain timeout.
+   *
+   * Fire-and-forget — the return value is ignored, and a throw is swallowed
+   * (the payment proceeds regardless). Do not do slow work here.
+   */
+  onPaymentDispatched?: (accept: PaymentAccept) => void;
+
+  /**
    * Maximum retry attempts for transient failures (network errors, 502/503).
    * Does not cause double payments — EIP-3009 nonces prevent replay.
    * @default 0 (no retry)
@@ -279,6 +295,7 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     verbose = false,
     accessPass: accessPassConfig,
     onPaymentRequired,
+    onPaymentDispatched,
     maxRetries = 0,
     retryDelayMs = 500,
   } = config;
@@ -794,7 +811,21 @@ export function createX402Client(config: X402ClientConfig): X402Client {
 
     const paymentSignatureHeader = btoa(JSON.stringify(paymentSignature));
 
-    // Retry request with payment (safe to retry — EIP-3009 nonces prevent double-spend)
+    // Signal that the payment authorization is about to leave our hands. Past
+    // this point a timeout can no longer be read as "no money moved" — the
+    // facilitator may settle the moment it receives the header below.
+    if (onPaymentDispatched) {
+      try {
+        onPaymentDispatched(accept);
+      } catch {
+        // Fire-and-forget — a throwing callback must not block the payment.
+      }
+    }
+
+    // Retry request with payment. Resending this exact header is safe — the
+    // EIP-3009 nonce is fixed, so the facilitator cannot settle it twice.
+    // (That protection is per-authorization; it does NOT cover a fresh
+    // payAndFetch call, which signs a new nonce. See FINDINGS / DESIGN docs.)
     log('Retrying request with payment...');
     const retryResponse = await fetchWithRetry(input, {
       ...init,

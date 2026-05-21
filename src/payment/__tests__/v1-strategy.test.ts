@@ -133,4 +133,61 @@ describe('v1Strategy.pay', () => {
     expect(mockFetch).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
+
+  it('reports payment_unconfirmed (not timeout) when the merchant hangs AFTER the X-PAYMENT header is sent', async () => {
+    // Post-payment phase: pay() builds and sends the X-PAYMENT header, then
+    // the merchant never responds. The payment authorization is already out
+    // — the result must be payment_unconfirmed, never 'timeout'.
+    let paidRetrySeen = false;
+    const mockFetch = vi.fn((_url: unknown, init?: RequestInit) => {
+      const rawHeaders = init?.headers;
+      const h =
+        rawHeaders instanceof Headers
+          ? Object.fromEntries(rawHeaders.entries())
+          : ((rawHeaders ?? {}) as Record<string, string>);
+      const hasPayment = !!(h['X-PAYMENT'] ?? h['x-payment']);
+      if (hasPayment) {
+        // The paid retry — hang until the post-payment deadline aborts us.
+        paidRetrySeen = true;
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+          );
+        });
+      }
+      // An un-paid probe — should not happen here (pay() gets a parsed
+      // challenge), but answer with the 402 for completeness.
+      return import('./fixtures').then(m => m.makeV1Response());
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const { v1Strategy } = await import('../v1-strategy');
+    const challenge = await v1Strategy.parseChallenge(
+      (await import('./fixtures')).makeV1Response(),
+    );
+    challenge!.options[0].extra = { name: 'USD Coin', version: '2' };
+    const { createEvmKeypairWallet } = await import('../../client/evm-wallet');
+    const wallets = {
+      evm: createEvmKeypairWallet(
+        '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d',
+      ),
+    } as never;
+
+    const result = await v1Strategy.pay(
+      'https://example.com/api',
+      { method: 'GET' },
+      challenge!,
+      wallets,
+      // Short post-payment budget so the hung retry aborts fast.
+      { maxAmountAtomic: '100000', responseTimeoutMs: 50 },
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('payment_unconfirmed');
+      expect(result.detail).toMatch(/do not retry/i);
+    }
+    expect(paidRetrySeen).toBe(true);
+    vi.unstubAllGlobals();
+  });
 });

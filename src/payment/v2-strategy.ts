@@ -90,6 +90,35 @@ export const v2Strategy: PaymentStrategy = {
       return { ok: false, reason: 'unsupported_network' };
     }
 
+    // ── Two-phase timeout ──────────────────────────────────────────────
+    // One operation, two phases with separate deadlines:
+    //   1. pre-payment  — probe + build/sign. No money committed. Short
+    //      deadline (`timeoutMs`, 15s). Abort here ⇒ reason 'timeout',
+    //      safe to retry.
+    //   2. post-payment — the wait for the merchant's response after the
+    //      PAYMENT-SIGNATURE header is sent. The facilitator may settle at
+    //      any instant. Long deadline (`responseTimeoutMs`, 120s). Abort
+    //      here ⇒ reason 'payment_unconfirmed' — the money may be gone.
+    //
+    // We use a single AbortController and a single composed signal, but
+    // reschedule the timer when payment is dispatched: clear the short
+    // pre-payment timer, arm the long post-payment one. `paymentDispatched`
+    // records which phase we were in when an abort fired.
+    const preTimeoutMs = opts.timeoutMs ?? 15000;
+    const postTimeoutMs = opts.responseTimeoutMs ?? 120000;
+
+    const controller = new AbortController();
+    let timeoutId = setTimeout(() => controller.abort(), preTimeoutMs);
+    let paymentDispatched = false;
+
+    const onPaymentDispatched = () => {
+      // Crossing the seam: the payment is leaving our hands. Swap the short
+      // pre-payment deadline for the long post-payment one.
+      paymentDispatched = true;
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => controller.abort(), postTimeoutMs);
+    };
+
     // Delegate to createX402Client which accepts a WalletSet directly.
     // wrapFetch only accepts private key strings, so we go one level deeper.
     const client = createX402Client({
@@ -97,14 +126,8 @@ export const v2Strategy: PaymentStrategy = {
       preferredNetwork: option.network.caip2,
       maxAmountAtomic: opts.maxAmountAtomic,
       fetch: globalThis.fetch,
+      onPaymentDispatched,
     });
-
-    // Build a fresh RequestInit — never reuse a potentially-consumed body.
-    const controller = new AbortController();
-    const timeoutId = setTimeout(
-      () => controller.abort(),
-      opts.timeoutMs ?? 15000,
-    );
 
     // Compose the caller's own cancellation signal with the timeout signal so
     // neither is lost. AbortSignal.any fires on the first signal to abort.
@@ -112,6 +135,7 @@ export const v2Strategy: PaymentStrategy = {
       ? AbortSignal.any([requestInit.signal, controller.signal])
       : controller.signal;
 
+    // Build a fresh RequestInit — never reuse a potentially-consumed body.
     const freshInit: RequestInit = {
       method: requestInit.method ?? 'GET',
       headers: requestInit.headers,
@@ -161,7 +185,26 @@ export const v2Strategy: PaymentStrategy = {
       clearTimeout(timeoutId);
       const e = err as { name?: string; message?: string };
       if (e?.name === 'AbortError') {
-        return { ok: false, reason: 'timeout' };
+        // Which phase were we in when the abort fired?
+        if (!paymentDispatched) {
+          // Pre-payment: no authorization was sent. No money moved. The
+          // caller can safely retry.
+          return { ok: false, reason: 'timeout' };
+        }
+        // Post-payment: the PAYMENT-SIGNATURE header was already sent. The
+        // facilitator may have settled the payment on-chain. We cannot
+        // confirm that here (chain confirmation lands in the next PR), so we
+        // report the honest unconfirmed state — never 'timeout', which would
+        // read as "safe to retry" and invite a double-charge.
+        return {
+          ok: false,
+          reason: 'payment_unconfirmed',
+          detail:
+            'Payment authorization was sent, but the merchant did not respond ' +
+            'within the timeout. The payment may have settled on-chain — do not ' +
+            'retry without checking. Inspect the funding wallet for a USDC ' +
+            'transfer to the merchant before attempting payment again.',
+        };
       }
       return { ok: false, reason: 'error', detail: e?.message ?? String(err) };
     }
