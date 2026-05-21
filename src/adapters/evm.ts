@@ -5,7 +5,13 @@
  * Uses EIP-712 typed data signing for x402 v2 payments.
  */
 
-import type { ChainAdapter, AdapterConfig, SignedTransaction } from './types';
+import type {
+  ChainAdapter,
+  AdapterConfig,
+  SignedTransaction,
+  SettlementProbe,
+  SettlementConfirmation,
+} from './types';
 import type { PaymentAccept } from '../types';
 import {
   PERMIT2_ADDRESS,
@@ -294,6 +300,87 @@ export class EvmAdapter implements ChainAdapter {
     return selector + paddedAddress;
   }
 
+  /**
+   * Confirm an EVM payment settled on-chain, after a post-payment timeout.
+   *
+   * EIP-3009 (`exact`): calls the token contract's
+   * `authorizationState(authorizer, nonce)` view — `true` means our exact
+   * signed authorization was consumed, i.e. the transfer settled. The nonce
+   * is the 32-byte value the SDK itself generated, so this is a definitive,
+   * surgical yes/no.
+   *
+   * Permit2: calls `Permit2.nonceBitmap(owner, wordPos)` and tests the bit
+   * for our nonce. A set bit means the Permit2 transfer was executed.
+   *
+   * For any other scheme (e.g. exact-approval) there is no clean
+   * nonce-consumed check — this throws, which the strategy reads as
+   * "unknown" and maps to `payment_unconfirmed`.
+   */
+  async confirmSettlement(
+    probe: SettlementProbe,
+    rpcUrl: string,
+  ): Promise<SettlementConfirmation> {
+    if (probe.kind === 'eip3009') {
+      // authorizationState(address authorizer, bytes32 nonce) -> bool
+      const selector = '0xe94a0102';
+      const paddedFrom = probe.from.slice(2).toLowerCase().padStart(64, '0');
+      const paddedNonce = probe.nonce.slice(2).toLowerCase().padStart(64, '0');
+      const data = selector + paddedFrom + paddedNonce;
+      const word = await this.ethCall(rpcUrl, probe.asset, data);
+      // A bool return is a 32-byte word; non-zero ⇒ true ⇒ authorization used.
+      const settled = BigInt(word) !== 0n;
+      return { settled };
+    }
+
+    if (probe.kind === 'permit2') {
+      // nonceBitmap(address owner, uint256 wordPos) -> uint256
+      // The Permit2 nonce splits into wordPos = nonce >> 8 and
+      // bitPos = nonce & 0xff. A set bit at bitPos means the nonce was spent.
+      const selector = '0x4fe02b44';
+      const nonce = BigInt(probe.nonce);
+      const wordPos = nonce >> 8n;
+      const bitPos = nonce & 0xffn;
+      const paddedOwner = probe.from.slice(2).toLowerCase().padStart(64, '0');
+      const paddedWordPos = wordPos.toString(16).padStart(64, '0');
+      const data = selector + paddedOwner + paddedWordPos;
+      const word = await this.ethCall(rpcUrl, PERMIT2_ADDRESS, data);
+      const bitmap = BigInt(word);
+      const settled = ((bitmap >> bitPos) & 1n) === 1n;
+      return { settled };
+    }
+
+    // Solana probe handed to the EVM adapter — a routing bug. Throw rather
+    // than silently claim "not settled."
+    throw new Error(
+      `EvmAdapter.confirmSettlement cannot handle probe kind "${(probe as { kind: string }).kind}"`,
+    );
+  }
+
+  /** Raw `eth_call` returning the result hex word. Throws on RPC error. */
+  private async ethCall(rpcUrl: string, to: string, data: string): Promise<string> {
+    const response = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'eth_call',
+        params: [{ to, data }, 'latest'],
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`RPC request failed: ${response.status}`);
+    }
+    const result = (await response.json()) as { error?: unknown; result?: string };
+    if (result.error) {
+      throw new Error(`RPC error: ${JSON.stringify(result.error)}`);
+    }
+    if (!result.result || result.result === '0x') {
+      throw new Error('RPC returned an empty result');
+    }
+    return result.result;
+  }
+
   async buildTransaction(
     accept: PaymentAccept,
     wallet: unknown,
@@ -405,6 +492,15 @@ export class EvmAdapter implements ChainAdapter {
     return {
       serialized: JSON.stringify(payload),
       signature,
+      // Captured so a post-payment timeout can ask the USDC contract whether
+      // this exact authorization was consumed (EIP-3009 `authorizationState`).
+      settlementProbe: {
+        kind: 'eip3009',
+        from: wallet.address,
+        nonce,
+        asset,
+        chainId,
+      },
     };
   }
 
@@ -734,6 +830,13 @@ export class EvmAdapter implements ChainAdapter {
       serialized: JSON.stringify(payload),
       signature,
       extensions: approvalExtension,
+      // Captured so a post-payment timeout can test the Permit2 nonce bitmap.
+      settlementProbe: {
+        kind: 'permit2',
+        from: wallet.address,
+        nonce: nonce.toString(),
+        chainId,
+      },
     };
   }
 

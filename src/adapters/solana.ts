@@ -21,7 +21,13 @@ import {
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
 } from '@solana/spl-token';
-import type { ChainAdapter, AdapterConfig, SignedTransaction } from './types';
+import type {
+  ChainAdapter,
+  AdapterConfig,
+  SignedTransaction,
+  SettlementProbe,
+  SettlementConfirmation,
+} from './types';
 import type { PaymentAccept } from '../types';
 import {
   SOLANA_MAINNET,
@@ -320,7 +326,100 @@ export class SolanaAdapter implements ChainAdapter {
 
     return {
       serialized: Buffer.from(signedTx.serialize()).toString('base64'),
+      // Captured so a post-payment timeout can scan the destination ATA for
+      // the settling transfer. Solana has no nonce-consumed view, so this
+      // carries enough to identify the transfer: the ATAs, the amount, and
+      // the blockhash (which bounds how far back the scan must look — a
+      // transaction is only valid for ~150 slots after its blockhash).
+      settlementProbe: {
+        kind: 'solana',
+        sourceAta: sourceAta.toBase58(),
+        destinationAta: destinationAta.toBase58(),
+        asset,
+        amount,
+        blockhash,
+      },
     };
+  }
+
+  /**
+   * Confirm a Solana payment settled on-chain, after a post-payment timeout.
+   *
+   * Solana has no EIP-3009-style "was this nonce consumed" view. Instead we
+   * scan recent signatures on the merchant's destination ATA and look for a
+   * transfer of exactly the expected amount. The window is naturally bounded:
+   * the payment transaction is only valid for ~150 slots (~60s) after the
+   * blockhash it was built against, so a settling transfer — if it happened —
+   * is among the most recent signatures on that account. We cap the scan at
+   * the 25 most recent signatures.
+   *
+   * This is strong but not surgical: it matches on (destination ATA, amount),
+   * not a unique nonce. A same-amount transfer to the same merchant inside
+   * the window from an unrelated payer could in principle match. In practice
+   * the blockhash window makes that vanishingly unlikely, and a false
+   * positive here only means we tell the caller "paid" when they were not —
+   * which is the safe direction (it discourages a retry; the caller verifies
+   * against their own wallet). A false negative maps to `payment_unconfirmed`.
+   */
+  async confirmSettlement(
+    probe: SettlementProbe,
+    rpcUrl: string,
+  ): Promise<SettlementConfirmation> {
+    if (probe.kind !== 'solana') {
+      throw new Error(
+        `SolanaAdapter.confirmSettlement cannot handle probe kind "${probe.kind}"`,
+      );
+    }
+
+    const connection = new Connection(rpcUrl, 'confirmed');
+    const destAta = new PublicKey(probe.destinationAta);
+
+    // Most-recent signatures on the merchant's destination ATA.
+    const sigs = await connection.getSignaturesForAddress(destAta, { limit: 25 });
+    if (sigs.length === 0) {
+      return { settled: false };
+    }
+
+    const want = BigInt(probe.amount);
+
+    // Inspect each candidate transaction for an INCREASE on the destination
+    // ATA equal to the expected payment amount.
+    for (const sigInfo of sigs) {
+      if (sigInfo.err) continue; // failed tx — never settled funds
+      const tx = await connection.getTransaction(sigInfo.signature, {
+        commitment: 'confirmed',
+        maxSupportedTransactionVersion: 0,
+      });
+      if (!tx?.meta) continue;
+
+      // The full account key list, so a balance entry's accountIndex can be
+      // resolved to an actual address and compared to the destination ATA.
+      const accountKeys = tx.transaction.message
+        .getAccountKeys()
+        .keySegments()
+        .flat();
+
+      const pre = tx.meta.preTokenBalances ?? [];
+      const post = tx.meta.postTokenBalances ?? [];
+
+      for (const postBal of post) {
+        if (postBal.mint !== probe.asset) continue;
+        // Resolve the balance entry to a concrete account address and require
+        // it to BE the merchant's destination ATA — not just any token
+        // account the transaction touched.
+        const acct = accountKeys[postBal.accountIndex];
+        if (!acct || !acct.equals(destAta)) continue;
+
+        const preBal = pre.find(p => p.accountIndex === postBal.accountIndex);
+        const preAmt = BigInt(preBal?.uiTokenAmount.amount ?? '0');
+        const postAmt = BigInt(postBal.uiTokenAmount.amount ?? '0');
+        if (postAmt - preAmt === want) {
+          return { settled: true, txSignature: sigInfo.signature };
+        }
+      }
+    }
+
+    return { settled: false };
   }
 }
 

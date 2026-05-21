@@ -14,10 +14,11 @@ import type {
   PayResult,
   PayAndFetchOptions,
 } from './types';
-import type { WalletSet } from '../adapters/types';
+import type { WalletSet, SettlementProbe } from '../adapters/types';
 import { toNetworkRef } from './network-map';
 import { buildV1PaymentHeader } from './v1-header';
 import { errorDetail, classifyPaidFailure } from './errors';
+import { confirmSettlement } from './confirm-settlement';
 
 function toOptions(accepts: unknown[]): ChallengeOption[] {
   const out: ChallengeOption[] = [];
@@ -80,6 +81,10 @@ export const v1Strategy: PaymentStrategy = {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
     let paymentDispatched = false;
+    // Captured before the seam so the post-payment abort branch can confirm
+    // settlement on-chain.
+    let settlementProbe: SettlementProbe | undefined;
+    let chosenOption: ChallengeOption | undefined;
     try {
       // 1-5. Build the signed v1 X-PAYMENT header value.
       // Pre-payment phase — short deadline. Nothing is committed yet.
@@ -92,6 +97,8 @@ export const v1Strategy: PaymentStrategy = {
       }
       const paymentHeader = headerResult.headerValue;
       const chosen = headerResult.option;
+      chosenOption = chosen;
+      settlementProbe = headerResult.settlementProbe;
 
       // 6. Build a FRESH RequestInit — never reuse a consumed body.
       const headers = new Headers(requestInit.headers ?? undefined);
@@ -140,17 +147,28 @@ export const v1Strategy: PaymentStrategy = {
           // Pre-payment abort: no X-PAYMENT header was sent. No money moved.
           return { ok: false, reason: 'timeout' };
         }
-        // Post-payment abort: the X-PAYMENT header was already sent. The
-        // facilitator may have settled — report the honest unconfirmed
-        // state, never 'timeout'. (Chain confirmation lands in the next PR.)
+        // Post-payment abort: the X-PAYMENT header was already sent. Ask the
+        // chain directly whether the payment settled.
+        const confirmation = await confirmSettlement(
+          settlementProbe,
+          // chosenOption is always set once paymentDispatched is true.
+          chosenOption!.network,
+          opts.solanaRpcUrl,
+        );
+        if (confirmation.confirmed) {
+          return {
+            ok: true,
+            paid: true,
+            response: undefined,
+            amountPaid: chosenOption!.amount,
+            network: chosenOption!.network,
+            txSignature: confirmation.txSignature,
+          };
+        }
         return {
           ok: false,
           reason: 'payment_unconfirmed',
-          detail:
-            'Payment authorization was sent, but the merchant did not respond ' +
-            'within the timeout. The payment may have settled on-chain — do not ' +
-            'retry without checking. Inspect the funding wallet for a USDC ' +
-            'transfer to the merchant before attempting payment again.',
+          detail: confirmation.detail,
         };
       }
       return {

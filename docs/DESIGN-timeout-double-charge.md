@@ -133,8 +133,8 @@ These are PRs 5, 6, 7 of the 3.9 cycle in [PLAN.md](./PLAN.md).
 
 | PR | Scope | Repo |
 |---|---|---|
-| **3.9 PR 5** | Stop the lie. Two-phase timeout + `paymentDispatched` tracking + `payment_unconfirmed` reason. No chain calls yet — a post-payment abort returns `payment_unconfirmed` unconditionally. This alone stops `x402-mcp-tools` printing "Payment failed" on a settled payment. | SDK |
-| **3.9 PR 6** | Chain confirmation. `ChainAdapter.confirmSettlement`, the EVM + Solana implementations, `SettlementProbe` plumbing. Upgrades a post-payment abort from always-`payment_unconfirmed` to `paid: true` wherever the chain can confirm. | SDK |
+| **3.9 PR 5** ✅ | Stop the lie. Two-phase timeout + `paymentDispatched` tracking + `payment_unconfirmed` reason. No chain calls yet — a post-payment abort returns `payment_unconfirmed` unconditionally. This alone stops `x402-mcp-tools` printing "Payment failed" on a settled payment. Shipped `200be1d`. | SDK |
+| **3.9 PR 6** ✅ | Chain confirmation. `ChainAdapter.confirmSettlement`, the EVM + Solana implementations, `SettlementProbe` plumbing, shared `confirm-settlement.ts` helper. Upgrades a post-payment abort from always-`payment_unconfirmed` to `paid: true` wherever the chain can confirm. Both v1 and v2. | SDK |
 | **3.9 PR 7** | `x402-mcp-tools` consumer fix — stop rendering `Payment failed:` for `payment_unconfirmed`; handle the `paid: true, response: undefined` shape. | dexter-mcp |
 
 PR 5 and PR 6 both ship in the 3.9 cycle, before the 3.9.0 publish. PR 7 is a paired fix in `dexter-mcp` and can ship independently but should land close to PR 5.

@@ -30,7 +30,7 @@
  * ```
  */
 
-import type { ChainAdapter, WalletSet } from '../adapters/types';
+import type { ChainAdapter, WalletSet, SettlementProbe } from '../adapters/types';
 import type {
   PaymentRequired,
   PaymentAccept,
@@ -216,13 +216,19 @@ export interface X402ClientConfig {
    * authorization is in its hands.
    *
    * The callback receives the `accept` it is paying against (network, asset,
-   * amount, payTo). Used by `payAndFetch` to mark a payment as dispatched so
-   * a post-payment abort is not misreported as a plain timeout.
+   * amount, payTo) and the `settlementProbe` the adapter produced (or
+   * `undefined` for schemes with no on-chain confirmation). `payAndFetch`
+   * uses this to mark a payment as dispatched — so a post-payment abort is
+   * not misreported as a plain timeout — and keeps the probe so it can
+   * confirm settlement on-chain if the merchant never responds.
    *
    * Fire-and-forget — the return value is ignored, and a throw is swallowed
    * (the payment proceeds regardless). Do not do slow work here.
    */
-  onPaymentDispatched?: (accept: PaymentAccept) => void;
+  onPaymentDispatched?: (
+    accept: PaymentAccept,
+    settlementProbe?: SettlementProbe,
+  ) => void;
 
   /**
    * Maximum retry attempts for transient failures (network errors, 502/503).
@@ -813,10 +819,12 @@ export function createX402Client(config: X402ClientConfig): X402Client {
 
     // Signal that the payment authorization is about to leave our hands. Past
     // this point a timeout can no longer be read as "no money moved" — the
-    // facilitator may settle the moment it receives the header below.
+    // facilitator may settle the moment it receives the header below. The
+    // settlementProbe (if the adapter produced one) lets the caller confirm
+    // settlement on-chain should the merchant never respond.
     if (onPaymentDispatched) {
       try {
-        onPaymentDispatched(accept);
+        onPaymentDispatched(accept, signedTx.settlementProbe);
       } catch {
         // Fire-and-forget — a throwing callback must not block the payment.
       }

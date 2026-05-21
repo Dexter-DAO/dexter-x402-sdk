@@ -134,12 +134,15 @@ describe('v1Strategy.pay', () => {
     vi.unstubAllGlobals();
   });
 
-  it('reports payment_unconfirmed (not timeout) when the merchant hangs AFTER the X-PAYMENT header is sent', async () => {
-    // Post-payment phase: pay() builds and sends the X-PAYMENT header, then
-    // the merchant never responds. The payment authorization is already out
-    // — the result must be payment_unconfirmed, never 'timeout'.
+  /**
+   * Mock fetch for the v1 post-payment-hang scenario. The X-PAYMENT retry
+   * hangs until aborted; the post-timeout `authorizationState` eth_call is
+   * answered with `authorizationStateResult` (non-zero ⇒ the EIP-3009 nonce
+   * was consumed ⇒ settled).
+   */
+  function makeV1PostPaymentHangFetch(authorizationStateResult: string) {
     let paidRetrySeen = false;
-    const mockFetch = vi.fn((_url: unknown, init?: RequestInit) => {
+    const fn = vi.fn((_url: unknown, init?: RequestInit) => {
       const rawHeaders = init?.headers;
       const h =
         rawHeaders instanceof Headers
@@ -155,11 +158,28 @@ describe('v1Strategy.pay', () => {
           );
         });
       }
-      // An un-paid probe — should not happen here (pay() gets a parsed
-      // challenge), but answer with the 402 for completeness.
+      const body = typeof init?.body === 'string' ? init.body : '';
+      // The post-timeout settlement check — authorizationState eth_call.
+      if (body.includes('eth_call') && body.includes('0xe94a0102')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ jsonrpc: '2.0', id: 1, result: authorizationStateResult }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      }
+      // An un-paid probe — pay() gets a parsed challenge so this is rare;
+      // answer with the 402 for completeness.
       return import('./fixtures').then(m => m.makeV1Response());
     });
-    vi.stubGlobal('fetch', mockFetch);
+    return { fn, seen: () => paidRetrySeen };
+  }
+
+  it('reports payment_unconfirmed when the merchant hangs and the chain shows NO settlement', async () => {
+    // X-PAYMENT sent, merchant hangs, authorizationState returns 0x0 (the
+    // EIP-3009 nonce was not consumed) — the payment did not settle.
+    const mock = makeV1PostPaymentHangFetch('0x' + '0'.repeat(64));
+    vi.stubGlobal('fetch', mock.fn);
 
     const { v1Strategy } = await import('../v1-strategy');
     const challenge = await v1Strategy.parseChallenge(
@@ -178,7 +198,6 @@ describe('v1Strategy.pay', () => {
       { method: 'GET' },
       challenge!,
       wallets,
-      // Short post-payment budget so the hung retry aborts fast.
       { maxAmountAtomic: '100000', responseTimeoutMs: 50 },
     );
 
@@ -187,7 +206,45 @@ describe('v1Strategy.pay', () => {
       expect(result.reason).toBe('payment_unconfirmed');
       expect(result.detail).toMatch(/do not retry/i);
     }
-    expect(paidRetrySeen).toBe(true);
+    expect(mock.seen()).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
+  it('upgrades to paid:true when the merchant hangs but the chain CONFIRMS settlement', async () => {
+    // X-PAYMENT sent, merchant hangs, authorizationState returns a non-zero
+    // word — the EIP-3009 nonce was consumed, the payment settled.
+    const mock = makeV1PostPaymentHangFetch('0x' + '0'.repeat(63) + '1');
+    vi.stubGlobal('fetch', mock.fn);
+
+    const { v1Strategy } = await import('../v1-strategy');
+    const challenge = await v1Strategy.parseChallenge(
+      (await import('./fixtures')).makeV1Response(),
+    );
+    challenge!.options[0].extra = { name: 'USD Coin', version: '2' };
+    const { createEvmKeypairWallet } = await import('../../client/evm-wallet');
+    const wallets = {
+      evm: createEvmKeypairWallet(
+        '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d',
+      ),
+    } as never;
+
+    const result = await v1Strategy.pay(
+      'https://example.com/api',
+      { method: 'GET' },
+      challenge!,
+      wallets,
+      { maxAmountAtomic: '100000', responseTimeoutMs: 50 },
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.paid).toBe(true);
+      if (result.paid) {
+        expect(result.response).toBeUndefined();
+        expect(result.amountPaid).toBe('10000'); // the v1 fixture's amount
+      }
+    }
+    expect(mock.seen()).toBe(true);
     vi.unstubAllGlobals();
   });
 });

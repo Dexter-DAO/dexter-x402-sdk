@@ -13,10 +13,11 @@ import type {
   PayResult,
   PayAndFetchOptions,
 } from './types';
-import type { WalletSet } from '../adapters/types';
+import type { WalletSet, SettlementProbe } from '../adapters/types';
 import { toNetworkRef } from './network-map';
 import { createX402Client } from '../client/x402-client';
 import { classifyPaidFailure } from './errors';
+import { confirmSettlement } from './confirm-settlement';
 
 function decodeHeader(raw: string): unknown {
   const padded = raw.replace(/-/g, '+').replace(/_/g, '/');
@@ -110,11 +111,17 @@ export const v2Strategy: PaymentStrategy = {
     const controller = new AbortController();
     let timeoutId = setTimeout(() => controller.abort(), preTimeoutMs);
     let paymentDispatched = false;
+    let settlementProbe: SettlementProbe | undefined;
 
-    const onPaymentDispatched = () => {
+    const onPaymentDispatched = (
+      _accept: unknown,
+      probe?: SettlementProbe,
+    ) => {
       // Crossing the seam: the payment is leaving our hands. Swap the short
-      // pre-payment deadline for the long post-payment one.
+      // pre-payment deadline for the long post-payment one, and keep the
+      // probe so a post-payment abort can confirm settlement on-chain.
       paymentDispatched = true;
+      settlementProbe = probe;
       clearTimeout(timeoutId);
       timeoutId = setTimeout(() => controller.abort(), postTimeoutMs);
     };
@@ -191,19 +198,32 @@ export const v2Strategy: PaymentStrategy = {
           // caller can safely retry.
           return { ok: false, reason: 'timeout' };
         }
-        // Post-payment: the PAYMENT-SIGNATURE header was already sent. The
-        // facilitator may have settled the payment on-chain. We cannot
-        // confirm that here (chain confirmation lands in the next PR), so we
-        // report the honest unconfirmed state — never 'timeout', which would
-        // read as "safe to retry" and invite a double-charge.
+        // Post-payment: the PAYMENT-SIGNATURE header was already sent. Ask
+        // the chain directly whether the payment settled.
+        const confirmation = await confirmSettlement(
+          settlementProbe,
+          option.network,
+          opts.solanaRpcUrl,
+        );
+        if (confirmation.confirmed) {
+          // The money moved. The merchant simply never delivered a response.
+          // Report a confirmed payment with no response body — never
+          // 'timeout', which would invite a double-charge.
+          return {
+            ok: true,
+            paid: true,
+            response: undefined,
+            amountPaid: option.amount,
+            network: option.network,
+            txSignature: confirmation.txSignature,
+          };
+        }
+        // Could not confirm settlement (no probe / RPC failed / no matching
+        // transfer found). Report the honest unconfirmed state.
         return {
           ok: false,
           reason: 'payment_unconfirmed',
-          detail:
-            'Payment authorization was sent, but the merchant did not respond ' +
-            'within the timeout. The payment may have settled on-chain — do not ' +
-            'retry without checking. Inspect the funding wallet for a USDC ' +
-            'transfer to the merchant before attempting payment again.',
+          detail: confirmation.detail,
         };
       }
       return { ok: false, reason: 'error', detail: e?.message ?? String(err) };

@@ -104,22 +104,21 @@ describe('v2Strategy.pay', () => {
     vi.unstubAllGlobals();
   });
 
-  it('reports payment_unconfirmed (not timeout) when the merchant hangs AFTER payment is sent', async () => {
-    // Post-payment phase: the probe returns a 402, the SDK signs and sends
-    // the PAYMENT-SIGNATURE header, then the merchant never responds. The
-    // facilitator may have settled — the result must be payment_unconfirmed,
-    // never 'timeout', so a consumer does not read it as "safe to retry".
-    //
-    // The mock distinguishes three fetch kinds: the unpaid probe (→ 402),
-    // the EVM balance-check eth_call RPC (→ a healthy balance), and the
-    // paid retry that carries PAYMENT-SIGNATURE (→ hang until aborted).
+  /**
+   * Build a mock fetch for the post-payment-hang scenario. The merchant's
+   * paid retry hangs until aborted; the unpaid probe returns a 402; EVM RPC
+   * `eth_call`s are answered. `authorizationStateResult` controls what the
+   * post-timeout `confirmSettlement` check sees: a non-zero word means the
+   * EIP-3009 authorization was consumed (settled), `0x0` means it was not.
+   */
+  function makePostPaymentHangFetch(authorizationStateResult: string) {
     let paidRetrySeen = false;
-    const mockFetch = vi.fn(
+    const fn = vi.fn(
       async (_url: string | URL | Request, init?: RequestInit) => {
         const headers = new Headers(init?.headers ?? undefined);
         const body = typeof init?.body === 'string' ? init.body : '';
 
-        // The paid retry — the request carrying the signed authorization.
+        // The paid retry — carries the signed authorization. Hang until abort.
         if (headers.has('PAYMENT-SIGNATURE')) {
           paidRetrySeen = true;
           return new Promise<Response>((_resolve, reject) => {
@@ -129,9 +128,21 @@ describe('v2Strategy.pay', () => {
           });
         }
 
-        // The EVM balance-check eth_call — answer with a healthy balance
-        // (~$1 in 6-decimal USDC atomic units) so the pre-payment check passes.
+        // EVM RPC eth_call — distinguish by the function selector in `data`.
         if (body.includes('eth_call')) {
+          const selector = body.includes('0xe94a0102')
+            ? 'authorizationState'
+            : body.includes('0x70a08231')
+              ? 'balanceOf'
+              : 'other';
+          if (selector === 'authorizationState') {
+            // The post-timeout settlement check.
+            return new Response(
+              JSON.stringify({ jsonrpc: '2.0', id: 1, result: authorizationStateResult }),
+              { status: 200, headers: { 'content-type': 'application/json' } },
+            );
+          }
+          // balanceOf — a healthy balance so the pre-payment check passes.
           return new Response(
             JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + (1_000_000).toString(16) }),
             { status: 200, headers: { 'content-type': 'application/json' } },
@@ -142,7 +153,14 @@ describe('v2Strategy.pay', () => {
         return (await import('./fixtures')).makeV2Response();
       },
     );
-    vi.stubGlobal('fetch', mockFetch);
+    return { fn, seen: () => paidRetrySeen };
+  }
+
+  it('reports payment_unconfirmed when the merchant hangs and the chain shows NO settlement', async () => {
+    // Post-payment hang + authorizationState returns 0x0 (nonce NOT consumed):
+    // the payment did not settle, so the honest result is payment_unconfirmed.
+    const mock = makePostPaymentHangFetch('0x' + '0'.repeat(64));
+    vi.stubGlobal('fetch', mock.fn);
 
     const { v2Strategy } = await import('../v2-strategy');
     const challenge = await v2Strategy.parseChallenge(
@@ -160,18 +178,54 @@ describe('v2Strategy.pay', () => {
       { method: 'GET' },
       challenge!,
       wallets,
-      // Long pre-payment budget so build/sign + probe finish; short
-      // post-payment budget so the hung retry aborts fast.
       { timeoutMs: 5000, responseTimeoutMs: 50 },
     );
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toBe('payment_unconfirmed');
-      // The detail must steer a consumer AWAY from a blind retry.
       expect(result.detail).toMatch(/do not retry/i);
     }
-    expect(paidRetrySeen).toBe(true); // the PAYMENT-SIGNATURE request was sent
+    expect(mock.seen()).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
+  it('upgrades to paid:true when the merchant hangs but the chain CONFIRMS settlement', async () => {
+    // Post-payment hang + authorizationState returns a non-zero word (nonce
+    // consumed): the payment settled on-chain. The result must be a confirmed
+    // paid:true with no response body — never 'timeout', never a failure.
+    const mock = makePostPaymentHangFetch('0x' + '0'.repeat(63) + '1');
+    vi.stubGlobal('fetch', mock.fn);
+
+    const { v2Strategy } = await import('../v2-strategy');
+    const challenge = await v2Strategy.parseChallenge(
+      (await import('./fixtures')).makeV2Response(),
+    );
+    const { createEvmKeypairWallet } = await import('../../client/evm-wallet');
+    const wallets = {
+      evm: await createEvmKeypairWallet(
+        '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d',
+      ),
+    } as never;
+
+    const result = await v2Strategy.pay(
+      'https://example.com/api',
+      { method: 'GET' },
+      challenge!,
+      wallets,
+      { timeoutMs: 5000, responseTimeoutMs: 50 },
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.paid).toBe(true);
+      if (result.paid) {
+        // A confirmed-but-unanswered payment: no merchant response body.
+        expect(result.response).toBeUndefined();
+        expect(result.amountPaid).toBe('2000'); // the fixture's challenge amount
+      }
+    }
+    expect(mock.seen()).toBe(true);
     vi.unstubAllGlobals();
   });
 });

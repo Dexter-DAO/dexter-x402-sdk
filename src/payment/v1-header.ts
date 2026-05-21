@@ -13,7 +13,7 @@ import type {
   ChallengeOption,
   PayAndFetchOptions,
 } from './types';
-import type { WalletSet } from '../adapters/types';
+import type { WalletSet, SettlementProbe } from '../adapters/types';
 import type { EvmWallet } from '../adapters/evm';
 import type { SolanaWallet } from '../adapters/solana';
 import type { PaymentAccept } from '../types';
@@ -88,7 +88,7 @@ async function signV1EvmPayment(
   wallet: EvmWallet,
   option: ChallengeOption,
   wireNetwork: string,
-): Promise<V1EvmPayment> {
+): Promise<{ payment: V1EvmPayment; settlementProbe: SettlementProbe }> {
   if (typeof wallet.signTypedData !== 'function') {
     throw new Error('EVM wallet does not support signTypedData');
   }
@@ -134,16 +134,36 @@ async function signV1EvmPayment(
     message: authorization,
   });
   return {
-    x402Version: 1,
-    scheme: option.scheme,
-    network: wireNetwork,
-    payload: { signature, authorization },
+    payment: {
+      x402Version: 1,
+      scheme: option.scheme,
+      network: wireNetwork,
+      payload: { signature, authorization },
+    },
+    // v1 EVM `exact` is EIP-3009 — the same scheme v2 uses by default — so a
+    // post-payment timeout can confirm via the token's `authorizationState`.
+    settlementProbe: {
+      kind: 'eip3009',
+      from: authorization.from,
+      nonce: authorization.nonce,
+      asset: option.asset,
+      chainId,
+    },
   };
 }
 
 /** Result of building a v1 X-PAYMENT header value. Never thrown. */
 export type V1HeaderResult =
-  | { ok: true; headerValue: string; option: ChallengeOption }
+  | {
+      ok: true;
+      headerValue: string;
+      option: ChallengeOption;
+      /**
+       * Data to confirm settlement on-chain if a post-payment timeout fires.
+       * `undefined` for schemes with no on-chain confirmation check.
+       */
+      settlementProbe?: SettlementProbe;
+    }
   | {
       ok: false;
       reason:
@@ -225,12 +245,16 @@ async function buildEvmHeader(
   }
   // NO network rewrite — wire network is the merchant's advertised bare name.
   const wireNetwork = option.network.bare;
-  const payment = await signV1EvmPayment(evmWallet, option, wireNetwork);
+  const { payment, settlementProbe } = await signV1EvmPayment(
+    evmWallet,
+    option,
+    wireNetwork,
+  );
   const headerValue = Buffer.from(
     JSON.stringify(payment),
     'utf8',
   ).toString('base64');
-  return { ok: true, headerValue, option };
+  return { ok: true, headerValue, option, settlementProbe };
 }
 
 /**
@@ -314,5 +338,5 @@ async function buildSvmHeader(
     JSON.stringify(payment),
     'utf8',
   ).toString('base64');
-  return { ok: true, headerValue, option };
+  return { ok: true, headerValue, option, settlementProbe: built.settlementProbe };
 }
