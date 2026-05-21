@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.9.0] - 2026-05-21
+
 ### Documentation
 - **README restructured to lead with the canonical paths.** The Quick Start now opens with `payAndFetch` (the version-agnostic 2026+ client) instead of the deprecated `wrapFetch`. New "Discovery (bazaar extension)" section documents the 3.8.0 `bazaarExtension` / `declareDiscoveryExtension` API, which had shipped but was undocumented. Sponsored Access reframed around the MCP-agent reality it already serves. The v1-era pricing helpers (Dynamic Pricing, Token Pricing, Access Pass, Stripe) collapsed from ~300 lines of feature sections into a single "Legacy capabilities" table with migration targets. Stale marketplace counts removed. README is ~40% shorter.
 
