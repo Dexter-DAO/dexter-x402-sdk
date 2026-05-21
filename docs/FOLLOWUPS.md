@@ -205,9 +205,9 @@ point the facilitator takes over; the two Solana E2E scripts
 
 ---
 
-## F6 — Batch-settlement deposit transaction dropped on the facilitator
+## F6 — Batch-settlement smoke test failures — RESOLVED (not real bugs)
 
-> **UPDATE 2026-05-21 — ROOT CAUSE FOUND, deposit fixed; new narrower failure.**
+> **UPDATE 2026-05-21 — both failures explained; nothing wrong with the SDK or facilitator settlement.**
 > The deposit failure below was caused by a **stale facilitator process**, NOT
 > nonceManager drift. The running `dexter-facilitator` PM2 process was created
 > `2026-05-19 01:55` and ran 22h with 0 restarts; `dist/` was rebuilt
@@ -222,18 +222,43 @@ point the facilitator takes over; the two Solana E2E scripts
 > 0.06`). The deposit + paid-call path is now PROVEN working on the live
 > facilitator.
 >
-> **A new, narrower failure remains:** the channel `close()` (claim → settle →
-> refund) returned a `CloseReceipt` with `undefined` for every tx hash
-> (claimTx / settleTx / refundTx) and the seller balance did not change
-> ($1.44 → $1.44 — the $0.24 spent was never collected). Symptom looks like
-> the same upstream `@x402/evm` undefined-field family as the `channel.ts:97`
-> `.toLowerCase()` crash. This is a SEPARATE investigation — the settle/close
-> path, not the deposit. Not yet diagnosed. Belongs to whoever takes the
-> `dexter-facilitator` / `@x402/evm` settle path; deserves its own session.
+> **The "settle failure" that looked new is NOT a bug — it is the smoke test
+> misusing the SDK API.** Diagnosed 2026-05-21 (corrects an earlier wrong
+> entry here that called it an undiagnosed `@x402/evm` settle-path bug):
 >
-> The two-hypotheses analysis below (nonceManager drift vs. `@x402/evm`
-> swallowing a broadcast error) is kept for the record but the deposit root
-> cause was neither — it was the un-restarted process.
+> - The buyer-side SDK `channel.close()` returns `CloseResult` —
+>   `{ closed: true }`. By design it does ONE thing: deletes the channel
+>   from local storage. It is an *intent signal*. It does NOT claim, settle,
+>   or refund, and it never calls the facilitator. (Confirmed in the
+>   compiled SDK: `close(){ ... n.delete(...), {closed:!0} }`. Confirmed in
+>   the README: "this is an intent signal, not a settlement; it does not
+>   move funds.")
+> - Settlement (claim → settle → refund, which DOES produce on-chain tx
+>   hashes and a `CloseReceipt`) is the **seller's** job — the
+>   `createBatchSettlementSeller` background loop, or `seller.closeChannel()`
+>   / `seller.closeAll()`.
+> - `batch-settlement-sdk-smoke.ts` (~line 378) does `receipt = await
+>   channel.close()` then reads `receipt.claimTx` / `.settleTx` /
+>   `.refundTx`. Those fields belong to `CloseReceipt` (seller side), not to
+>   the `CloseResult` the buyer's `close()` actually returns — so they are
+>   `undefined`, and the script fails its own assertion. The facilitator
+>   correctly logged no batch claim/settle because the buyer's `close()`,
+>   correctly, never asked it to.
+>
+> **Net: nothing is wrong with the facilitator settlement.** The deposit +
+> paid-call path is proven working (above). The buyer `close()` works as
+> designed. The defect is in the smoke-test script — it checks the wrong
+> object for tx hashes. To verify settlement end-to-end the script must
+> drive the SELLER (`seller.closeChannel()` / the auto-settle loop) and
+> check the seller's on-chain USDC collection, not the buyer's `close()`
+> return value.
+>
+> **F6 is effectively CLOSED as a facilitator/SDK bug.** What remains is a
+> script fix in `dexter-facilitator/scripts/batch-settlement-sdk-smoke.ts`
+> (low priority — it is a test harness). The two-hypotheses analysis below
+> (nonceManager drift vs. `@x402/evm` broadcast-error) is moot: the deposit
+> root cause was the un-restarted process; the "settle failure" was the
+> script. Kept below only as a record of the investigation.
 
 **Found:** 2026-05-21, running `batch-settlement-sdk-smoke.ts` against a
 funded Base wallet (the F5 re-run).
@@ -326,9 +351,12 @@ Moderate-to-high — batch-settlement deposits are currently failing on the
 facilitator for Base. But it is a pre-existing facilitator/upstream issue,
 not caused by and not blocking the 3.9 SDK release.
 
-**Status:** OPEN. Diagnosed to two hypotheses; not yet confirmed. Owner:
-whoever takes the `dexter-facilitator` payment-path work — needs a
-dedicated session because it touches the live facilitator.
+**Status:** RESOLVED — see the UPDATE block at the top of this entry. The
+deposit failure was a stale facilitator process (fixed: rebuild + restart).
+The "settle failure" was the smoke test misreading `channel.close()`'s
+return type — not a real bug. Only remaining item: a low-priority fix to
+`dexter-facilitator/scripts/batch-settlement-sdk-smoke.ts` so it verifies
+settlement via the seller instead of the buyer's `close()`.
 
 ---
 
