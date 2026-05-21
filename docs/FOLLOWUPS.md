@@ -207,6 +207,34 @@ point the facilitator takes over; the two Solana E2E scripts
 
 ## F6 — Batch-settlement deposit transaction dropped on the facilitator
 
+> **UPDATE 2026-05-21 — ROOT CAUSE FOUND, deposit fixed; new narrower failure.**
+> The deposit failure below was caused by a **stale facilitator process**, NOT
+> nonceManager drift. The running `dexter-facilitator` PM2 process was created
+> `2026-05-19 01:55` and ran 22h with 0 restarts; `dist/` was rebuilt
+> `2026-05-20 04:41` (picking up the batch-settlement fixes `c613a9df`,
+> `c35f9ba9`, `2293baab`, `92255c7a`) but the process was **never restarted**.
+> It executed pre-fix code. Rebuilding (`npm run build`, clean tsc) and
+> `pm2 restart dexter-facilitator` fixed it.
+>
+> Re-run after restart: **all 3 paid `channel.fetch()` calls returned 200**,
+> the buyer's $0.30 deposit landed on-chain (buyer balance -0.30 USDC),
+> channel state tracked correctly (`deposited 0.3, spent 0.24, remaining
+> 0.06`). The deposit + paid-call path is now PROVEN working on the live
+> facilitator.
+>
+> **A new, narrower failure remains:** the channel `close()` (claim → settle →
+> refund) returned a `CloseReceipt` with `undefined` for every tx hash
+> (claimTx / settleTx / refundTx) and the seller balance did not change
+> ($1.44 → $1.44 — the $0.24 spent was never collected). Symptom looks like
+> the same upstream `@x402/evm` undefined-field family as the `channel.ts:97`
+> `.toLowerCase()` crash. This is a SEPARATE investigation — the settle/close
+> path, not the deposit. Not yet diagnosed. Belongs to whoever takes the
+> `dexter-facilitator` / `@x402/evm` settle path; deserves its own session.
+>
+> The two-hypotheses analysis below (nonceManager drift vs. `@x402/evm`
+> swallowing a broadcast error) is kept for the record but the deposit root
+> cause was neither — it was the un-restarted process.
+
 **Found:** 2026-05-21, running `batch-settlement-sdk-smoke.ts` against a
 funded Base wallet (the F5 re-run).
 
