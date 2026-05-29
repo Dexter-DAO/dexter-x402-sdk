@@ -28,6 +28,8 @@ The audience this is built for in 2026 is **agents**: Claude, ChatGPT, Cursor, a
 
 You call `payAndFetch()` on the client. You add `x402Middleware()` on the server. Payments happen.
 
+Built against the official x402 v1 and v2 specs. Adds the multi-chain buyer and seller surface, the React hook, a discriminated `PayResult` type, and batch-settlement channels for high-frequency calls.
+
 ---
 
 ## Quick start
@@ -485,7 +487,7 @@ Several v1-era helpers ship with `@deprecated` markers in 3.9. They keep working
 | `stripePayTo` | No replacement in the SDK. Integrate Stripe at your application layer if needed. |
 | `x402BrowserSupport` | No replacement. Build a custom paywall page if you need one. |
 
-Removal release is TBD. Decided after we see how 3.9 deprecation warnings land with real consumers. None of these will be removed in 3.x.
+None of these will be removed in 3.x.
 
 ---
 
@@ -580,7 +582,7 @@ MIT. See [LICENSE](./LICENSE).
 
 <p align="center">
   <a href="https://x402.dexter.cash">Dexter Facilitator</a> ·
-  <a href="https://dexter.cash/opendexter">OpenDexter Marketplace</a> ·
+  <a href="https://dexter.cash/opendexter">OpenDexter Catalog</a> ·
   <a href="https://dexter.cash/sdk">Live Demo</a> ·
   <a href="https://dexter.cash/onboard">Become a Seller</a>
 </p>
