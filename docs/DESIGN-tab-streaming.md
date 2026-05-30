@@ -151,6 +151,8 @@ On the Solana adapter, `authorizeSession` uses the passkey (P-256 / secp256r1) v
 
 ### 4.2 The session-key layer (the Touch-ID-per-token fix)
 
+> **Canonical on-chain spec:** the source of truth for the session-key on-chain instruction format, account layout, and program semantics is [`dexter-vault/docs/DESIGN-vault-v2-session-keys.md`](https://github.com/Dexter-DAO/dexter-vault/blob/main/docs/DESIGN-vault-v2-session-keys.md). This section describes the layer from the SDK's perspective; if anything here drifts from the on-chain spec, the on-chain spec wins. Public tracking: [Dexter-DAO/dexter-vault#4](https://github.com/Dexter-DAO/dexter-vault/issues/4).
+
 OTS as the on-chain spec defines passkey-as-root-authority. That's correct, but at the browser-UX layer it would mean a biometric prompt per voucher, which is unusable. **The protocol layered on top of the spec is: the passkey authorizes a session key once per tab; the session key signs every voucher during the stream; the session key dies when the tab closes.**
 
 This pattern — infrequent expensive cryptography (the passkey) authorizing frequent cheap cryptography (the session key) — is standard practice in modern wallet design. Apple Pay does it. Ethereum's ERC-4337 session keys do it. SSH agent forwarding does it. The Swig smart-wallet program that OTS already depends on natively supports scoped, time-limited, amount-capped secondary signers. The on-chain primitive is *already there*; OTS-tab is the protocol that uses it.
