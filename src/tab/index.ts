@@ -36,12 +36,6 @@
  * being able to drift the public shape.
  */
 
-import type {
-  Tab,
-  OpenTabOptions,
-  ResumeTabOptions,
-} from './types';
-
 export type {
   Tab,
   TabState,
@@ -64,30 +58,5 @@ export {
   TabClosedError,
 } from './types';
 
-const NOT_IMPLEMENTED_DETAIL =
-  '@dexterai/x402/tab is in Phase 1 (contract lock). Implementation lands in Phase 2 — see docs/DESIGN-tab-streaming.md.';
-
-/**
- * Open a new tab against a seller. ONE passkey prompt authorizes a session
- * key; the session key signs vouchers for the duration of the tab.
- *
- * The returned `Tab` exposes `stream()` and `close()`. The buyer can call
- * `stream()` multiple times against the same seller for the same session.
- *
- * @throws {UnsupportedNetworkError} when the adapter targets an unsupported network
- */
-export async function openTab(_options: OpenTabOptions): Promise<Tab> {
-  throw new Error(`openTab not_implemented: ${NOT_IMPLEMENTED_DETAIL}`);
-}
-
-/**
- * Open a handle to a tab that was opened by a previous (crashed) process.
- * Recovery surface — the prior session key is gone (memory-only by design),
- * so this re-prompts the passkey to authorize a fresh session bound to the
- * same channelId on chain.
- *
- * @throws {UnsupportedNetworkError} when the adapter targets an unsupported network
- */
-export async function resumeTab(_options: ResumeTabOptions): Promise<Tab> {
-  throw new Error(`resumeTab not_implemented: ${NOT_IMPLEMENTED_DETAIL}`);
-}
+// Phase 2 implementations.
+export { openTab, resumeTab, humanToAtomic, atomicToHuman, DEFAULT_FACILITATOR_URL } from './tab';

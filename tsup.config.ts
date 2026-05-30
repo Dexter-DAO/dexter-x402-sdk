@@ -11,6 +11,7 @@ export default defineConfig({
     'batch-settlement/seller/index': 'src/batch-settlement/seller/index.ts',
     'tab/index': 'src/tab/index.ts',
     'tab/seller/index': 'src/tab/seller/index.ts',
+    'tab/adapters/solana/index': 'src/tab/adapters/solana/index.ts',
   },
   format: ['esm', 'cjs'],
   dts: true,
