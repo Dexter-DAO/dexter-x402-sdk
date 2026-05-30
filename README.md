@@ -138,6 +138,8 @@ Batch settlement lets a buyer pre-fund an escrow channel once, make many **discr
 
 It is **not** a streaming primitive; it batches discrete purchases. EVM only (Base, Arbitrum, Polygon). The buyer never needs a gas token: every step (deposit, voucher, claim, settle, refund) is signature-based; the Dexter facilitator submits the transactions and pays the gas.
 
+> **Coming: `@dexterai/x402/tab` — OTS-backed streaming payments.** A peer module for *continuous metered consumption* (tokens, bytes, frames, seconds) where the unit of billing is smaller than a request. One passkey-authorized session signs many vouchers; the seller verifies locally and demands a fresh signature before each chunk. The contract is locked (`@dexterai/x402/tab` + `@dexterai/x402/tab/seller` subpaths emit type stubs today); implementation is phased in [`docs/DESIGN-tab-streaming.md`](./docs/DESIGN-tab-streaming.md). Architectural roadmap on [github.com/Dexter-DAO/dexter-vault/issues](https://github.com/Dexter-DAO/dexter-vault/issues?q=is%3Aissue+label%3Aroadmap).
+
 ### Buyer
 
 ```ts

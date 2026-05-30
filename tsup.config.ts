@@ -9,6 +9,8 @@ export default defineConfig({
     'utils/index': 'src/utils/index.ts',
     'batch-settlement/index': 'src/batch-settlement/index.ts',
     'batch-settlement/seller/index': 'src/batch-settlement/seller/index.ts',
+    'tab/index': 'src/tab/index.ts',
+    'tab/seller/index': 'src/tab/seller/index.ts',
   },
   format: ['esm', 'cjs'],
   dts: true,

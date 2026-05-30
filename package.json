@@ -40,6 +40,16 @@
       "types": "./dist/batch-settlement/seller/index.d.ts",
       "import": "./dist/batch-settlement/seller/index.js",
       "require": "./dist/batch-settlement/seller/index.cjs"
+    },
+    "./tab": {
+      "types": "./dist/tab/index.d.ts",
+      "import": "./dist/tab/index.js",
+      "require": "./dist/tab/index.cjs"
+    },
+    "./tab/seller": {
+      "types": "./dist/tab/seller/index.d.ts",
+      "import": "./dist/tab/seller/index.js",
+      "require": "./dist/tab/seller/index.cjs"
     }
   },
   "files": [
