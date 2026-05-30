@@ -7,12 +7,21 @@
  *
  * @example
  * ```ts
- * import { tabMiddleware, openSse } from '@dexterai/x402/tab/seller';
+ * import { tabMiddleware, openSse, requireTab } from '@dexterai/x402/tab/seller';
+ * import { Connection } from '@solana/web3.js';
  *
+ * const connection = new Connection(process.env.RPC!);
  * app.post('/inference',
- *   tabMiddleware({ perUnit: '0.00003', network: 'solana:mainnet', settle: 'on-close' }),
+ *   tabMiddleware({
+ *     connection,
+ *     sellerPubkey: process.env.SELLER_PUBKEY!,
+ *     perUnit: '0.00003',
+ *     network: 'solana:mainnet',
+ *     settle: 'on-close',
+ *   }),
  *   async (req, res) => {
- *     const meter = openSse(res, req.tab);
+ *     const tab = requireTab(req);
+ *     const meter = openSse(res, { tab, perUnit: '0.00003' });
  *     for await (const token of llm(req.body.prompt)) {
  *       await meter.charge(1);
  *       meter.send(token);
@@ -21,19 +30,9 @@
  *   }
  * );
  * ```
- *
- * Phase 1 (this file) declares the public types and signatures. Phase 3 fills
- * the bodies — see docs/DESIGN-tab-streaming.md §6.
  */
 
-import type { Request, Response, NextFunction, RequestHandler } from 'express';
-import type {
-  TabMiddlewareOptions,
-  OpenSseOptions,
-  SseMeter,
-  SellerTab,
-} from './types';
-
+// Public types.
 export type {
   VoucherStore,
   SellerTab,
@@ -41,44 +40,36 @@ export type {
   OpenSseOptions,
   SseMeter,
 } from './types';
-
 export { InvalidVoucherError } from './types';
 
-const NOT_IMPLEMENTED_DETAIL =
-  '@dexterai/x402/tab/seller is in Phase 1 (contract lock). Implementation lands in Phase 3 — see docs/DESIGN-tab-streaming.md.';
+// Middleware + helpers.
+export {
+  tabMiddleware,
+  requireTab,
+  TAB_VOUCHER_HEADER,
+  type TabMiddlewareConfig,
+} from './middleware';
 
-/**
- * Express middleware that gates a route on a valid OTS tab.
- *
- * Behavior at runtime (Phase 3):
- *  - Reads the buyer's session-signed voucher from the request headers
- *  - Verifies signature, registration, scope, monotonicity locally
- *  - On success, injects `SellerTab` onto `req.tab` and calls `next()`
- *  - On failure, responds 402 with details
- */
-export function tabMiddleware(_options: TabMiddlewareOptions): RequestHandler {
-  return (_req: Request, _res: Response, next: NextFunction): void => {
-    next(new Error(`tabMiddleware not_implemented: ${NOT_IMPLEMENTED_DETAIL}`));
-  };
-}
+export { openSse } from './meter';
 
-/**
- * Open a Server-Sent Events stream tied to a tab. The returned meter is what
- * the route handler drives: `charge()` accepts a voucher bump and `send()`
- * delivers the chunk, in that order.
- */
-export function openSse(_res: Response, _tab?: SellerTab, _options?: OpenSseOptions): SseMeter {
-  throw new Error(`openSse not_implemented: ${NOT_IMPLEMENTED_DETAIL}`);
-}
+// Voucher persistence.
+export {
+  InMemoryVoucherStore,
+  FileVoucherStore,
+} from './voucher-store';
 
-// Augment Express's Request so route handlers can read `req.tab` without
-// per-route casting. The augmentation is scoped to the SDK's consumers (any
-// app importing from this subpath gets it).
-declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace
-  namespace Express {
-    interface Request {
-      tab?: SellerTab;
-    }
-  }
-}
+// Verification primitives (exposed for sellers who want to do bespoke
+// flows outside the canned middleware).
+export {
+  parseRegistration,
+  verifyRegistrationOnChain,
+  verifyVoucherSignature,
+  enforceScope,
+  readVaultState,
+  InvalidRegistrationError,
+  OnChainVerificationError,
+  InvalidVoucherSignatureError,
+  ScopeViolationError,
+  type ParsedRegistration,
+  type OnChainVaultState,
+} from './verify';

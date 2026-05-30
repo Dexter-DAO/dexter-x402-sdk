@@ -206,6 +206,13 @@ class SolanaVaultAdapter implements VaultAdapter {
       this.confirmOptions.commitment,
     );
 
+    // 4b. Wait until the active_session is visible at finalized commitment.
+    // Production sellers (and our own seller middleware) read at finalized
+    // to avoid the read-replica race. Absorbing the wait here means the
+    // buyer never hands a tab handle to upstream code until the seller can
+    // reliably verify the registration.
+    await this.waitForActiveSessionFinalized(kp.publicKey);
+
     // 5. Bind the keypair to the scope + the registration bytes that
     //    authorized it. Note: the seller's middleware will verify the
     //    registration against an on-chain read of active_session, so
@@ -303,6 +310,39 @@ class SolanaVaultAdapter implements VaultAdapter {
 
     return message;
   }
+
+  /**
+   * Block until the vault's active_session_pubkey, read at finalized,
+   * matches `expectedSessionPubkey`. Bounds the read-replica race so the
+   * seller's verifier (which reads finalized) can always see what the
+   * buyer just registered.
+   */
+  private async waitForActiveSessionFinalized(
+    expectedSessionPubkey: Uint8Array,
+    timeoutMs = 20_000,
+  ): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const acct = await this.connection.getAccountInfo(this.vaultPdaKey, 'finalized');
+      if (acct) {
+        const data = acct.data;
+        const pendingTag = data[83];
+        const pendingSize = pendingTag === 1 ? 48 : 0;
+        const identityStart = 84 + pendingSize;
+        const dexterAuthStart = identityStart + 32;
+        const activeSessionTagOffset = dexterAuthStart + 32;
+        if (data[activeSessionTagOffset] === 1) {
+          const sessionPkStart = activeSessionTagOffset + 1;
+          const onChainPk = data.slice(sessionPkStart, sessionPkStart + 32);
+          if (bytesEqual(onChainPk, expectedSessionPubkey)) return;
+        }
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    throw new Error(
+      `register_session_key did not become finalized-visible within ${timeoutMs}ms`,
+    );
+  }
 }
 
 /** Factory entry point. */
@@ -332,6 +372,12 @@ async function hashChannelId(channelId: string): Promise<Uint8Array> {
   // Otherwise hash it deterministically. Phase 3 will tighten this.
   const { sha256 } = await import('@noble/hashes/sha256');
   return sha256(new TextEncoder().encode(channelId));
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 function hexToBytes(hex: string): Uint8Array {

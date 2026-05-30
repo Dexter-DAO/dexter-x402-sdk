@@ -166,17 +166,54 @@ class TabImpl implements Tab {
   }
 
   /**
-   * Streamed paid request. Phase 3 lands the full implementation against
-   * a real seller. Phase 2 stub explains the gap so a caller doesn't get
-   * a silent stall.
+   * Streamed paid request. Phase 3 implementation:
+   *   1. Buyer signs a voucher bumping the cumulative by `perUnitCap` (the
+   *      authorized budget for this single request).
+   *   2. SDK serializes the voucher to base64-JSON and sets it as the
+   *      `X-Tab-Voucher` request header.
+   *   3. fetch() the seller endpoint.
+   *   4. Read the response body as Server-Sent Events; yield each `data:`
+   *      chunk as a Uint8Array.
+   *
+   * The buyer's authorized budget for this request equals `perUnitCap`. A
+   * single tab.stream() call can deliver many chunks WITHIN that budget;
+   * for higher budgets, call stream() multiple times with fresh vouchers.
+   *
+   * The async iterable throws on cap-exceeded, expiry, signature rejection,
+   * or non-2xx response. Never silently stalls.
    */
-  async stream(_input: string | URL | Request, _init?: RequestInit): Promise<AsyncIterable<Uint8Array>> {
+  async stream(input: string | URL | Request, init?: RequestInit): Promise<AsyncIterable<Uint8Array>> {
     if (this.closed) throw new TabClosedError(this.channelId);
-    throw new Error(
-      'tab.stream() requires Phase 3 seller middleware. ' +
-      'Use tab.signNextVoucher() to drive a manual paid-stream loop against ' +
-      'any seller endpoint that understands the voucher format.',
-    );
+
+    // Sign a voucher authorizing perUnitCap more atomic units for this
+    // request. The seller's SSE meter operates within that budget.
+    const voucher = await this.signNextVoucher(this.internals.perUnitCapAtomic.toString());
+
+    // Serialize voucher → base64 JSON for the header.
+    const voucherHeader = Buffer.from(
+      JSON.stringify({
+        payload: voucher.payload,
+        sessionPublicKey: bytesToHex(voucher.sessionPublicKey),
+        sessionRegistration: bytesToHex(voucher.sessionRegistration),
+        sessionSignature: bytesToHex(voucher.sessionSignature),
+      }),
+      'utf8',
+    ).toString('base64');
+
+    const headers = new Headers(init?.headers);
+    headers.set('X-Tab-Voucher', voucherHeader);
+    headers.set('Accept', 'text/event-stream');
+
+    const response = await fetch(input, { ...init, headers });
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(`tab.stream HTTP ${response.status}: ${body.slice(0, 500)}`);
+    }
+    if (!response.body) {
+      throw new Error('tab.stream response has no body');
+    }
+
+    return decodeSseChunks(response.body);
   }
 
   /**
@@ -313,6 +350,52 @@ function sellerToCounterparty(seller: string): string {
     `seller must be a base58 Solana pubkey for Phase 2 (got "${seller}"). ` +
     'URL-based counterparty resolution lands in Phase 3 (seller middleware).',
   );
+}
+
+// ── SSE decoding ───────────────────────────────────────────────────────
+//
+// Server-Sent Events frame format: each event is a block of lines, blocks
+// separated by a blank line. We only care about `data:` lines for content
+// and `event: end` for stream completion.
+
+async function* decodeSseChunks(body: ReadableStream<Uint8Array>): AsyncIterable<Uint8Array> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // Split on blank-line event boundaries.
+      let boundary: number;
+      while ((boundary = buffer.indexOf('\n\n')) !== -1) {
+        const eventText = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const parsed = parseSseEvent(eventText);
+        if (parsed.eventName === 'end') return;
+        if (parsed.data !== null) {
+          // Unescape the SSE-encoded newlines the meter applied.
+          const text = parsed.data.replace(/\\n/g, '\n');
+          yield new TextEncoder().encode(text);
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function parseSseEvent(text: string): { eventName: string | null; data: string | null } {
+  let eventName: string | null = null;
+  const dataLines: string[] = [];
+  for (const line of text.split('\n')) {
+    if (line.startsWith('event:')) eventName = line.slice(6).trim();
+    else if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
+  }
+  return { eventName, data: dataLines.length ? dataLines.join('\n') : null };
 }
 
 // Re-export the helpers callers want.
