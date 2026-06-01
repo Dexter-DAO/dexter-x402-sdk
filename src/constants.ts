@@ -131,15 +131,23 @@ export const SOLANA_RPC_URLS: Record<string, string> = {
   [SOLANA_TESTNET_NETWORK]: 'https://api.testnet.solana.com',
 };
 
-/** EVM RPC URLs. Base mainnet uses Dexter's RPC proxy. */
+/**
+ * EVM RPC URLs. All mainnet EVM chains route through Dexter's chain-keyed RPC
+ * proxy (api.dexter.cash/api/evm/<chain>/rpc), which fronts QuickNode with
+ * public fallbacks. Public community RPCs rate-limit a USDC balanceOf after a
+ * few calls and return the throttle as an error — which a balance reader can
+ * mistake for a $0 balance. Proxying every chain removes that class of
+ * false-zero (root-caused on Base, 2026-06-01). Base keeps the legacy
+ * /api/base/rpc path (still live) for backward compat with shipped builds.
+ */
 export const EVM_RPC_URLS: Record<string, string> = {
-  [BSC_MAINNET_NETWORK]: 'https://bsc-dataseed1.binance.org',
+  [BSC_MAINNET_NETWORK]: 'https://api.dexter.cash/api/evm/bsc/rpc',
   [BASE_MAINNET_NETWORK]: 'https://api.dexter.cash/api/base/rpc',
   [BASE_SEPOLIA_NETWORK]: 'https://sepolia.base.org',
-  [ARBITRUM_ONE_NETWORK]: 'https://arb1.arbitrum.io/rpc',
-  [POLYGON_NETWORK]: 'https://polygon-rpc.com',
-  [OPTIMISM_NETWORK]: 'https://mainnet.optimism.io',
-  [AVALANCHE_NETWORK]: 'https://api.avax.network/ext/bc/C/rpc',
+  [ARBITRUM_ONE_NETWORK]: 'https://api.dexter.cash/api/evm/arbitrum/rpc',
+  [POLYGON_NETWORK]: 'https://api.dexter.cash/api/evm/polygon/rpc',
+  [OPTIMISM_NETWORK]: 'https://api.dexter.cash/api/evm/optimism/rpc',
+  [AVALANCHE_NETWORK]: 'https://api.dexter.cash/api/evm/avalanche/rpc',
   [SKALE_BASE_NETWORK]: 'https://skale-base.skalenodes.com/v1/base',
   [SKALE_BASE_SEPOLIA_NETWORK]: 'https://base-sepolia-testnet.skalenodes.com/v1/jubilant-horrible-ancha',
   [ETHEREUM_MAINNET_NETWORK]: 'https://eth.llamarpc.com',
