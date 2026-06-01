@@ -109,8 +109,11 @@ describe('EvmAdapter — exact-approval (BSC)', () => {
     });
 
     it('returns BSC RPC URL', () => {
-      expect(adapter.getDefaultRpcUrl(BSC_MAINNET)).toBe('https://bsc-dataseed1.binance.org');
-      expect(adapter.getDefaultRpcUrl('bsc')).toBe('https://bsc-dataseed1.binance.org');
+      // BSC now routes through the Dexter proxy (QuickNode + fallbacks) rather
+      // than the public bsc-dataseed1.binance.org endpoint, which rate-limited
+      // USDC balanceOf reads and surfaced as false $0 balances. See constants.ts.
+      expect(adapter.getDefaultRpcUrl(BSC_MAINNET)).toBe('https://api.dexter.cash/api/evm/bsc/rpc');
+      expect(adapter.getDefaultRpcUrl('bsc')).toBe('https://api.dexter.cash/api/evm/bsc/rpc');
     });
   });
 
