@@ -98,6 +98,29 @@ npm run dev
 
 Open `http://localhost:3000`. Pick a wallet (a few defaults are pre-populated). Watch the tx feed. Watch USDC tick down. Close the tab. See the Solscan link.
 
+## Proof run — what landed on mainnet 2026-06-02
+
+Run against a freshly-enrolled scripted vault, watching the USDC mint for traffic:
+
+- **1069 Solana transactions** streamed through the metered SSE pipe in ~25 seconds
+- **5 rounds** of voucher-bounded budgets ($0.01 each, 100 events per round)
+- **Auto-loop** worked — the buyer kept buying new rounds as each $0.01 budget exhausted
+- **Vault stayed liquid** — funds never left the buyer's vault PDA during the run
+- **Settled $0.05** off-chain (vouchers signed and accepted by the seller middleware)
+
+Mainnet artifacts from the proof run:
+- Buyer vault PDA: `4mt4KsJykyc7JRa1hYsuqJvcabfNtBJ6R3p4vCMs3GP2`
+- Buyer swig: `E6iBgjoqBo1V53KUxGnWA6gSq6Ywc6Xui9fZMwLAYCdH`
+- Funding tx (`$1` USDC into swig): `TJhVmDx3gksGqrxZTY9iNuvv2U6veQJTNtzBapyq3QMkLZRoJk8bBAqds4Pkwc7q1pEjiSjJb9UNA13EM67YrUr`
+
+## Known gap — on-chain settle is not in SDK 3.9.1
+
+`tab.close()` correctly revokes the session key on chain (one mainnet tx), but the **on-chain `settle_voucher` transfer is not yet shipped in `@dexterai/x402@3.9.1`.** The SDK explicitly returns `settleTx: ''` to make this gap visible in the call site.
+
+In practical terms: the merchant receives the cryptographically-signed final voucher (the cumulative-amount claim) on close, but the on-chain USDC transfer from buyer vault → seller wallet needs to be driven separately. The pieces are all there — the dexter-vault program has `settle_voucher`, the facilitator can submit it — they just aren't wired into the SDK's `close()` yet.
+
+Tracked as a follow-up. The demo prints a notice when this gap fires.
+
 ## What's NOT in the demo (yet)
 
 - **Multi-program filters.** Demo only supports per-wallet for now. Per-program / per-token filters are a follow-up — the relay subscribes to Laserstream once and routes; adding filter types is a routing-layer change, not an architecture change.

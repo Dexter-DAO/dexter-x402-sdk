@@ -1,28 +1,29 @@
 /**
  * live-chain demo — buyer CLI.
  *
- * Opens a Tab against the relay. Streams events. Prints a live ticker. On
- * SIGINT (Ctrl+C), closes the tab cleanly — settlement tx lands on mainnet
- * before the process exits.
+ * Opens a Tab against the relay. Inside the tab, calls tab.stream() in a
+ * loop — each call buys ONE perUnitCap-sized budget and streams events
+ * until that budget is exhausted (the relay closes the SSE cleanly), then
+ * the loop buys another round until totalCap or until the user hits
+ * Ctrl+C.
  *
- * One process == one tab. Run multiple terminals to demo concurrent tabs
- * from the same vault (which is exactly what live-vault demonstrates at
- * its third panel).
+ * On SIGINT, closes the tab cleanly. (Note: at SDK v3.9.1 the on-chain
+ * settle of pending_voucher_count is not yet shipped — the SDK explicitly
+ * returns settleTx='' to make that gap visible. The tab revoke does land
+ * on chain. See the README for the gap.)
  */
 
+import 'dotenv/config';
 import { readFileSync } from 'node:fs';
-import { Connection, Keypair, PublicKey } from '@solana/web3.js';
-import bs58 from 'bs58';
+import { Connection, Keypair } from '@solana/web3.js';
 
-import { openTab, humanToAtomic, atomicToHuman } from '@dexterai/x402/tab';
+import { openTab } from '@dexterai/x402/tab';
 import {
   createSolanaVaultAdapter,
   passkeySignerFromP256Keypair,
 } from '@dexterai/x402/tab/adapters/solana';
 
-// Mirror of the SDK's internal P256Keypair shape. The SDK takes this shape
-// in `passkeySignerFromP256Keypair`, but doesn't export the type — defined
-// locally to keep the demo's import surface clean.
+// Mirror of the SDK's internal P256Keypair shape.
 interface P256Keypair {
   publicKey: Uint8Array;
   privateKey: Uint8Array;
@@ -54,16 +55,17 @@ function required(name: string): string {
 
 const connection = new Connection(SOLANA_RPC_URL, 'confirmed');
 
-// Load the buyer's passkey (P-256). For this demo it's a software keypair
-// from the scripted-enrollment harness. In the browser/iPhone path it would
-// be a WebAuthn-backed signer; the adapter accepts both.
-const passkeyKp: P256Keypair = JSON.parse(readFileSync(PASSKEY_KEY_FILE, 'utf8'));
-const passkeySigner = passkeySignerFromP256Keypair({
-  privateKey: Uint8Array.from(passkeyKp.privateKey),
-  publicKey: Uint8Array.from(passkeyKp.publicKey),
-});
+interface CredentialFile {
+  passkeyPublicKeyBase64: string;
+  passkeyPrivateKeyBase64: string;
+}
+const credential: CredentialFile = JSON.parse(readFileSync(PASSKEY_KEY_FILE, 'utf8'));
+const passkeyKp: P256Keypair = {
+  publicKey: Uint8Array.from(Buffer.from(credential.passkeyPublicKeyBase64, 'base64')),
+  privateKey: Uint8Array.from(Buffer.from(credential.passkeyPrivateKeyBase64, 'base64')),
+};
+const passkeySigner = passkeySignerFromP256Keypair(passkeyKp);
 
-// Load the fee payer (covers register/revoke gas, NOT settlement).
 const feePayer = Keypair.fromSecretKey(
   Uint8Array.from(JSON.parse(readFileSync(FEE_PAYER_KEY_FILE, 'utf8'))),
 );
@@ -95,62 +97,78 @@ const tab = await openTab({
 });
 
 console.log('tab open. channel id:', tab.channelId);
-console.log('streaming events. Ctrl+C to close + settle.');
+console.log('streaming. Ctrl+C to close + settle.');
 console.log('');
 
-// ── Stream + ticker ────────────────────────────────────────────────────
+// ── Streaming loop ─────────────────────────────────────────────────────
+//
+// Each tab.stream() call buys ONE per-batch budget. When the relay
+// exhausts that budget it ends the SSE cleanly, the iterator completes,
+// and we loop to buy another round. Loop terminates when SIGINT closes
+// the tab or totalCap is reached.
 
 let totalEvents = 0;
-let cumulativeAtomic = '0';
+let rounds = 0;
+let shuttingDown = false;
 
-const stream = await tab.stream(`${RELAY_URL}/stream/${encodeURIComponent(WATCH_ACCOUNT)}`, {
-  method: 'GET',
-});
-
-const decoder = new TextDecoder();
-let buffer = '';
+const streamUrl = `${RELAY_URL}/stream/${encodeURIComponent(WATCH_ACCOUNT)}`;
 
 (async () => {
-  for await (const chunk of stream) {
-    buffer += decoder.decode(chunk, { stream: true });
-    // SSE events are delimited by blank lines (\n\n). Pull complete frames.
-    let idx;
-    while ((idx = buffer.indexOf('\n\n')) !== -1) {
-      const frame = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
-      const data = frame.split('\n').filter((l) => l.startsWith('data: '))
-        .map((l) => l.slice(6)).join('');
-      if (!data) continue;
-      try {
-        const parsed = JSON.parse(data);
-        const events = parsed.events as Array<{ signature: string; slot: number }>;
-        totalEvents += events.length;
-        // The Tab SDK manages cumulativeAtomic internally based on
-        // per-batch metering from the seller. We mirror it locally for
-        // the ticker.
-        cumulativeAtomic = String(BigInt(humanToAtomic(PER_BATCH_CAP_USDC)) * BigInt(Math.ceil(totalEvents / 10)));
-        process.stdout.write(
-          `\r  ${totalEvents.toString().padStart(5)} events   ` +
-          `${atomicToHuman(cumulativeAtomic)} USDC accrued   ` +
-          `latest slot ${events.at(-1)?.slot ?? '—'}        `,
-        );
-      } catch (err) {
-        console.error('\n[demo] failed to parse SSE frame:', err);
+  while (!shuttingDown) {
+    rounds++;
+    let roundEvents = 0;
+    try {
+      const stream = await tab.stream(streamUrl, { method: 'GET' });
+      for await (const chunk of stream) {
+        // The SDK's decodeSseChunks already unwrapped the SSE framing —
+        // chunk is the raw `data:` payload as bytes. Our relay sends JSON.
+        const text = new TextDecoder().decode(chunk);
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed.event) {
+            totalEvents++;
+            roundEvents++;
+            const slot = parsed.event.slot;
+            const sig = parsed.event.signature.slice(0, 12) + '…';
+            process.stdout.write(
+              `\r  round ${rounds.toString().padStart(2)} · ` +
+              `${totalEvents.toString().padStart(5)} events · ` +
+              `slot ${slot} · ${sig}      `,
+            );
+          }
+        } catch {
+          // Non-JSON frame (e.g. SDK's end-event payload) — ignore.
+        }
       }
+      // Stream ended cleanly (budget exhausted server-side). Loop for
+      // another round.
+      if (!shuttingDown) {
+        process.stdout.write(`\n  round ${rounds} done (${roundEvents} events). buying next round…\n`);
+      }
+    } catch (err) {
+      if (shuttingDown) break;
+      console.error(`\n  stream round ${rounds} errored:`, (err as Error).message);
+      // Try once more after a short pause; could be a transient RPC blip.
+      await new Promise((r) => setTimeout(r, 1500));
     }
   }
 })();
 
-// ── Clean shutdown — close the tab + settle ────────────────────────────
+// ── Clean shutdown ─────────────────────────────────────────────────────
 
 process.on('SIGINT', async () => {
   console.log('\n\nclosing tab + settling…');
+  shuttingDown = true;
   try {
     const result = await tab.close();
-    console.log('  total settled:', result.settledAmount, 'USDC');
-    console.log('  settlement tx:', result.settleTx);
+    console.log('  total settled (off-chain):', result.settledAmount, 'USDC');
+    console.log('  events received          :', totalEvents);
+    console.log('  rounds completed         :', rounds);
     if (result.settleTx) {
-      console.log('  solscan:      ', `https://solscan.io/tx/${result.settleTx}`);
+      console.log('  settle tx:', result.settleTx);
+      console.log('  solscan:  ', `https://solscan.io/tx/${result.settleTx}`);
+    } else {
+      console.log('  (SDK 3.9.1 does not yet submit on-chain settle_voucher — see README)');
     }
   } catch (err) {
     console.error('  close failed:', err);

@@ -92,6 +92,7 @@ export class LaserstreamMux {
   }
 
   private startSubscription(account: string): FilterState {
+    console.log(`[mux] starting Laserstream subscription for ${account}`);
     const listeners = new Map<string, EventListener>();
 
     // Laserstream gRPC subscribe-request shape, matching the production
@@ -110,10 +111,15 @@ export class LaserstreamMux {
       commitment: CommitmentLevel.CONFIRMED,
     };
 
+    let updateCount = 0;
     const handle = subscribe(
       this.config,
       request,
       async (update: SubscribeUpdate) => {
+        updateCount++;
+        if (updateCount <= 3 || updateCount % 50 === 0) {
+          console.log(`[mux] update #${updateCount} on ${account.slice(0, 8)}: keys=${Object.keys(update).join(',')}`);
+        }
         // Updates may carry a tx or a ping/slot heartbeat — only fan out
         // when there's an actual transaction we can bill on.
         const tx = (update as { transaction?: { transaction?: { signature?: Uint8Array | string } } }).transaction;
@@ -138,10 +144,9 @@ export class LaserstreamMux {
       },
     );
 
-    // Surface failures of the initial subscribe so we don't silently lose
-    // the stream — the relay route handler treats this as a fatal for the
-    // affected SSE connection on next batch attempt.
-    handle.catch((err) => {
+    handle.then((h) => {
+      console.log(`[mux] Laserstream subscription ACTIVE on ${account} (handle id ${h.id})`);
+    }).catch((err) => {
       console.error(`[mux] subscribe() failed on ${account}:`, err);
     });
 
