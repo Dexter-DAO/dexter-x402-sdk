@@ -34,11 +34,22 @@ import {
   type WithdrawWalletClient,
 } from './withdraw';
 
-/** CAIP-2 networks where the x402BatchSettlement contract is deployed. */
+/**
+ * CAIP-2 networks where the x402BatchSettlement contract is deployed.
+ *
+ * defaultRpc points at Dexter's chain-keyed EVM proxy (QuickNode + ordered
+ * public fallbacks with rate-limit failover) rather than a bare public RPC.
+ * The rpcUrl here serves the channel's READS — allowance checks, receipt
+ * polling, publicActions — which is exactly what the public endpoints
+ * (notably mainnet.base.org) rate-limited into false-$0 reads. The withdraw
+ * escape hatch broadcasts through the consumer's own wallet, not this rpcUrl,
+ * so routing here through the proxy carries no write-double-broadcast risk.
+ * Callers can still override via ClientStackInput.rpcUrl.
+ */
 const SUPPORTED: Record<string, { chain: Chain; defaultRpc: string }> = {
-  'eip155:8453': { chain: base, defaultRpc: 'https://mainnet.base.org' },
-  'eip155:42161': { chain: arbitrum, defaultRpc: 'https://arb1.arbitrum.io/rpc' },
-  'eip155:137': { chain: polygon, defaultRpc: 'https://polygon-rpc.com' },
+  'eip155:8453': { chain: base, defaultRpc: 'https://api.dexter.cash/api/evm/base/rpc' },
+  'eip155:42161': { chain: arbitrum, defaultRpc: 'https://api.dexter.cash/api/evm/arbitrum/rpc' },
+  'eip155:137': { chain: polygon, defaultRpc: 'https://api.dexter.cash/api/evm/polygon/rpc' },
 };
 
 export interface ClientStackInput {
