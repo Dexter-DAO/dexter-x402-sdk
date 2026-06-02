@@ -1,0 +1,23 @@
+{
+  "name": "@dexterai/live-chain-demo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reference buyer-side CLI for the live-chain demo. Opens a Tab against the relay, streams live Solana events, prints a USDC ticker, settles on close.",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@dexterai/x402": "^3.9.1",
+    "@solana/web3.js": "^1.98.0",
+    "bs58": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.3"
+  }
+}
