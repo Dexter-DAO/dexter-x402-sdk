@@ -113,13 +113,19 @@ Mainnet artifacts from the proof run:
 - Buyer swig: `E6iBgjoqBo1V53KUxGnWA6gSq6Ywc6Xui9fZMwLAYCdH`
 - Funding tx (`$1` USDC into swig): `TJhVmDx3gksGqrxZTY9iNuvv2U6veQJTNtzBapyq3QMkLZRoJk8bBAqds4Pkwc7q1pEjiSjJb9UNA13EM67YrUr`
 
-## Known gap — on-chain settle is not in SDK 3.9.1
+## Settled on chain (live since 2026-06-03, `@dexterai/x402@3.10.0`)
 
-`tab.close()` correctly revokes the session key on chain (one mainnet tx), but the **on-chain `settle_voucher` transfer is not yet shipped in `@dexterai/x402@3.9.1`.** The SDK explicitly returns `settleTx: ''` to make this gap visible in the call site.
+`tab.close()` POSTs the buyer's final session-signed voucher to the facilitator's `POST /tab/settle` endpoint, which submits a 5-instruction tx that moves USDC from the buyer's swig wallet PDA's ATA to the seller's ATA — atomically with `vault.active_session.spent` advancing and `pending_voucher_count` decrementing. After the settle lands, the SDK revokes the session key.
 
-In practical terms: the merchant receives the cryptographically-signed final voucher (the cumulative-amount claim) on close, but the on-chain USDC transfer from buyer vault → seller wallet needs to be driven separately. The pieces are all there — the dexter-vault program has `settle_voucher`, the facilitator can submit it — they just aren't wired into the SDK's `close()` yet.
+The settle is gated entirely on the session key's Ed25519 signature over the canonical 44-byte voucher message (verified by the Solana Ed25519 sigverify precompile as a sibling of the new `vault.settle_tab_voucher` instruction). The facilitator's master keypair signs `settle_tab_voucher` as `dexter_authority` for the `pending_voucher_count` decrement but is NEVER in the spend path — the unruggable-channel property is structurally enforced on chain.
 
-Tracked as a follow-up. The demo prints a notice when this gap fires.
+Mainnet proof run, fresh role-3 vault:
+- Settle tx: [`4VLDNUDtY8Q3ucwFyuCEz7BsBFqYzUo2ANQv4KU2TDnrUEcn9tS7KmyqHGkZjM6AqEf9uZuS1W5CTQ1RKL47QU89`](https://solscan.io/tx/4VLDNUDtY8Q3ucwFyuCEz7BsBFqYzUo2ANQv4KU2TDnrUEcn9tS7KmyqHGkZjM6AqEf9uZuS1W5CTQ1RKL47QU89)
+- Buyer vault PDA: `F8mxdRs1r2t52tJkawmi6v3Uo5TP11Pr2r2qL24XvKcY`
+- Buyer swig: `B4uzAVY4eqLdFGtcuYxyEo8kqnjD16VnpedJv5vRZgSz`
+- Seller ATA delta: `100000` → `101000` atomic (= $0.001 USDC moved, exact match for the test voucher's cumulative amount)
+
+Older Swigs created before the role-3 marker was added to `dexter-api/src/vault/swigBundle.ts` cannot Tab-settle on chain and need to re-enroll.
 
 ## What's NOT in the demo (yet)
 

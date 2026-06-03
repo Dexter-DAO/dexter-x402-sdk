@@ -14,10 +14,11 @@
  * at close.
  *
  * The adapter does NOT touch pending_voucher_count. That counter belongs
- * to the facilitator's dexter_authority and is moved via settle_voucher
- * during seller settlement. The SDK's `Tab.close()` will hand a cumulative
- * voucher to the facilitator in Phase 3; Phase 2 stops at the session
- * register/revoke layer.
+ * to the facilitator's dexter_authority and is decremented inside the
+ * facilitator's `POST /tab/settle` tx (via the new vault.settle_tab_voucher
+ * instruction) atomically with the USDC transfer. The SDK's `Tab.close()`
+ * POSTs the final voucher to the facilitator; this adapter only owns the
+ * passkey-signed session register/revoke layer.
  */
 
 import {
@@ -240,12 +241,14 @@ class SolanaVaultAdapter implements VaultAdapter {
   }
 
   /**
-   * Open-tab on-chain signature. Phase 2 returns the canonical
-   * registration message — i.e., the same bytes the seller verifies
-   * the passkey signed. The facilitator (Phase 3) will call
-   * settle_voucher(increment) separately; this method exists to
-   * satisfy the VaultAdapter shape and to give the seller something
-   * to bind against if they want to open without a facilitator yet.
+   * Open-tab on-chain signature. Returns the canonical 180-byte
+   * registration message — the same bytes the seller verifies the
+   * passkey signed (and the same bytes the facilitator decodes to
+   * recover the vault PDA in `POST /tab/settle`). The on-chain
+   * `register_session_key` tx that authorizes the session has
+   * already landed by the time `openTab()` returns; this method
+   * exists so the seller's middleware can bind to the registration
+   * without needing a chain read.
    */
   async signOpenTab(session: SessionKey, _channelId: string): Promise<Uint8Array> {
     // The registration bytes ARE the open-tab proof. Anyone with these
@@ -258,10 +261,11 @@ class SolanaVaultAdapter implements VaultAdapter {
    * Close-tab on-chain signature. Returns the canonical 128-byte
    * revocation message + submits the revoke_session_key tx on chain.
    *
-   * In Phase 3, the facilitator will additionally call
-   * settle_voucher(decrement) with the final cumulative voucher
-   * presented by the seller, in the same transaction or a follow-up.
-   * The buyer's side ends here.
+   * The on-chain settle that actually moves USDC (vault.settle_tab_voucher
+   * + swig::SignV2 TransferChecked) is driven by the facilitator's
+   * `POST /tab/settle` endpoint — `Tab.close()` POSTs the final voucher
+   * there BEFORE invoking this revoke, so by the time this tx lands the
+   * session's `spent` and the seller's ATA are already up to date.
    */
   async signCloseTab(
     session: SessionKey,

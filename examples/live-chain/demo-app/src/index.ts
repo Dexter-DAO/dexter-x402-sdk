@@ -7,10 +7,12 @@
  * the loop buys another round until totalCap or until the user hits
  * Ctrl+C.
  *
- * On SIGINT, closes the tab cleanly. (Note: at SDK v3.9.1 the on-chain
- * settle of pending_voucher_count is not yet shipped — the SDK explicitly
- * returns settleTx='' to make that gap visible. The tab revoke does land
- * on chain. See the README for the gap.)
+ * On SIGINT, closes the tab. Since `@dexterai/x402@3.10.0`, `tab.close()`
+ * POSTs the final session-signed voucher to the facilitator's
+ * `POST /tab/settle` endpoint — the on-chain settle (USDC swig → seller
+ * ATA + `vault.active_session.spent` advance + `pending_voucher_count`
+ * decrement, atomic) lands BEFORE the session revoke. The Solscan link
+ * printed at the end is the real settlement tx.
  */
 
 import 'dotenv/config';
@@ -41,6 +43,7 @@ const FEE_PAYER_KEY_FILE = required('FEE_PAYER_KEY_FILE');
 const PER_BATCH_CAP_USDC = process.env.PER_BATCH_CAP_USDC ?? '0.01';
 const TOTAL_TAB_CAP_USDC = process.env.TOTAL_TAB_CAP_USDC ?? '0.50';
 const WATCH_ACCOUNT = required('WATCH_ACCOUNT');
+const FACILITATOR_URL = process.env.FACILITATOR_URL ?? undefined;
 
 function required(name: string): string {
   const v = process.env[name];
@@ -94,6 +97,7 @@ const tab = await openTab({
   seller: SELLER_PUBKEY,
   perUnitCap: PER_BATCH_CAP_USDC,
   totalCap: TOTAL_TAB_CAP_USDC,
+  ...(FACILITATOR_URL ? { facilitatorUrl: FACILITATOR_URL } : {}),
 });
 
 console.log('tab open. channel id:', tab.channelId);
@@ -161,14 +165,14 @@ process.on('SIGINT', async () => {
   shuttingDown = true;
   try {
     const result = await tab.close();
-    console.log('  total settled (off-chain):', result.settledAmount, 'USDC');
-    console.log('  events received          :', totalEvents);
-    console.log('  rounds completed         :', rounds);
+    console.log('  total settled:', result.settledAmount, 'USDC');
+    console.log('  events received:', totalEvents);
+    console.log('  rounds completed:', rounds);
     if (result.settleTx) {
       console.log('  settle tx:', result.settleTx);
       console.log('  solscan:  ', `https://solscan.io/tx/${result.settleTx}`);
     } else {
-      console.log('  (SDK 3.9.1 does not yet submit on-chain settle_voucher — see README)');
+      console.log('  (no voucher was signed — nothing to settle, session revoked only)');
     }
   } catch (err) {
     console.error('  close failed:', err);

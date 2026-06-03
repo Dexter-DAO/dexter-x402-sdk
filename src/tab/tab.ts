@@ -2,13 +2,15 @@
  * The `Tab` runtime — the live object returned by `openTab()`.
  *
  * Owns: the session key, the channel id, the cumulative-amount counter,
- * the voucher sequence counter. Exposes: `stream()` for paid streamed
- * requests and `close()` for revocation + settlement.
+ * the voucher sequence counter, the last signed voucher. Exposes:
+ * `stream()` for paid streamed requests and `close()` for on-chain
+ * settle + session revocation.
  *
- * Phase 2 ships `open` and `close` against the live program; `stream()`
- * is the seller-facing surface that lands fully in Phase 3 once the
- * seller middleware is built. For Phase 2, `stream()` throws a clear
- * "phase 3" error — but the open/close round-trip works end to end.
+ * As of `@dexterai/x402@3.10.0`, `close()` POSTs the final voucher to
+ * the facilitator's `POST /tab/settle` endpoint BEFORE revoking the
+ * session, so `TabCloseResult.settleTx` is the real on-chain settlement
+ * signature (USDC swig → seller ATA, atomic with the session's `spent`
+ * advance + `pending_voucher_count` decrement).
  */
 
 import { PublicKey } from '@solana/web3.js';
@@ -103,6 +105,11 @@ class TabImpl implements Tab {
   private cumulativeAtomic: bigint = 0n;
   private sequenceNumber: number = 0;
   private closed = false;
+  /** Most recent voucher we signed. Held so `close()` can POST it to the
+   *  facilitator for on-chain settle without needing the seller to round-trip
+   *  it back to us. Null if no voucher was signed in this tab's lifetime
+   *  (close-without-stream → nothing to settle). */
+  private lastSignedVoucher: SignedVoucher | null = null;
 
   constructor(internals: TabInternals) {
     this.internals = internals;
@@ -162,6 +169,7 @@ class TabImpl implements Tab {
     };
 
     const signed = await this.internals.vault.signWithSession(this.internals.session, payload);
+    this.lastSignedVoucher = signed;
     return signed;
   }
 
@@ -217,16 +225,41 @@ class TabImpl implements Tab {
   }
 
   /**
-   * Close the tab. Revokes the session key on chain (one passkey prompt)
-   * and clears the in-memory keypair. The on-chain settle of
-   * pending_voucher_count is Phase 3 work — at that point we'll hand the
-   * lastSignedVoucher to the facilitator for the settle_voucher tx.
+   * Close the tab.
+   *
+   * Order matters here:
+   *
+   *   1. POST the last signed voucher to `${facilitatorUrl}/tab/settle`.
+   *      The facilitator submits the 3-instruction tx that actually moves
+   *      USDC from the buyer's swig wallet PDA's ATA to the seller's ATA,
+   *      verified on chain by the Ed25519 precompile against the session
+   *      key. After this lands, `vault.active_session.spent` advances and
+   *      `pending_voucher_count` decrements — both atomic with the
+   *      transfer.
+   *
+   *   2. Sign + submit the revocation tx. The session key is no longer
+   *      accepted by any seller after this. We do this AFTER settle
+   *      because settle reads `vault.active_session` on chain; revoking
+   *      first would clear it and the settle tx would be rejected.
+   *
+   *   3. Best-effort wipe the in-memory private key.
+   *
+   * Tabs that stream nothing (no voucher ever signed) skip step 1 — there's
+   * nothing to settle. The revocation still runs so the session can't be
+   * resurrected, and `settleTx` comes back empty (legitimately).
    */
   async close(): Promise<TabCloseResult> {
     if (this.closed) throw new TabClosedError(this.channelId);
 
-    // 1. Sign + submit the revocation tx. The session key is no longer
-    //    accepted by any seller after this lands.
+    let settleTx = '';
+    if (this.lastSignedVoucher && this.cumulativeAtomic > 0n) {
+      settleTx = await postSettle(
+        this.internals.facilitatorUrl,
+        this.lastSignedVoucher,
+        this.internals.network,
+      );
+    }
+
     await this.internals.vault.signCloseTab(
       this.internals.session,
       this.channelId,
@@ -234,20 +267,60 @@ class TabImpl implements Tab {
     );
 
     this.closed = true;
-
-    // 2. Best-effort wipe the in-memory private key. JS can't truly clear
-    //    memory, but we can at least null the reference and zero the
-    //    buffer so a heap dump after close doesn't trivially recover it.
     this.internals.session.privateKey.fill(0);
 
-    // 3. Phase 2 returns the cumulative human amount; the on-chain settle
-    //    tx (which actually transfers funds to the seller) is Phase 3.
-    //    Returning empty string for settleTx makes that gap explicit.
     return {
       settledAmount: atomicToHuman(this.cumulativeAtomic.toString()),
-      settleTx: '',
+      settleTx,
     };
   }
+}
+
+/**
+ * POST the buyer's final voucher to the facilitator's `/tab/settle` endpoint
+ * and return the on-chain settlement signature. Throws on non-2xx so a
+ * settle failure surfaces to the buyer rather than silently leaving the
+ * seller unpaid.
+ *
+ * Wire shape matches dexter-facilitator/src/tabSettle.ts: the endpoint
+ * accepts hex-encoded bytes for the session pubkey / signature /
+ * registration and a 32-byte hex channel id. Same encoding we use in the
+ * X-Tab-Voucher stream header.
+ */
+async function postSettle(
+  facilitatorUrl: string,
+  voucher: SignedVoucher,
+  network: TabNetworkId,
+): Promise<string> {
+  const url = `${facilitatorUrl.replace(/\/$/, '')}/tab/settle`;
+  const body = {
+    channelId: voucher.payload.channelId,
+    cumulativeAmount: voucher.payload.cumulativeAmount,
+    sequenceNumber: voucher.payload.sequenceNumber,
+    sessionPublicKey: bytesToHex(voucher.sessionPublicKey),
+    sessionSignature: bytesToHex(voucher.sessionSignature),
+    sessionRegistration: bytesToHex(voucher.sessionRegistration),
+    network,
+  };
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`tab settle ${res.status}: ${text.slice(0, 500)}`);
+  }
+  let parsed: { settleTx?: string };
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`tab settle returned non-JSON: ${text.slice(0, 200)}`);
+  }
+  if (!parsed.settleTx) {
+    throw new Error(`tab settle returned no settleTx: ${text.slice(0, 200)}`);
+  }
+  return parsed.settleTx;
 }
 
 // ── openTab / resumeTab ────────────────────────────────────────────────
