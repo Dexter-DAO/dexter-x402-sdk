@@ -1,109 +1,32 @@
 /**
  * @dexterai/x402/tab — type contract for the OTS-backed streaming payment module.
  *
- * Peer of `batch-settlement`. Where `batch-settlement` is for N discrete paid
- * requests against one escrow channel, `tab` is for *continuous metered
- * consumption* — tokens, bytes, frames, seconds — settled on close.
- *
- * Full design: see `docs/DESIGN-tab-streaming.md`. This file is the contract
- * lock for Phase 1: the public types and option shapes that downstream phases
- * must implement against without drift.
+ * Session/voucher protocol types moved to @dexterai/vault/types in the v0.1
+ * extract. Re-exported here so existing consumers of `@dexterai/x402/tab`
+ * see zero import-path changes. Tab-runtime types (VaultAdapter, OpenTabOptions,
+ * Tab, errors) stay local — they're HTTP/SSE-shaped, not protocol-shaped.
  */
 
-/**
- * CAIP-2-style network identifier. The buyer-side `openTab` accepts a string
- * here so future networks (EVM L2s) require no API change — only a new
- * VaultAdapter implementation.
- */
-export type TabNetworkId = 'solana:mainnet' | (string & {});
+// ── Protocol primitives — canonical home is @dexterai/vault ────────────
+export type {
+  TabNetworkId,
+  AtomicAmount,
+  HumanAmount,
+  SessionScope,
+  SessionKey,
+  VoucherPayload,
+  SignedVoucher,
+} from '@dexterai/vault/types';
 
-/**
- * Atomic-unit cumulative amount the seller is asking the buyer to authorize
- * for a single voucher. Strings to avoid bigint JSON-serialization headaches
- * across language boundaries.
- */
-export type AtomicAmount = string;
-
-/**
- * Human-readable amount (e.g. "0.001" USDC). Used at SDK boundaries; converted
- * to atomic units internally per the vault's token decimals.
- */
-export type HumanAmount = string;
-
-// ────────────────────────────────────────────────────────────────────────────
-// Session-key layer (see DESIGN-tab-streaming.md §4.2)
-//
-// The passkey is expensive to invoke (biometric / hardware prompt). Streaming
-// needs hundreds of voucher signatures per session. The session-key pattern
-// resolves the conflict: the passkey signs ONCE per tab to authorize a fresh
-// in-memory keypair, which then signs vouchers freely. The session key dies
-// when the tab closes. Swig's role-policy system is the on-chain primitive
-// that makes this enforceable.
-// ────────────────────────────────────────────────────────────────────────────
-
-/**
- * Scope of a session key — the limits the passkey embeds into its
- * registration signature. The on-chain program (via Swig) and the seller's
- * middleware (locally) both enforce these.
- */
-export interface SessionScope {
-  /** The specific tab this session is bound to. */
-  channelId: string;
-  /** Cumulative cap, atomic units. The session-key cannot sign beyond this. */
-  maxAmountAtomic: AtomicAmount;
-  /** Wall-clock expiry (unix seconds). Hard deadline regardless of usage. */
-  expiresAtUnix: number;
-  /** Counterparty restriction — typically the seller's address. */
-  allowedCounterparty: string;
-}
-
-/**
- * In-memory session key. NEVER persisted to disk. A crashed process forfeits
- * the session and re-prompts the passkey on the next attempt — this is the
- * right default because a session key on disk is a real attack surface.
- */
-export interface SessionKey {
-  /** Public key the seller verifies signatures against. */
-  publicKey: Uint8Array;
-  /** Private key — in-memory only. */
-  privateKey: Uint8Array;
-  /** Limits this session may operate within. */
-  scope: SessionScope;
-  /** The passkey signature authorizing this session. The seller verifies it
-   *  against the vault's registered passkey on every voucher. */
-  registration: Uint8Array;
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Voucher format
-// ────────────────────────────────────────────────────────────────────────────
-
-/**
- * What the buyer signs per stream chunk, and what the seller verifies before
- * delivering. Cumulative-amount semantics: each voucher represents the TOTAL
- * owed so far, not the incremental amount. Replay-resistant because vouchers
- * monotonically increase.
- */
-export interface VoucherPayload {
-  channelId: string;
-  /** Total owed so far, atomic units. Must strictly exceed the prior voucher. */
-  cumulativeAmount: AtomicAmount;
-  /** Monotonic sequence number. Replay protection within a tab. */
-  sequenceNumber: number;
-}
-
-/**
- * The full voucher as sent over the wire: payload + session signature +
- * the registration that authorizes the signing session key. The seller's
- * middleware verifies the registration's passkey signature once per session,
- * caches the result, and verifies only the session-key signature per chunk.
- */
-export interface SignedVoucher {
-  payload: VoucherPayload;
-  sessionPublicKey: Uint8Array;
-  sessionRegistration: Uint8Array;
-  sessionSignature: Uint8Array;
-}
+import type {
+  TabNetworkId,
+  AtomicAmount,
+  HumanAmount,
+  SessionScope,
+  SessionKey,
+  VoucherPayload,
+  SignedVoucher,
+} from '@dexterai/vault/types';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Vault adapter — the abstraction that lets one SDK call site serve OTS on

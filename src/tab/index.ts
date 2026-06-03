@@ -60,3 +60,26 @@ export {
 
 // Phase 2 implementations.
 export { openTab, resumeTab, humanToAtomic, atomicToHuman, DEFAULT_FACILITATOR_URL } from './tab';
+
+// Protocol primitives — re-exported from @dexterai/vault through the local
+// shim so existing consumers of `@dexterai/x402/tab` can import them by name.
+export {
+  sessionRegisterMessage,
+  sessionRevokeMessage,
+  voucherPayloadMessage,
+  buildVoucherMessage,
+  type SessionRegisterMessageArgs,
+  type SessionRevokeMessageArgs,
+  type VoucherPayloadBytes,
+} from './messages';
+
+export {
+  buildRegisterSessionKeyInstruction,
+  buildRevokeSessionKeyInstruction,
+  buildSecp256r1VerifyInstruction,
+  DEXTER_VAULT_PROGRAM_ID,
+  SECP256R1_PROGRAM_ID,
+  INSTRUCTIONS_SYSVAR_ID,
+  type BuildRegisterSessionKeyArgs,
+  type BuildRevokeSessionKeyArgs,
+} from './instructions';
