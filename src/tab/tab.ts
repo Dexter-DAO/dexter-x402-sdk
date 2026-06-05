@@ -358,6 +358,13 @@ export async function openTab(options: OpenTabOptions): Promise<Tab> {
   if (totalCapAtomic < perUnitCapAtomic) {
     throw new Error('totalCap must be >= perUnitCap');
   }
+  // Surface a zero/negative revolving cap here rather than letting the on-chain
+  // program reject it (RevolvingCapacityZero) after a wasted round-trip. When
+  // omitted, revolvingCapacity defaults to totalCap below (always > 0).
+  if (options.revolvingCapacity !== undefined) {
+    const revolvingCapAtomic = BigInt(humanToAtomic(options.revolvingCapacity));
+    if (revolvingCapAtomic <= 0n) throw new Error('revolvingCapacity must be > 0');
+  }
 
   // 4. Build the session scope and authorize the session key on chain.
   //    This is the ONE passkey prompt of the tab lifecycle.
@@ -368,7 +375,7 @@ export async function openTab(options: OpenTabOptions): Promise<Tab> {
     channelId: channelIdHex,
     maxAmountAtomic: totalCapAtomic.toString(),
     revolvingCapacityAtomic: options.revolvingCapacity
-      ? BigInt(humanToAtomic(options.revolvingCapacity)).toString()
+      ? humanToAtomic(options.revolvingCapacity)
       : totalCapAtomic.toString(),
     expiresAtUnix,
     allowedCounterparty: sellerToCounterparty(options.seller),
@@ -396,6 +403,15 @@ export async function resumeTab(_options: ResumeTabOptions): Promise<Tab> {
   // prompting the passkey to authorize a NEW session that picks up the
   // existing channel id. Phase 3 wires this up because it needs the
   // adapter to expose `readActiveSession()` which doesn't exist yet.
+  //
+  // NOTE for Phase 3 (revolving meter / credex): the on-chain session already
+  // carries max_revolving_capacity, set at original openTab registration. A
+  // resumed session should READ that cap from chain (verify.ts parseRegistration
+  // already returns maxRevolvingCapacity) — it does NOT need to re-supply it.
+  // Memory-only keys are load-bearing for non-custody: the powerful credential
+  // is the hardware passkey (never persisted); the session key is bounded
+  // (capped, single-counterparty, no withdraw) and ephemeral. Resume must NOT
+  // persist/recover a session key — re-prompt the passkey for a fresh one.
   throw new Error(
     'resumeTab is Phase 3 work. Session keys are memory-only by design; ' +
     'recovery requires reading active_session on chain and re-authorizing. ' +
