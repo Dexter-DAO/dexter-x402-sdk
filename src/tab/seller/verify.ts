@@ -86,7 +86,7 @@ export function parseRegistration(registration: Uint8Array): ParsedRegistration 
     throw new InvalidRegistrationError('wrong_length', `expected 188, got ${registration.length}`);
   }
 
-  // Domain check: first 23 bytes are "OTS_SESSION_REGISTER_V1", rest of 32 are NUL.
+  // Domain check: first 23 bytes are "OTS_SESSION_REGISTER_V2", rest of 32 are NUL.
   const domainPrefix = new TextDecoder().decode(registration.slice(0, REGISTER_DOMAIN_PREFIX.length));
   if (domainPrefix !== REGISTER_DOMAIN_PREFIX) {
     throw new InvalidRegistrationError('wrong_domain', `got "${domainPrefix}"`);
@@ -139,7 +139,7 @@ export function parseRegistration(registration: Uint8Array): ParsedRegistration 
 
 // ── On-chain registration verification ─────────────────────────────────
 //
-// The 180-byte registration was signed by the buyer's passkey. The vault
+// The 188-byte registration was signed by the buyer's passkey. The vault
 // account stores the passkey pubkey. To verify the registration the seller:
 //
 //   1. Reads the vault account

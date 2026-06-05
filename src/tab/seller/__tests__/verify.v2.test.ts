@@ -1,8 +1,8 @@
 import { describe, test, expect } from 'vitest';
 import { PublicKey } from '@solana/web3.js';
 import { sessionRegisterMessage } from '@dexterai/vault/messages';
-import { parseRegistration, InvalidRegistrationError } from './verify';
-import { DEXTER_VAULT_PROGRAM_ID } from '../instructions';
+import { parseRegistration, InvalidRegistrationError } from '../verify';
+import { DEXTER_VAULT_PROGRAM_ID } from '../../instructions';
 
 describe('parseRegistration V2/188', () => {
   const validBytes = () =>
