@@ -162,6 +162,11 @@ export interface OpenTabOptions {
   perUnitCap: HumanAmount;
   /** Max cumulative for the WHOLE tab — the session-key cap. */
   totalCap: HumanAmount;
+  /** Revolving capacity cap (human units, same scale as perUnitCap/totalCap).
+   *  Optional; defaults to totalCap. The on-chain meter (current_outstanding)
+   *  is checked against this — set it below totalCap to force capacity to
+   *  revolve (turnover > 1). */
+  revolvingCapacity?: HumanAmount;
   /** Session expiry, seconds from now. Default: 3600 (1 hour). */
   sessionDuration?: number;
   /** Facilitator base URL. Default: https://facilitator.dexter.cash, overridable. */

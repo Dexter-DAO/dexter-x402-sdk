@@ -146,12 +146,18 @@ class SolanaVaultAdapter implements VaultAdapter {
   async authorizeSession(scope: SessionScope): Promise<SessionKey> {
     const counterparty = new PublicKey(scope.allowedCounterparty);
 
+    // Revolving capacity defaults to the session's total cap when the caller
+    // didn't specify one (revolving cap == total cap). The program requires > 0.
+    const maxRevolvingCapacity = parseAtomic(
+      scope.revolvingCapacityAtomic ?? scope.maxAmountAtomic,
+    );
+
     // 1. Generate the in-memory session keypair (ed25519). The PUBLIC key
     //    is what the passkey endorses; the private key never leaves this
     //    process.
     const kp = generateSessionKeypair();
 
-    // 2. Build the canonical 180-byte registration message. The on-chain
+    // 2. Build the canonical 188-byte registration message. The on-chain
     //    program reconstructs this byte-for-byte from its args and
     //    cross-checks against what the precompile verified.
     //    The nonce is an implementation detail of the registration
@@ -162,6 +168,7 @@ class SolanaVaultAdapter implements VaultAdapter {
       vaultPda: this.vaultPdaKey,
       sessionPubkey: kp.publicKey,
       maxAmount: parseAtomic(scope.maxAmountAtomic),
+      maxRevolvingCapacity,
       expiresAt: BigInt(scope.expiresAtUnix),
       allowedCounterparty: counterparty,
       nonce,
@@ -183,6 +190,7 @@ class SolanaVaultAdapter implements VaultAdapter {
       vaultPda: this.vaultPdaKey,
       sessionPubkey: kp.publicKey,
       maxAmount: parseAtomic(scope.maxAmountAtomic),
+      maxRevolvingCapacity,
       expiresAt: BigInt(scope.expiresAtUnix),
       allowedCounterparty: counterparty,
       nonce,

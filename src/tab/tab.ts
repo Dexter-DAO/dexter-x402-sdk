@@ -367,6 +367,9 @@ export async function openTab(options: OpenTabOptions): Promise<Tab> {
   const scope: SessionScope = {
     channelId: channelIdHex,
     maxAmountAtomic: totalCapAtomic.toString(),
+    revolvingCapacityAtomic: options.revolvingCapacity
+      ? BigInt(humanToAtomic(options.revolvingCapacity)).toString()
+      : totalCapAtomic.toString(),
     expiresAtUnix,
     allowedCounterparty: sellerToCounterparty(options.seller),
   };
