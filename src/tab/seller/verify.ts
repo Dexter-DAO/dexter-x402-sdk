@@ -35,8 +35,8 @@ import { DEXTER_VAULT_PROGRAM_ID } from '../instructions';
 
 // ── Registration parsing ───────────────────────────────────────────────
 //
-// Registration layout (180 bytes, MUST match messages.ts sessionRegisterMessage):
-//    0   32  domain separator (OTS_SESSION_REGISTER_V1 + NUL padding)
+// Registration layout (188 bytes, MUST match messages.ts sessionRegisterMessage):
+//    0   32  domain separator (OTS_SESSION_REGISTER_V2 + NUL padding)
 //   32   32  program_id
 //   64   32  vault_pda
 //   96   32  session_pubkey
@@ -44,10 +44,11 @@ import { DEXTER_VAULT_PROGRAM_ID } from '../instructions';
 //  136    8  expires_at (i64 LE)
 //  144   32  allowed_counterparty
 //  176    4  nonce (u32 LE)
+//  180    8  max_revolving_capacity (u64 LE)
 //                                    ────
-//                                    180
+//                                    188
 
-const REGISTER_DOMAIN_PREFIX = 'OTS_SESSION_REGISTER_V1';
+const REGISTER_DOMAIN_PREFIX = 'OTS_SESSION_REGISTER_V2';
 
 export interface ParsedRegistration {
   programId: PublicKey;
@@ -57,6 +58,7 @@ export interface ParsedRegistration {
   expiresAt: bigint;                // unix seconds
   allowedCounterparty: PublicKey;
   nonce: number;
+  maxRevolvingCapacity: bigint;     // u64 at [180..188)
 }
 
 export class InvalidRegistrationError extends Error {
@@ -80,8 +82,8 @@ export class InvalidRegistrationError extends Error {
  * passkey signature check is a separate on-chain step.
  */
 export function parseRegistration(registration: Uint8Array): ParsedRegistration {
-  if (registration.length !== 180) {
-    throw new InvalidRegistrationError('wrong_length', `expected 180, got ${registration.length}`);
+  if (registration.length !== 188) {
+    throw new InvalidRegistrationError('wrong_length', `expected 188, got ${registration.length}`);
   }
 
   // Domain check: first 23 bytes are "OTS_SESSION_REGISTER_V1", rest of 32 are NUL.
@@ -104,6 +106,7 @@ export function parseRegistration(registration: Uint8Array): ParsedRegistration 
   const expiresAt = view.getBigInt64(136, true);
   const allowedCounterparty = new PublicKey(registration.slice(144, 176));
   const nonce = view.getUint32(176, true);
+  const maxRevolvingCapacity = view.getBigUint64(180, true);
 
   if (!programId.equals(DEXTER_VAULT_PROGRAM_ID)) {
     throw new InvalidRegistrationError(
@@ -130,6 +133,7 @@ export function parseRegistration(registration: Uint8Array): ParsedRegistration 
     expiresAt,
     allowedCounterparty,
     nonce,
+    maxRevolvingCapacity,
   };
 }
 
@@ -224,6 +228,8 @@ export async function readVaultState(
   //   allowed_counterparty: Pubkey
   //   nonce: u32
   //   spent: u64
+  //   current_outstanding: u64
+  //   max_revolving_capacity: u64
   const sessionPubkeyStart = activeSessionTagOffset + 1;
   const activeSessionPubkey = new Uint8Array(
     data.slice(sessionPubkeyStart, sessionPubkeyStart + 32),
