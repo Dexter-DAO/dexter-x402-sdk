@@ -135,10 +135,14 @@ export interface X402ServerConfig {
   defaultTimeoutSeconds?: number;
   /**
    * Payment scheme to advertise. 'batch-settlement' is the EVM escrow-channel
-   * batching scheme (discrete API purchases, gas-amortized) — see
-   * @dexterai/x402/batch-settlement. Default: 'exact'.
+   * batching scheme (discrete API purchases, gas-amortized). 'tab' (SVM only)
+   * advertises a One-Tap-Sessions spend-tab accepts entry: the buyer pays by
+   * session-signed voucher (x-tab-voucher header / facilitator /settle with
+   * scheme "tab"), with payTo as the on-chain counterparty binding. Sellers
+   * that want tab AND exact compose two servers — the multi-accept merge in
+   * middleware.ts already handles it.
    */
-  scheme?: 'exact' | 'batch-settlement';
+  scheme?: 'exact' | 'batch-settlement' | 'tab';
 }
 
 /**
@@ -227,6 +231,10 @@ export function createX402Server(config: X402ServerConfig): X402Server {
 
   const scheme = config.scheme ?? 'exact';
 
+  if (scheme === 'tab' && !isSolanaNetwork(network)) {
+    throw new Error(`scheme 'tab' is SVM-only; got network "${network}"`);
+  }
+
   const facilitator = new FacilitatorClient(facilitatorUrl);
 
   // Cache for network extra data
@@ -296,6 +304,10 @@ export function createX402Server(config: X402ServerConfig): X402Server {
       // buyer's channel pays into the right contract.
       ...(scheme === 'batch-settlement' && cachedExtra?.receiverAuthorizer
         ? { receiverAuthorizer: cachedExtra.receiverAuthorizer as string }
+        : {}),
+      // tab: surface the voucher transport so generic buyers can discover it.
+      ...(scheme === 'tab'
+        ? { voucherHeader: 'x-tab-voucher', registrationEncoding: 'base64(188-byte sessionRegisterMessage)' }
         : {}),
     };
   }
