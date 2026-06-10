@@ -107,8 +107,24 @@ export interface Tab {
   readonly channelId: string;
   /** Which network the underlying vault lives on. */
   readonly network: TabNetworkId;
+  /**
+   * The seller this tab was opened against — the base58 pubkey resolved
+   * from `OpenTabOptions.seller` at open time (the same value bound into
+   * the session scope's `allowedCounterparty`). payAndFetch matches it
+   * against a `tab`-scheme option's `payTo` before spending this tab.
+   */
+  readonly counterparty: string;
   /** Live state. Re-reads after every voucher exchange. */
   readonly state: TabState;
+
+  /**
+   * Sign the next cumulative voucher for an increment, WITHOUT sending any
+   * request. This is the negotiation primitive: payAndFetch uses it to pay a
+   * `tab`-scheme accepts entry by attaching the X-Tab-Voucher header itself.
+   * Same counter, same scope enforcement as stream() — throws
+   * SessionScopeExceededError past the cap.
+   */
+  signNextVoucher(incrementAtomic: AtomicAmount): Promise<SignedVoucher>;
 
   /**
    * Streamed paid request. Returns an async iterable of chunks. Voucher

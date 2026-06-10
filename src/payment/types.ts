@@ -6,6 +6,7 @@
  */
 
 import type { WalletSet } from '../adapters/types';
+import type { Tab } from '../tab/types';
 
 /** A network reference, kept in BOTH forms so neither version loses info. */
 export interface NetworkRef {
@@ -143,6 +144,13 @@ export interface PayAndFetchOptions {
    * reliability.
    */
   solanaRpcUrl?: string;
+  /**
+   * An open spend-tab to pay `tab`-scheme accepts entries with. Used only
+   * when the 402 offers scheme "tab" AND the option's payTo matches the
+   * counterparty this tab was opened against — otherwise ignored and the
+   * normal exact/batch path runs.
+   */
+  tab?: Tab;
 }
 
 /**

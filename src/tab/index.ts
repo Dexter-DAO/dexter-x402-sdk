@@ -59,7 +59,7 @@ export {
 } from './types';
 
 // Phase 2 implementations.
-export { openTab, resumeTab, humanToAtomic, atomicToHuman, DEFAULT_FACILITATOR_URL } from './tab';
+export { openTab, resumeTab, humanToAtomic, atomicToHuman, voucherToHeader, DEFAULT_FACILITATOR_URL } from './tab';
 
 // Protocol primitives — re-exported from @dexterai/vault through the local
 // shim so existing consumers of `@dexterai/x402/tab` can import them by name.

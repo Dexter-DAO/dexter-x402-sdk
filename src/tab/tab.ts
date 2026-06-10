@@ -88,6 +88,8 @@ interface TabInternals {
   vault: VaultAdapter;
   network: TabNetworkId;
   seller: string;
+  /** Seller base58 pubkey — same value bound into scope.allowedCounterparty. */
+  counterparty: string;
   session: SessionKey;
   channelIdHex: string;
   channelIdBytes: Uint8Array;
@@ -100,6 +102,7 @@ interface TabInternals {
 class TabImpl implements Tab {
   readonly channelId: string;
   readonly network: TabNetworkId;
+  readonly counterparty: string;
 
   private readonly internals: TabInternals;
   private cumulativeAtomic: bigint = 0n;
@@ -115,6 +118,7 @@ class TabImpl implements Tab {
     this.internals = internals;
     this.channelId = internals.channelIdHex;
     this.network = internals.network;
+    this.counterparty = internals.counterparty;
   }
 
   get state(): TabState {
@@ -197,19 +201,8 @@ class TabImpl implements Tab {
     // request. The seller's SSE meter operates within that budget.
     const voucher = await this.signNextVoucher(this.internals.perUnitCapAtomic.toString());
 
-    // Serialize voucher → base64 JSON for the header.
-    const voucherHeader = Buffer.from(
-      JSON.stringify({
-        payload: voucher.payload,
-        sessionPublicKey: bytesToHex(voucher.sessionPublicKey),
-        sessionRegistration: bytesToHex(voucher.sessionRegistration),
-        sessionSignature: bytesToHex(voucher.sessionSignature),
-      }),
-      'utf8',
-    ).toString('base64');
-
     const headers = new Headers(init?.headers);
-    headers.set('X-Tab-Voucher', voucherHeader);
+    headers.set('X-Tab-Voucher', voucherToHeader(voucher));
     headers.set('Accept', 'text/event-stream');
 
     const response = await fetch(input, { ...init, headers });
@@ -274,6 +267,25 @@ class TabImpl implements Tab {
       settleTx,
     };
   }
+}
+
+/**
+ * Serialize a signed voucher to the `X-Tab-Voucher` header value:
+ * base64-encoded JSON with hex-encoded byte fields. This is THE wire
+ * encoding the seller middleware and the facilitator's `/tab/settle`
+ * endpoint both parse — `stream()` uses it, and `payAndFetch` uses it to
+ * pay a `tab`-scheme accepts entry directly.
+ */
+export function voucherToHeader(signed: SignedVoucher): string {
+  return Buffer.from(
+    JSON.stringify({
+      payload: signed.payload,
+      sessionPublicKey: bytesToHex(signed.sessionPublicKey),
+      sessionRegistration: bytesToHex(signed.sessionRegistration),
+      sessionSignature: bytesToHex(signed.sessionSignature),
+    }),
+    'utf8',
+  ).toString('base64');
 }
 
 /**
@@ -371,6 +383,7 @@ export async function openTab(options: OpenTabOptions): Promise<Tab> {
   const durationSec = options.sessionDuration ?? DEFAULT_SESSION_DURATION_SEC;
   const expiresAtUnix = Math.floor(Date.now() / 1000) + durationSec;
 
+  const counterparty = sellerToCounterparty(options.seller);
   const scope: SessionScope = {
     channelId: channelIdHex,
     maxAmountAtomic: totalCapAtomic.toString(),
@@ -378,7 +391,7 @@ export async function openTab(options: OpenTabOptions): Promise<Tab> {
       ? humanToAtomic(options.revolvingCapacity)
       : totalCapAtomic.toString(),
     expiresAtUnix,
-    allowedCounterparty: sellerToCounterparty(options.seller),
+    allowedCounterparty: counterparty,
   };
 
   const session = await options.vault.authorizeSession(scope);
@@ -387,6 +400,7 @@ export async function openTab(options: OpenTabOptions): Promise<Tab> {
     vault: options.vault,
     network: options.network,
     seller: options.seller,
+    counterparty,
     session,
     channelIdHex,
     channelIdBytes,

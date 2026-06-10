@@ -195,7 +195,23 @@ export async function buildV1PaymentHeader(
   opts: PayAndFetchOptions,
 ): Promise<V1HeaderResult> {
   try {
+    // Track a wallet-servable option we skipped only because of its scheme,
+    // so an all-non-exact challenge reports the SCHEME problem (the
+    // merchant offered something we don't speak) instead of a misleading
+    // 'unsupported_network'.
+    let skippedScheme: string | undefined;
     for (const option of challenge.options) {
+      const walletAvailable =
+        (option.network.family === 'evm' && !!wallets.evm) ||
+        (option.network.family === 'svm' && !!wallets.solana);
+      // v1 only ever constructs the 'exact' scheme (EIP-3009 for EVM, a
+      // partially-signed transfer tx for SVM). Skip anything else — e.g. a
+      // 'tab' or 'batch-settlement' entry in a mixed accepts array — rather
+      // than committing to it and failing the whole challenge.
+      if (option.scheme !== 'exact') {
+        if (walletAvailable) skippedScheme = option.scheme;
+        continue;
+      }
       if (option.network.family === 'evm' && wallets.evm) {
         const evmWallet = (await wallets.evm) as EvmWallet;
         return await buildEvmHeader(option, evmWallet, opts);
@@ -204,6 +220,13 @@ export async function buildV1PaymentHeader(
         const solanaWallet = (await wallets.solana) as SolanaWallet;
         return await buildSvmHeader(option, solanaWallet, opts);
       }
+    }
+    if (skippedScheme !== undefined) {
+      return {
+        ok: false,
+        reason: 'merchant_rejected',
+        detail: `v1 supports only the 'exact' scheme, got '${skippedScheme}'`,
+      };
     }
     return { ok: false, reason: 'unsupported_network' };
   } catch (err) {

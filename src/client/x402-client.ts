@@ -392,6 +392,14 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     const candidates: MatchedPayment[] = [];
 
     for (const accept of accepts) {
+      // Scheme gate: this per-request path can only construct 'exact' and
+      // 'exact-approval' payments (see adapter.buildTransaction). Session
+      // schemes — 'tab', 'batch-settlement' — are paid through their own
+      // live objects; signing a plain transfer against them would spend
+      // money the seller's scheme handler cannot credit.
+      const scheme = accept.scheme ?? 'exact';
+      if (scheme !== 'exact' && scheme !== 'exact-approval') continue;
+
       const adapter = adapters.find(a => a.canHandle(accept.network));
       if (!adapter) continue;
 

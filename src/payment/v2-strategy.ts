@@ -14,10 +14,84 @@ import type {
   PayAndFetchOptions,
 } from './types';
 import type { WalletSet, SettlementProbe } from '../adapters/types';
+import type { Tab, SignedVoucher } from '../tab/types';
 import { toNetworkRef } from './network-map';
 import { createX402Client } from '../client/x402-client';
+import { voucherToHeader } from '../tab/tab';
 import { classifyPaidFailure } from './errors';
 import { confirmSettlement } from './confirm-settlement';
+
+/**
+ * Schemes the GENERIC per-request path can actually construct a payment
+ * for: 'exact' (EIP-3009 / signed SPL transfer) and 'exact-approval'
+ * (approval-based chains, routed inside the EVM adapter). Session-object
+ * schemes — 'batch-settlement', 'tab' — are payable only through their own
+ * live objects (openBatchChannel / openTab), never by signing a one-shot
+ * transfer, so the generic picker must skip them rather than submit a
+ * plain transfer against them.
+ */
+const GENERIC_PAYABLE_SCHEMES = new Set(['exact', 'exact-approval']);
+
+/**
+ * Attempt to pay a `tab`-scheme option with the caller's open tab by
+ * signing the next cumulative voucher and re-requesting with the
+ * X-Tab-Voucher header — no facilitator round-trip.
+ *
+ * Returns null to signal "fall through to the generic path": the tab could
+ * not sign (scope exceeded / closed) or the seller refused the voucher
+ * (second 402). Any other outcome is final and returned as a PayResult.
+ */
+async function payWithTab(
+  url: string,
+  requestInit: RequestInit,
+  option: ChallengeOption,
+  tab: Tab,
+): Promise<PayResult | null> {
+  let signed: SignedVoucher;
+  try {
+    signed = await tab.signNextVoucher(option.amount);
+  } catch {
+    // Cap exceeded, session expired, or tab closed — the tab cannot cover
+    // this request, but a generic option still might.
+    return null;
+  }
+
+  const headers = new Headers(requestInit.headers ?? undefined);
+  headers.set('X-Tab-Voucher', voucherToHeader(signed));
+  const freshInit: RequestInit = {
+    method: requestInit.method ?? 'GET',
+    headers,
+  };
+  if (requestInit.signal) freshInit.signal = requestInit.signal;
+  if (typeof requestInit.body === 'string') {
+    freshInit.body = requestInit.body;
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(url, freshInit);
+  } catch (err: unknown) {
+    // The voucher counter already advanced — falling through to the generic
+    // path would pay a second time for the same request. Surface the error.
+    const e = err as { message?: string };
+    return { ok: false, reason: 'error', detail: e?.message ?? String(err) };
+  }
+
+  if (response.status === 402) {
+    // Seller refused the voucher — fall through to the generic path.
+    return null;
+  }
+  if (!response.ok) {
+    return { ok: false, ...(await classifyPaidFailure(response)) };
+  }
+  return {
+    ok: true,
+    paid: true,
+    response,
+    amountPaid: option.amount,
+    network: option.network,
+  };
+}
 
 function decodeHeader(raw: string): unknown {
   const padded = raw.replace(/-/g, '+').replace(/_/g, '/');
@@ -80,8 +154,42 @@ export const v2Strategy: PaymentStrategy = {
     wallets: WalletSet,
     opts: PayAndFetchOptions,
   ): Promise<PayResult> {
-    // Pick first option whose network family has a matching wallet.
-    const option: ChallengeOption | undefined = challenge.options.find(o => {
+    // ── Tab negotiation ────────────────────────────────────────────────
+    // When the caller holds an open tab and the merchant offers scheme
+    // 'tab' (SVM-only) paying TO the tab's counterparty, pay by voucher
+    // header directly — no facilitator round-trip. A refusal (second 402)
+    // or a scope-exceeded signing failure falls through to the generic
+    // path below.
+    if (opts.tab) {
+      const tabOption = challenge.options.find(
+        o =>
+          o.scheme === 'tab' &&
+          o.network.family === 'svm' &&
+          o.payTo === opts.tab!.counterparty,
+      );
+      if (tabOption) {
+        const tabResult = await payWithTab(url, requestInit, tabOption, opts.tab);
+        if (tabResult) return tabResult;
+      }
+    }
+
+    // ── Generic pick ───────────────────────────────────────────────────
+    // Only schemes this path can genuinely pay pass the filter — a 'tab'
+    // option without opts.tab (or 'batch-settlement' without a channel) is
+    // skipped, never paid as a plain transfer.
+    const payable = challenge.options.filter(o =>
+      GENERIC_PAYABLE_SCHEMES.has(o.scheme),
+    );
+    if (payable.length === 0) {
+      return {
+        ok: false,
+        reason: 'no_payment_options',
+        detail: `no generically payable scheme offered (got: ${challenge.options.map(o => o.scheme).join(', ')})`,
+      };
+    }
+
+    // Pick first payable option whose network family has a matching wallet.
+    const option: ChallengeOption | undefined = payable.find(o => {
       if (o.network.family === 'evm') return !!wallets.evm;
       if (o.network.family === 'svm') return !!wallets.solana;
       return false;
