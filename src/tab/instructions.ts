@@ -10,6 +10,7 @@
 export {
   buildRegisterSessionKeyInstruction,
   buildRevokeSessionKeyInstruction,
+  deriveSwigWalletAddress,
   type BuildRegisterSessionKeyArgs,
   type BuildRevokeSessionKeyArgs,
 } from '@dexterai/vault/instructions';

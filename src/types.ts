@@ -123,9 +123,11 @@ export interface PaymentAccept {
   /**
    * Payment scheme: 'exact' for EIP-3009 chains, 'exact-approval' for
    * approval-based chains like BSC, 'batch-settlement' for the EVM
-   * escrow-channel batching scheme (discrete API purchases, gas-amortized).
+   * escrow-channel batching scheme (discrete API purchases, gas-amortized),
+   * 'tab' (SVM only) for streaming session-key vouchers against an
+   * on-chain vault.
    */
-  scheme: 'exact' | 'exact-approval' | 'batch-settlement';
+  scheme: 'exact' | 'exact-approval' | 'batch-settlement' | 'tab';
   /** CAIP-2 network identifier (v1: 'solana', v2: 'solana:5eykt...') */
   network: string;
   /** Payment amount in atomic units (x402 v2 spec field) */

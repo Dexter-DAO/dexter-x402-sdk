@@ -29,6 +29,10 @@ import {
   type ConfirmOptions,
 } from '@solana/web3.js';
 
+import { getAssociatedTokenAddressSync } from '@solana/spl-token';
+
+import { USDC_MINT } from '../../../constants';
+
 import type {
   VaultAdapter,
   SessionScope,
@@ -43,6 +47,7 @@ import {
   buildRegisterSessionKeyInstruction,
   buildRevokeSessionKeyInstruction,
   buildSecp256r1VerifyInstruction,
+  deriveSwigWalletAddress,
   DEXTER_VAULT_PROGRAM_ID,
 } from '../../instructions';
 
@@ -94,7 +99,10 @@ export interface CreateSolanaVaultAdapterOptions {
    *  connection (browser wallet RPC, Helius URL, etc.) — the adapter has
    *  no opinion. */
   connection: Connection;
-  /** The buyer's Swig wallet (holds USDC). */
+  /** The buyer's Swig STATE account (== vault.swig_address — what the
+   *  enroller / BUYER_SWIG hands out). The spending-authority wallet PDA
+   *  and its USDC ATA are derived from it; do NOT pass the derived wallet
+   *  address here. */
   swigAddress: string | PublicKey;
   /** The buyer's vault PDA (gate account). */
   vaultPda: string | PublicKey;
@@ -109,6 +117,56 @@ export interface CreateSolanaVaultAdapterOptions {
    *  match production code (FE/API). For test suites, override to
    *  'finalized' — see reference_anchor_test_commitment in repo memory. */
   confirmOptions?: ConfirmOptions;
+}
+
+// ── register_session_key construction ──────────────────────────────────
+//
+// Extracted from authorizeSession so the EXACT instruction the adapter
+// submits on chain is unit-testable without a Connection. Vault 0.4.2's
+// builder takes two accounts the adapter must supply:
+//   - swigAddress: the Swig STATE account (the builder derives the
+//     swig_wallet_address PDA from it itself)
+//   - vaultUsdcAta: the swig wallet's USDC ATA, read live on-chain for the
+//     Phase 1 overcommit gate (the builder can't derive it — it doesn't
+//     know the mint)
+
+export interface AdapterRegisterIxParams {
+  vaultPda: PublicKey;
+  /** Swig STATE account (== vault.swig_address). */
+  swigAddress: PublicKey;
+  sessionPubkey: Uint8Array;
+  maxAmount: bigint;
+  maxRevolvingCapacity: bigint;
+  expiresAt: bigint;
+  allowedCounterparty: PublicKey;
+  nonce: number;
+  clientDataJSON: Uint8Array;
+  authenticatorData: Uint8Array;
+}
+
+export function buildAdapterRegisterInstruction(p: AdapterRegisterIxParams) {
+  // The USDC ATA's owner is the canonical swig WALLET address (a PDA under
+  // the Swig program, derived from the state account) — NOT the state
+  // account itself. allowOwnerOffCurve must be true for a PDA owner.
+  const swigWalletAddress = deriveSwigWalletAddress(p.swigAddress);
+  const vaultUsdcAta = getAssociatedTokenAddressSync(
+    new PublicKey(USDC_MINT),
+    swigWalletAddress,
+    true, // allowOwnerOffCurve — swig wallet address is a PDA
+  );
+  return buildRegisterSessionKeyInstruction({
+    vaultPda: p.vaultPda,
+    sessionPubkey: p.sessionPubkey,
+    maxAmount: p.maxAmount,
+    maxRevolvingCapacity: p.maxRevolvingCapacity,
+    expiresAt: p.expiresAt,
+    allowedCounterparty: p.allowedCounterparty,
+    nonce: p.nonce,
+    swigAddress: p.swigAddress,
+    vaultUsdcAta,
+    clientDataJSON: p.clientDataJSON,
+    authenticatorData: p.authenticatorData,
+  });
 }
 
 // ── Adapter implementation ─────────────────────────────────────────────
@@ -186,8 +244,9 @@ class SolanaVaultAdapter implements VaultAdapter {
       signed.signature,
       signed.precompileMessage,
     );
-    const registerIx = buildRegisterSessionKeyInstruction({
+    const registerIx = buildAdapterRegisterInstruction({
       vaultPda: this.vaultPdaKey,
+      swigAddress: new PublicKey(this.swigAddress),
       sessionPubkey: kp.publicKey,
       maxAmount: parseAtomic(scope.maxAmountAtomic),
       maxRevolvingCapacity,
