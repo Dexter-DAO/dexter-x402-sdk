@@ -113,6 +113,11 @@ class TabImpl implements Tab {
    *  it back to us. Null if no voucher was signed in this tab's lifetime
    *  (close-without-stream → nothing to settle). */
   private lastSignedVoucher: SignedVoucher | null = null;
+  /** One level of voucher history: the voucher that was `lastSignedVoucher`
+   *  immediately before the current one. Retained so `rollbackVoucher` can
+   *  restore the pre-refusal voucher when a seller honestly refuses the
+   *  most recent one. Set at commit time inside `signNextVoucher`. */
+  private previousSignedVoucher: SignedVoucher | null = null;
 
   constructor(internals: TabInternals) {
     this.internals = internals;
@@ -163,18 +168,79 @@ class TabImpl implements Tab {
       );
     }
 
-    this.sequenceNumber += 1;
-    this.cumulativeAtomic = newCumulative;
+    // Compute the next counter values into locals and only COMMIT them after
+    // the signature lands. A signing rejection must leave the tab untouched —
+    // mutating first would inflate the counter with a phantom increment that
+    // no voucher exists for, silently folding it into the next voucher.
+    // (Scope checks above deliberately stay BEFORE signing.)
+    const nextSequence = this.sequenceNumber + 1;
 
     const payload: VoucherPayload = {
       channelId: this.channelId,
-      cumulativeAmount: this.cumulativeAtomic.toString(),
-      sequenceNumber: this.sequenceNumber,
+      cumulativeAmount: newCumulative.toString(),
+      sequenceNumber: nextSequence,
     };
 
     const signed = await this.internals.vault.signWithSession(this.internals.session, payload);
+
+    // Commit: counters, one level of history, and the new last voucher.
+    this.previousSignedVoucher = this.lastSignedVoucher;
     this.lastSignedVoucher = signed;
+    this.sequenceNumber = nextSequence;
+    this.cumulativeAtomic = newCumulative;
     return signed;
+  }
+
+  /**
+   * INTERNAL — deliberately NOT on the public `Tab` interface.
+   *
+   * Roll back the most recent signed voucher after an HONEST seller refusal
+   * (the seller answered a voucher-paid request with a fresh 402 instead of
+   * delivering). `payWithTab` calls this before falling through to the
+   * generic payment path so the refused increment isn't ALSO settled by
+   * `close()` — without it the buyer pays twice: once exact, once when the
+   * tab settles a cumulative that includes the refused voucher.
+   *
+   * Only rolls back IFF `lastSignedVoucher` is exactly `v` (same sequence
+   * number AND same cumulative amount); otherwise it's a no-op returning
+   * false. Restores the previous voucher from the one level of history kept
+   * by `signNextVoucher`. Only one level is retained, so a rollback consumes
+   * the history — a second consecutive rollback (beyond sequence 1) refuses.
+   *
+   * Trust model: this rollback optimizes the HONEST-refusal case. A
+   * MALICIOUS seller still holds a bearer claim on the refused voucher —
+   * nothing the buyer does locally can un-sign it. On-chain cumulative
+   * monotonicity means at most ONE of the {refused, reissued} cumulative-X
+   * vouchers ever settles, so exposure stays bounded by the session cap;
+   * this is the known soft-tail of the voucher scheme, not a new hole
+   * introduced by rolling back.
+   */
+  rollbackVoucher(v: SignedVoucher): boolean {
+    const last = this.lastSignedVoucher;
+    if (
+      !last ||
+      last.payload.sequenceNumber !== v.payload.sequenceNumber ||
+      last.payload.cumulativeAmount !== v.payload.cumulativeAmount
+    ) {
+      return false;
+    }
+
+    const prev = this.previousSignedVoucher;
+    if (prev) {
+      this.sequenceNumber = prev.payload.sequenceNumber;
+      this.cumulativeAtomic = BigInt(prev.payload.cumulativeAmount);
+      this.lastSignedVoucher = prev;
+    } else if (last.payload.sequenceNumber === 1) {
+      // The refused voucher was the tab's first — revert to the pristine state.
+      this.sequenceNumber = 0;
+      this.cumulativeAtomic = 0n;
+      this.lastSignedVoucher = null;
+    } else {
+      // History exhausted (only one level retained) — refuse rather than guess.
+      return false;
+    }
+    this.previousSignedVoucher = null;
+    return true;
   }
 
   /**

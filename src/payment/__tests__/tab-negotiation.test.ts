@@ -8,7 +8,8 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { v2Strategy } from '../v2-strategy';
-import type { Tab } from '../../tab/types';
+import { openTab } from '../../tab/tab';
+import type { Tab, VaultAdapter } from '../../tab/types';
 import type { SignedVoucher } from '../../tab/types';
 
 // ── Fixtures ───────────────────────────────────────────────────────────
@@ -81,6 +82,49 @@ function makeFakeTab(counterparty: string): Tab & {
     stream: vi.fn(),
     close: vi.fn(),
   } as unknown as Tab & { signNextVoucher: ReturnType<typeof vi.fn> };
+}
+
+/**
+ * A REAL tab (TabImpl via openTab) over a fake VaultAdapter, for tests
+ * that assert the tab's internal voucher accounting — fake-Tab mocks can't
+ * observe counter rollback.
+ */
+async function makeRealTab(): Promise<
+  Tab & {
+    rollbackVoucher(v: SignedVoucher): boolean;
+    lastSignedVoucher: SignedVoucher | null;
+  }
+> {
+  const adapter: VaultAdapter = {
+    network: 'solana:mainnet',
+    swigAddress: OTHER_PUBKEY,
+    vaultPda: OTHER_PUBKEY,
+    authorizeSession: async scope => ({
+      publicKey: new Uint8Array(32).fill(1),
+      privateKey: new Uint8Array(64).fill(9),
+      scope,
+      registration: new Uint8Array(180).fill(2),
+    }),
+    signWithSession: async (_session, payload) => ({
+      payload,
+      sessionPublicKey: new Uint8Array(32).fill(1),
+      sessionRegistration: new Uint8Array(180).fill(2),
+      sessionSignature: new Uint8Array(64).fill(3),
+    }),
+    signOpenTab: async () => new Uint8Array(0),
+    signCloseTab: async () => new Uint8Array(0),
+  };
+  const tab = await openTab({
+    vault: adapter,
+    network: 'solana:mainnet',
+    seller: SELLER_PUBKEY, // matches TAB_ACCEPT.payTo
+    perUnitCap: '0.005', // 5000 atomic = TAB_ACCEPT.amount
+    totalCap: '5',
+  });
+  return tab as Tab & {
+    rollbackVoucher(v: SignedVoucher): boolean;
+    lastSignedVoucher: SignedVoucher | null;
+  };
 }
 
 async function makeEvmWallets() {
@@ -242,6 +286,68 @@ describe('v2Strategy.pay — tab negotiation', () => {
     expect(order).toContain('exact');
     expect(tab.signNextVoucher).toHaveBeenCalledTimes(1);
     expect(result).toHaveProperty('ok');
+  });
+
+  it('rolls the tab back on seller refusal so close() will not double-settle the refused increment', async () => {
+    const tab = await makeRealTab();
+
+    // A prior PAID request on the tab: seq 1, cumulative 5000. This is the
+    // voucher close() must settle — the refused increment must not survive.
+    const preRefusal = await tab.signNextVoucher('5000');
+    expect(preRefusal.payload.sequenceNumber).toBe(1);
+
+    const refusedVouchers: string[] = [];
+    const order: string[] = [];
+    const mockFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers ?? undefined);
+      const voucher = headers.get('X-Tab-Voucher');
+      if (voucher) {
+        order.push('voucher');
+        refusedVouchers.push(voucher);
+        return make402([TAB_ACCEPT, EXACT_EVM_ACCEPT]); // seller refuses
+      }
+      if (headers.has('PAYMENT-SIGNATURE')) {
+        order.push('exact');
+        return new Response('{"ok":true}', { status: 200 });
+      }
+      return make402([TAB_ACCEPT, EXACT_EVM_ACCEPT]);
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const challenge = await v2Strategy.parseChallenge(
+      make402([TAB_ACCEPT, EXACT_EVM_ACCEPT]),
+    );
+    const result = await v2Strategy.pay(
+      'https://example.com/api',
+      { method: 'GET' },
+      challenge!,
+      await makeEvmWallets(),
+      { tab, maxAmountAtomic: '100000' },
+    );
+
+    // Voucher attempted, refused, then the generic exact path paid.
+    expect(order[0]).toBe('voucher');
+    expect(order).toContain('exact');
+    expect(result).toHaveProperty('ok');
+
+    // The refused voucher was seq 2 / cumulative 10000...
+    expect(refusedVouchers).toHaveLength(1);
+    const refused = JSON.parse(
+      Buffer.from(refusedVouchers[0], 'base64').toString('utf8'),
+    );
+    expect(refused.payload.sequenceNumber).toBe(2);
+    expect(refused.payload.cumulativeAmount).toBe('10000');
+
+    // ...and the rollback reverted the tab to the PRE-refusal voucher, so a
+    // close() here would settle seq 1 / 5000 — not the refused increment the
+    // generic path already paid for.
+    expect(tab.lastSignedVoucher).toBe(preRefusal);
+    expect(tab.state.spent).toBe('0.005');
+
+    // The next voucher REUSES the refused sequence/cumulative.
+    const reissued = await tab.signNextVoucher('5000');
+    expect(reissued.payload.sequenceNumber).toBe(2);
+    expect(reissued.payload.cumulativeAmount).toBe('10000');
   });
 
   it('ignores the tab when its counterparty does not match the option payTo', async () => {

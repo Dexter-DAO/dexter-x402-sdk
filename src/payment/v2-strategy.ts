@@ -78,7 +78,24 @@ async function payWithTab(
   }
 
   if (response.status === 402) {
-    // Seller refused the voucher — fall through to the generic path.
+    // Seller refused the voucher — fall through to the generic path. First,
+    // roll the tab's counter back so close() doesn't ALSO settle the refused
+    // increment after the generic path pays exact (double-pay). The rollback
+    // is internal to TabImpl (not the public Tab interface), so reach it by
+    // duck-typing; it only reverts iff the refused voucher is still the
+    // tab's most recent one.
+    //
+    // Trust model: rollback optimizes the HONEST-refusal case. A malicious
+    // seller holds a bearer claim on the refused voucher regardless —
+    // on-chain cumulative monotonicity means at most one of the {refused,
+    // reissued} cumulative-X vouchers settles, bounded by the session cap
+    // (the known soft-tail). Note we deliberately do NOT roll back on the
+    // fetch-THROW path above: the request may have reached the seller, so
+    // that path surfaces an error instead of risking a double-pay.
+    const rollback = (
+      tab as Tab & { rollbackVoucher?: (v: SignedVoucher) => boolean }
+    ).rollbackVoucher;
+    rollback?.call(tab, signed);
     return null;
   }
   if (!response.ok) {
