@@ -11,8 +11,9 @@
  */
 
 import { describe, test, expect } from 'vitest';
-import { PublicKey } from '@solana/web3.js';
+import { PublicKey, SystemProgram } from '@solana/web3.js';
 import { getAssociatedTokenAddressSync } from '@solana/spl-token';
+import { deriveSessionPda } from '@dexterai/vault/session';
 
 import { buildAdapterRegisterInstruction } from '../adapters/solana/index';
 import {
@@ -28,6 +29,7 @@ import { USDC_MINT } from '../../constants';
 const SWIG = new PublicKey('E6iBgjoqBo1V53KUxGnWA6gSq6Ywc6Xui9fZMwLAYCdH');
 const VAULT_PDA = new PublicKey('Sysvar1nstructions1111111111111111111111111');
 const COUNTERPARTY = new PublicKey('Ed25519SigVerify111111111111111111111111111');
+const PAYER = new PublicKey('11111111111111111111111111111111');
 
 const buildIx = () =>
   buildAdapterRegisterInstruction({
@@ -41,16 +43,20 @@ const buildIx = () =>
     nonce: 42,
     clientDataJSON: new Uint8Array([1, 2, 3]),
     authenticatorData: new Uint8Array(37).fill(0xbb),
+    payer: PAYER,
+    siblingSessionPdas: [],
   });
 
 describe('buildAdapterRegisterInstruction (real vault builder)', () => {
-  test('builds against the vault program with the 0.4.2 5-account list', () => {
+  test('builds against the vault program with the V6 8-account list', () => {
     const ix = buildIx();
     expect(ix.programId.equals(DEXTER_VAULT_PROGRAM_ID)).toBe(true);
     // CANARY: if the vault program's register_session_key account list
     // changes again, this count (and the order checks below) must be
-    // revisited along with the adapter's arg construction.
-    expect(ix.keys).toHaveLength(5);
+    // revisited along with the adapter's arg construction. V6 keeps the V5
+    // [0..4] prefix and appends sessionPda + payer + system program (8 total
+    // with zero sibling sessions).
+    expect(ix.keys).toHaveLength(8);
   });
 
   test('account order matches the on-chain Anchor struct', () => {
@@ -74,6 +80,17 @@ describe('buildAdapterRegisterInstruction (real vault builder)', () => {
     expect(ix.keys[3].pubkey.equals(swigWallet)).toBe(true);
     // [4] instructions sysvar
     expect(ix.keys[4].pubkey.equals(INSTRUCTIONS_SYSVAR_ID)).toBe(true);
+    // ── V6 additions ──
+    // [5] session PDA ([b"session", vault, counterparty]) — init_if_needed, writable
+    const [sessionPda] = deriveSessionPda(VAULT_PDA, COUNTERPARTY);
+    expect(ix.keys[5].pubkey.equals(sessionPda)).toBe(true);
+    expect(ix.keys[5].isWritable).toBe(true);
+    // [6] payer — rent for the session PDA; signer + writable
+    expect(ix.keys[6].pubkey.equals(PAYER)).toBe(true);
+    expect(ix.keys[6].isSigner).toBe(true);
+    expect(ix.keys[6].isWritable).toBe(true);
+    // [7] system program (for init_if_needed)
+    expect(ix.keys[7].pubkey.equals(SystemProgram.programId)).toBe(true);
   });
 
   test('ATA owner is the derived wallet PDA, not the swig state account', () => {

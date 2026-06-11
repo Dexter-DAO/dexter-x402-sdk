@@ -32,6 +32,8 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import type { SignedVoucher, AtomicAmount } from '../types';
 import { voucherPayloadMessage } from '../messages';
 import { DEXTER_VAULT_PROGRAM_ID } from '../instructions';
+// V6: sessions live in their own per-counterparty PDA, not inline in the vault.
+import { fetchSessionAccount, isSessionLive } from '@dexterai/vault/session';
 
 // ── Registration parsing ───────────────────────────────────────────────
 //
@@ -158,13 +160,6 @@ export function parseRegistration(registration: Uint8Array): ParsedRegistration 
 // have set active_session otherwise). If no, the registration is stale or
 // forged.
 
-const VAULT_PASSKEY_PUBKEY_OFFSET = 8 + 1 + 1; // disc + version + bump = 10
-
-export interface OnChainVaultState {
-  passkeyPubkey: Uint8Array;     // 33 bytes, SEC1 compressed P-256
-  activeSessionPubkey: Uint8Array | null;
-}
-
 export class OnChainVerificationError extends Error {
   constructor(
     public readonly reason:
@@ -180,95 +175,50 @@ export class OnChainVerificationError extends Error {
 }
 
 /**
- * Read the vault account and extract passkey + active session.
+ * Verify a registration against on-chain state. Throws on any mismatch.
  *
- * Reads at `finalized` commitment to avoid the read-replica race that
- * shows up when the buyer just confirmed register_session_key at
- * `confirmed` and the seller's RPC replica hasn't propagated the write
- * yet. This is the same lesson as the dexter-vault test suite — see
- * reference_anchor_test_commitment in repo memory.
- */
-export async function readVaultState(
-  connection: Connection,
-  vaultPda: PublicKey,
-): Promise<OnChainVaultState> {
-  const acct = await connection.getAccountInfo(vaultPda, 'finalized');
-  if (!acct) {
-    throw new OnChainVerificationError('vault_not_found', vaultPda.toBase58());
-  }
-  if (!acct.owner.equals(DEXTER_VAULT_PROGRAM_ID)) {
-    throw new OnChainVerificationError(
-      'wrong_program',
-      `owner ${acct.owner.toBase58()} is not the vault program`,
-    );
-  }
-
-  const data = acct.data;
-  const passkeyPubkey = new Uint8Array(
-    data.slice(VAULT_PASSKEY_PUBKEY_OFFSET, VAULT_PASSKEY_PUBKEY_OFFSET + 33),
-  );
-
-  // active_session offset depends on pending_withdrawal's variable size.
-  // pending_withdrawal tag at offset 83; if 1, payload is 48 bytes.
-  const pendingTag = data[83];
-  const pendingSize = pendingTag === 1 ? 48 : 0;
-  const identityStart = 84 + pendingSize;
-  const dexterAuthStart = identityStart + 32;
-  const activeSessionTagOffset = dexterAuthStart + 32;
-  const activeSessionTag = data[activeSessionTagOffset];
-
-  if (activeSessionTag !== 1) {
-    return { passkeyPubkey, activeSessionPubkey: null };
-  }
-
-  // SessionRegistration layout, after the tag:
-  //   session_pubkey: [u8; 32]   <- the only thing we need here
-  //   max_amount: u64
-  //   expires_at: i64
-  //   allowed_counterparty: Pubkey
-  //   nonce: u32
-  //   spent: u64
-  //   current_outstanding: u64
-  //   max_revolving_capacity: u64
-  const sessionPubkeyStart = activeSessionTagOffset + 1;
-  const activeSessionPubkey = new Uint8Array(
-    data.slice(sessionPubkeyStart, sessionPubkeyStart + 32),
-  );
-  return { passkeyPubkey, activeSessionPubkey };
-}
-
-/**
- * Verify a registration against on-chain state. Returns the vault's
- * passkey pubkey (caller can cache it). Throws on any mismatch.
+ * V6: a session is its own PDA ([b"session", vault, allowed_counterparty]),
+ * NOT an inline field on the vault. We read that SessionAccount and confirm it
+ * is live (version 1 + unexpired) AND carries the same session pubkey the
+ * registration claims. If the program accepted the register_session_key tx
+ * (which is what wrote the PDA), the passkey signature was already verified by
+ * the secp256r1 precompile inside that tx — the seller just confirms the
+ * on-chain witness still holds.
  *
- * The "verification" here is structural: the active_session on chain MUST
- * carry the same session pubkey the registration claims. If the program
- * accepted the register_session_key tx (which is what set active_session
- * in the first place), then the passkey signature was verified by the
- * secp256r1 precompile inside that tx. The seller doesn't need to redo
- * that work; they just need to confirm the on-chain witness still holds.
+ * fetchSessionAccount reads at the connection's commitment; pass a connection
+ * configured at the commitment the buyer's registration was confirmed to (the
+ * adapter waits for visibility before openTab returns).
  */
 export async function verifyRegistrationOnChain(
   connection: Connection,
   registration: ParsedRegistration,
-): Promise<{ passkeyPubkey: Uint8Array }> {
-  const state = await readVaultState(connection, registration.vaultPda);
+): Promise<void> {
+  const state = await fetchSessionAccount(
+    connection,
+    registration.vaultPda,
+    registration.allowedCounterparty,
+  );
 
-  if (state.activeSessionPubkey === null) {
+  if (!state || state.version === 0) {
     throw new OnChainVerificationError(
       'session_not_active',
-      'vault has no active_session — was it revoked?',
+      'no live SessionAccount PDA for this (vault, counterparty) — revoked, expiry-swept, or never registered',
     );
   }
 
-  if (!bytesEqual(state.activeSessionPubkey, registration.sessionPubkey)) {
+  if (!isSessionLive(state)) {
+    throw new OnChainVerificationError(
+      'session_not_active',
+      'SessionAccount PDA is present but expired',
+    );
+  }
+
+  if (!bytesEqual(state.session.sessionPubkey, registration.sessionPubkey)) {
     throw new OnChainVerificationError(
       'session_pubkey_mismatch',
-      `on-chain ${bytesToHex(state.activeSessionPubkey)} != registration ${bytesToHex(registration.sessionPubkey)}`,
+      `on-chain ${bytesToHex(state.session.sessionPubkey)} != registration ${bytesToHex(registration.sessionPubkey)}`,
     );
   }
-
-  return { passkeyPubkey: state.passkeyPubkey };
 }
 
 // ── Per-voucher signature verification (the per-chunk hot path) ────────

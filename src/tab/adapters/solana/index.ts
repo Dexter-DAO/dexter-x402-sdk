@@ -64,6 +64,10 @@ import {
   deriveChannelId,
 } from '../../sessions';
 
+// V6 session-discovery helpers (sibling PDAs for the overcommit gate). Owned by
+// @dexterai/vault to stay in lockstep with the on-chain register handler.
+import { fetchVaultSessionAccounts, sessionPdasOf, waitForSession } from '@dexterai/vault/session';
+
 import type { P256Keypair, SignedPasskeyPayload } from './passkey-noble';
 import { signOperationWithPasskey } from './passkey-noble';
 
@@ -142,6 +146,10 @@ export interface AdapterRegisterIxParams {
   nonce: number;
   clientDataJSON: Uint8Array;
   authenticatorData: Uint8Array;
+  /** V6: rent payer for the init_if_needed session PDA (the buyer's fee payer). */
+  payer: PublicKey;
+  /** V6: existing session PDAs for this vault — the overcommit aggregate gate. */
+  siblingSessionPdas: PublicKey[];
 }
 
 export function buildAdapterRegisterInstruction(p: AdapterRegisterIxParams) {
@@ -166,6 +174,8 @@ export function buildAdapterRegisterInstruction(p: AdapterRegisterIxParams) {
     vaultUsdcAta,
     clientDataJSON: p.clientDataJSON,
     authenticatorData: p.authenticatorData,
+    payer: p.payer,
+    siblingSessionPdas: p.siblingSessionPdas,
   });
 }
 
@@ -244,6 +254,12 @@ class SolanaVaultAdapter implements VaultAdapter {
       signed.signature,
       signed.precompileMessage,
     );
+    // V6: the register ix needs the vault's existing session PDAs (the
+    // overcommit aggregate gate sums their caps) + a rent payer for the
+    // init_if_needed session PDA being created/replaced.
+    const siblingSessionPdas = sessionPdasOf(
+      await fetchVaultSessionAccounts(this.connection, this.vaultPdaKey),
+    );
     const registerIx = buildAdapterRegisterInstruction({
       vaultPda: this.vaultPdaKey,
       swigAddress: new PublicKey(this.swigAddress),
@@ -255,6 +271,8 @@ class SolanaVaultAdapter implements VaultAdapter {
       nonce,
       clientDataJSON: signed.clientDataJSON,
       authenticatorData: signed.authenticatorData,
+      payer: this.feePayer.publicKey,
+      siblingSessionPdas,
     });
 
     const tx = new Transaction().add(precompileIx, registerIx);
@@ -274,12 +292,14 @@ class SolanaVaultAdapter implements VaultAdapter {
       this.confirmOptions.commitment,
     );
 
-    // 4b. Wait until the active_session is visible at finalized commitment.
-    // Production sellers (and our own seller middleware) read at finalized
-    // to avoid the read-replica race. Absorbing the wait here means the
-    // buyer never hands a tab handle to upstream code until the seller can
-    // reliably verify the registration.
-    await this.waitForActiveSessionFinalized(kp.publicKey);
+    // 4b. Wait until the V6 SessionAccount PDA ([b"session", vault, counterparty])
+    // is visible with this session pubkey. V6 stores each session in its own PDA
+    // (not inline in the vault), so we wait on the PDA — content-aware confirm so
+    // the seller's verifier (and any reader) can reliably see the registration.
+    await waitForSession(this.connection, this.vaultPdaKey, counterparty, {
+      expectedSessionPubkey: kp.publicKey,
+      timeoutMs: 20_000,
+    });
 
     // 5. Bind the keypair to the scope + the registration bytes that
     //    authorized it. Note: the seller's middleware will verify the
@@ -358,6 +378,8 @@ class SolanaVaultAdapter implements VaultAdapter {
     );
     const revokeIx = buildRevokeSessionKeyInstruction({
       vaultPda: this.vaultPdaKey,
+      // V6: revoke names the per-counterparty session PDA (Borsh arg + seed).
+      allowedCounterparty: new PublicKey(session.scope.allowedCounterparty),
       clientDataJSON: signed.clientDataJSON,
       authenticatorData: signed.authenticatorData,
     });
@@ -380,39 +402,6 @@ class SolanaVaultAdapter implements VaultAdapter {
     );
 
     return message;
-  }
-
-  /**
-   * Block until the vault's active_session_pubkey, read at finalized,
-   * matches `expectedSessionPubkey`. Bounds the read-replica race so the
-   * seller's verifier (which reads finalized) can always see what the
-   * buyer just registered.
-   */
-  private async waitForActiveSessionFinalized(
-    expectedSessionPubkey: Uint8Array,
-    timeoutMs = 20_000,
-  ): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const acct = await this.connection.getAccountInfo(this.vaultPdaKey, 'finalized');
-      if (acct) {
-        const data = acct.data;
-        const pendingTag = data[83];
-        const pendingSize = pendingTag === 1 ? 48 : 0;
-        const identityStart = 84 + pendingSize;
-        const dexterAuthStart = identityStart + 32;
-        const activeSessionTagOffset = dexterAuthStart + 32;
-        if (data[activeSessionTagOffset] === 1) {
-          const sessionPkStart = activeSessionTagOffset + 1;
-          const onChainPk = data.slice(sessionPkStart, sessionPkStart + 32);
-          if (bytesEqual(onChainPk, expectedSessionPubkey)) return;
-        }
-      }
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    throw new Error(
-      `register_session_key did not become finalized-visible within ${timeoutMs}ms`,
-    );
   }
 }
 
@@ -443,12 +432,6 @@ async function hashChannelId(channelId: string): Promise<Uint8Array> {
   // Otherwise hash it deterministically. Phase 3 will tighten this.
   const { sha256 } = await import('@noble/hashes/sha256');
   return sha256(new TextEncoder().encode(channelId));
-}
-
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
 }
 
 function hexToBytes(hex: string): Uint8Array {

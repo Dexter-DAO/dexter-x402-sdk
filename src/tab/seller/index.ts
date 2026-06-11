@@ -65,11 +65,9 @@ export {
   verifyRegistrationOnChain,
   verifyVoucherSignature,
   enforceScope,
-  readVaultState,
   InvalidRegistrationError,
   OnChainVerificationError,
   InvalidVoucherSignatureError,
   ScopeViolationError,
   type ParsedRegistration,
-  type OnChainVaultState,
 } from './verify';

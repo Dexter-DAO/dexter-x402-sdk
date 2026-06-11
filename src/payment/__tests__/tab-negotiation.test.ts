@@ -114,6 +114,18 @@ async function makeRealTab(): Promise<
     signOpenTab: async () => new Uint8Array(0),
     signCloseTab: async () => new Uint8Array(0),
   };
+  // openTab now arms drain-protection via POST /tab/open (fail-closed). Stub
+  // that single call so the tab can be constructed over the fake adapter; the
+  // caller re-stubs fetch afterward for its own negotiation assertions.
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      new Response(
+        JSON.stringify({ success: true, armed: true, signature: 'TEST_ARM_SIG' }),
+        { status: 200 },
+      ),
+    ),
+  );
   const tab = await openTab({
     vault: adapter,
     network: 'solana:mainnet',
