@@ -423,6 +423,36 @@ async function postSettle(
   return result;
 }
 
+// ── armTabOpen ────────────────────────────────────────────────────────
+
+/**
+ * Arm drain-protection for a freshly-registered tab via the facilitator's
+ * /tab/open. THROWS if protection cannot be confirmed — a tab that is not
+ * drain-protected must never be returned to the caller.
+ */
+export async function armTabOpen(
+  facilitatorUrl: string,
+  buyerSwigAddress: string,
+  maxAmountAtomic: bigint,
+  network: string,
+): Promise<{ armed: true; signature: string }> {
+  const url = `${facilitatorUrl.replace(/\/$/, '')}/tab/open`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      buyer_swig_address: buyerSwigAddress,
+      max_amount_atomic: maxAmountAtomic.toString(),
+      network,
+    }),
+  });
+  const body = (await res.json().catch(() => ({}))) as { success?: boolean; armed?: boolean; signature?: string; error?: string };
+  if (!res.ok || !body.success || !body.armed) {
+    throw new Error(`tab_open_unprotected: ${body.error ?? `http_${res.status}`}`);
+  }
+  return { armed: true, signature: body.signature ?? '' };
+}
+
 // ── openTab / resumeTab ────────────────────────────────────────────────
 
 export async function openTab(options: OpenTabOptions): Promise<Tab> {
@@ -483,6 +513,15 @@ export async function openTab(options: OpenTabOptions): Promise<Tab> {
   };
 
   const session = await options.vault.authorizeSession(scope);
+
+  // Arm drain-protection on the facilitator. Fail closed: if the facilitator
+  // cannot confirm protection, we throw rather than return an unprotected tab.
+  await armTabOpen(
+    options.facilitatorUrl ?? DEFAULT_FACILITATOR_URL,
+    options.vault.swigAddress,
+    totalCapAtomic,
+    options.network,
+  );
 
   return new TabImpl({
     vault: options.vault,

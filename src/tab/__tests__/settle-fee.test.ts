@@ -44,8 +44,36 @@ function makeFakeAdapter(): VaultAdapter {
   };
 }
 
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+/** Success response for armTabOpen (/tab/open). */
+function armOpenResponse(): Response {
+  return jsonResponse({ success: true, armed: true, signature: 'arm-stub' });
+}
+
+/**
+ * Build a URL-routing fetch mock:
+ *   - /tab/open  → armOpenResponse()
+ *   - /tab/settle → settleResponse()
+ *
+ * Returns the mock so tests can inspect settle-specific calls.
+ */
+function makeRoutingFetch(settleResponse: () => Response) {
+  return vi.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith('/tab/open')) return armOpenResponse();
+    return settleResponse();
+  });
+}
+
 /** Open a tab and sign one voucher so close() has something to settle. */
-async function makeTabWithVoucher(): Promise<Tab> {
+async function makeTabWithVoucher(mockFetch: ReturnType<typeof vi.fn>): Promise<Tab> {
+  vi.stubGlobal('fetch', mockFetch);
   const tab = await openTab({
     vault: makeFakeAdapter(),
     network: 'solana:mainnet',
@@ -58,20 +86,13 @@ async function makeTabWithVoucher(): Promise<Tab> {
   return tab;
 }
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  });
-}
-
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe('Tab.close() — facilitator fee fields', () => {
   it('surfaces grossAmount/feeAmount/netAmount from a fee-aware facilitator', async () => {
-    const mockFetch = vi.fn(async () =>
+    const mockFetch = makeRoutingFetch(() =>
       jsonResponse({
         settleTx: 'sig',
         cumulativeAmount: '10000',
@@ -81,9 +102,8 @@ describe('Tab.close() — facilitator fee fields', () => {
         netAmount: '9900',
       }),
     );
-    vi.stubGlobal('fetch', mockFetch);
 
-    const tab = await makeTabWithVoucher();
+    const tab = await makeTabWithVoucher(mockFetch);
     const result = await tab.close();
 
     expect(result.settleTx).toBe('sig');
@@ -91,22 +111,25 @@ describe('Tab.close() — facilitator fee fields', () => {
     expect(result.feeAmount).toBe('100');
     expect(result.netAmount).toBe('9900');
 
-    // Sanity: the settle actually went to the facilitator's /tab/settle.
-    expect(mockFetch).toHaveBeenCalledOnce();
-    expect(String(mockFetch.mock.calls[0]![0])).toBe(`${FACILITATOR_URL}/tab/settle`);
+    // Sanity: the settle call went to the facilitator's /tab/settle.
+    // mockFetch is called twice total: once for /tab/open (arm), once for /tab/settle.
+    const settleCalls = mockFetch.mock.calls.filter(([url]) =>
+      String(url).endsWith('/tab/settle'),
+    );
+    expect(settleCalls).toHaveLength(1);
+    expect(String(settleCalls[0]![0])).toBe(`${FACILITATOR_URL}/tab/settle`);
   });
 
   it('leaves the fee fields undefined when an old facilitator omits them', async () => {
-    const mockFetch = vi.fn(async () =>
+    const mockFetch = makeRoutingFetch(() =>
       jsonResponse({
         settleTx: 'sig',
         cumulativeAmount: '10000',
         transferAmount: '10000',
       }),
     );
-    vi.stubGlobal('fetch', mockFetch);
 
-    const tab = await makeTabWithVoucher();
+    const tab = await makeTabWithVoucher(mockFetch);
     const result = await tab.close();
 
     expect(result.settleTx).toBe('sig');
@@ -116,7 +139,7 @@ describe('Tab.close() — facilitator fee fields', () => {
   });
 
   it('ignores non-string fee field values rather than coercing them', async () => {
-    const mockFetch = vi.fn(async () =>
+    const mockFetch = makeRoutingFetch(() =>
       jsonResponse({
         settleTx: 'sig',
         cumulativeAmount: '10000',
@@ -126,9 +149,8 @@ describe('Tab.close() — facilitator fee fields', () => {
         netAmount: { atomic: '9900' },
       }),
     );
-    vi.stubGlobal('fetch', mockFetch);
 
-    const tab = await makeTabWithVoucher();
+    const tab = await makeTabWithVoucher(mockFetch);
     const result = await tab.close();
 
     expect(result.settleTx).toBe('sig');
@@ -140,34 +162,31 @@ describe('Tab.close() — facilitator fee fields', () => {
 
 describe('Tab.close() — postSettle error paths stay byte-identical', () => {
   it('throws "tab settle <status>: <body>" on non-2xx', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response('settle exploded', { status: 502 })),
+    const mockFetch = makeRoutingFetch(
+      () => new Response('settle exploded', { status: 502 }),
     );
 
-    const tab = await makeTabWithVoucher();
+    const tab = await makeTabWithVoucher(mockFetch);
     await expect(tab.close()).rejects.toThrow('tab settle 502: settle exploded');
   });
 
   it('throws on a non-JSON 2xx body', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response('<html>oops</html>', { status: 200 })),
+    const mockFetch = makeRoutingFetch(
+      () => new Response('<html>oops</html>', { status: 200 }),
     );
 
-    const tab = await makeTabWithVoucher();
+    const tab = await makeTabWithVoucher(mockFetch);
     await expect(tab.close()).rejects.toThrow(
       'tab settle returned non-JSON: <html>oops</html>',
     );
   });
 
   it('throws when the response JSON has no settleTx', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => jsonResponse({ cumulativeAmount: '10000' })),
+    const mockFetch = makeRoutingFetch(
+      () => jsonResponse({ cumulativeAmount: '10000' }),
     );
 
-    const tab = await makeTabWithVoucher();
+    const tab = await makeTabWithVoucher(mockFetch);
     await expect(tab.close()).rejects.toThrow('tab settle returned no settleTx:');
   });
 });

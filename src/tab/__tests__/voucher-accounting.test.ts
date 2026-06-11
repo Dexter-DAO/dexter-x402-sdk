@@ -11,7 +11,7 @@
  *     revert the counters and restore the previous `lastSignedVoucher`
  *     IFF the voucher being rolled back is exactly the most recent one.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { openTab } from '../tab';
 import type { Tab, VaultAdapter, SignedVoucher, VoucherPayload } from '../types';
 
@@ -64,6 +64,19 @@ async function makeTab(adapter: VaultAdapter): Promise<TabInternalsView> {
   });
   return tab as TabInternalsView;
 }
+
+// armTabOpen is called by openTab after authorizeSession. Stub fetch to return
+// a successful /tab/open arm response so tests that don't care about fetch
+// (no settle, no external calls) still run cleanly.
+beforeEach(() => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+    new Response(JSON.stringify({ success: true, armed: true, signature: 'stub' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  ));
+});
+afterEach(() => vi.unstubAllGlobals());
 
 describe('Tab.signNextVoucher — commit only after signing', () => {
   it('leaves the counter unchanged when signWithSession rejects, and the next attempt reproduces the same voucher', async () => {
