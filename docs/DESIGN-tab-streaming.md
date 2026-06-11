@@ -246,6 +246,18 @@ The facilitator is a *paid service surface*, not part of the SDK. The SDK posts 
 
 A self-hosting seller can run their own facilitator using the open vanilla version of the code — with their own `dexter_authority` key, recorded on the vaults *they* manage. The Dexter-operated facilitator stays private-source (proprietary monitoring, fraud detection, batching). The on-chain protocol is open; the operator runtime can be either.
 
+#### The facilitator fee
+
+A facilitator may take a fee on each settle, deducted from the *seller's* payout (the buyer pays exactly the voucher amount). The Dexter facilitator's shape is `fee = max(1.5× the settle tx's gas in USDC, gross × bps/10_000)` — gas recovery with margin on small settles, a percentage margin on large ones — executed as a second inner transfer to the facilitator's revenue ATA within the same settlement transaction.
+
+`TabCloseResult` surfaces this as three optional atomic-string fields:
+
+- `grossAmount` — what the final settle moved out of the buyer's vault, before the fee
+- `feeAmount` — the facilitator's cut (`"0"` when the facilitator has the fee switched off)
+- `netAmount` — what the seller's ATA actually received
+
+All three **absent** means the facilitator predates fee support. Sellers pricing for a target net should gross up: at a 1% fee, $1.00 net means pricing $1.0101.
+
 ### 4.7 The seller-protection invariant, surfaced via the SDK
 
 While `tab.close()` has not yet posted on-chain settle, the buyer's `request_withdrawal` against the vault is **rejected on chain** with `PendingVouchersExist`. This is the OTS guarantee. The SDK does not enforce it — the program does. The SDK simply exposes it: a buyer who runs `tab.close()` and then tries `vault.withdraw()` will see the rejection cleanly returned from `vault.withdraw()`.
