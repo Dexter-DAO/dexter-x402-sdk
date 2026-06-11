@@ -310,9 +310,9 @@ class TabImpl implements Tab {
   async close(): Promise<TabCloseResult> {
     if (this.closed) throw new TabClosedError(this.channelId);
 
-    let settleTx = '';
+    let settled: SettleResult = { settleTx: '' };
     if (this.lastSignedVoucher && this.cumulativeAtomic > 0n) {
-      settleTx = await postSettle(
+      settled = await postSettle(
         this.internals.facilitatorUrl,
         this.lastSignedVoucher,
         this.internals.network,
@@ -330,7 +330,7 @@ class TabImpl implements Tab {
 
     return {
       settledAmount: atomicToHuman(this.cumulativeAtomic.toString()),
-      settleTx,
+      ...settled,
     };
   }
 }
@@ -354,11 +354,22 @@ export function voucherToHeader(signed: SignedVoucher): string {
   ).toString('base64');
 }
 
+/** What postSettle extracts from the facilitator's `/tab/settle` response.
+ *  The fee fields are present only when a fee-aware facilitator sends them
+ *  as strings — older facilitators omit them and they stay undefined. */
+interface SettleResult {
+  settleTx: string;
+  grossAmount?: string;
+  feeAmount?: string;
+  netAmount?: string;
+}
+
 /**
  * POST the buyer's final voucher to the facilitator's `/tab/settle` endpoint
- * and return the on-chain settlement signature. Throws on non-2xx so a
- * settle failure surfaces to the buyer rather than silently leaving the
- * seller unpaid.
+ * and return the on-chain settlement signature plus, when the facilitator
+ * sends them, the gross/fee/net atomic amounts of the final settle. Throws
+ * on non-2xx so a settle failure surfaces to the buyer rather than silently
+ * leaving the seller unpaid.
  *
  * Wire shape matches dexter-facilitator/src/tabSettle.ts: the endpoint
  * accepts hex-encoded bytes for the session pubkey / signature /
@@ -369,7 +380,7 @@ async function postSettle(
   facilitatorUrl: string,
   voucher: SignedVoucher,
   network: TabNetworkId,
-): Promise<string> {
+): Promise<SettleResult> {
   const url = `${facilitatorUrl.replace(/\/$/, '')}/tab/settle`;
   const body = {
     channelId: voucher.payload.channelId,
@@ -389,7 +400,12 @@ async function postSettle(
   if (!res.ok) {
     throw new Error(`tab settle ${res.status}: ${text.slice(0, 500)}`);
   }
-  let parsed: { settleTx?: string };
+  let parsed: {
+    settleTx?: string;
+    grossAmount?: unknown;
+    feeAmount?: unknown;
+    netAmount?: unknown;
+  };
   try {
     parsed = JSON.parse(text);
   } catch {
@@ -398,7 +414,13 @@ async function postSettle(
   if (!parsed.settleTx) {
     throw new Error(`tab settle returned no settleTx: ${text.slice(0, 200)}`);
   }
-  return parsed.settleTx;
+  // Fee fields are optional (older facilitators don't send them) and only
+  // accepted as strings — anything else is ignored, never coerced.
+  const result: SettleResult = { settleTx: parsed.settleTx };
+  if (typeof parsed.grossAmount === 'string') result.grossAmount = parsed.grossAmount;
+  if (typeof parsed.feeAmount === 'string') result.feeAmount = parsed.feeAmount;
+  if (typeof parsed.netAmount === 'string') result.netAmount = parsed.netAmount;
+  return result;
 }
 
 // ── openTab / resumeTab ────────────────────────────────────────────────

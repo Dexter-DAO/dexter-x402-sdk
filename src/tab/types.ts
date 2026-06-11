@@ -154,6 +154,13 @@ export interface TabCloseResult {
   settledAmount: HumanAmount;
   /** Facilitator's on-chain settlement signature. */
   settleTx: string;
+  /** Atomic amount moved by the final settle, before any facilitator fee.
+   *  Absent when the facilitator predates fee support. */
+  grossAmount?: string;
+  /** Atomic facilitator fee deducted from the final settle. */
+  feeAmount?: string;
+  /** Atomic amount the seller actually received from the final settle. */
+  netAmount?: string;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
