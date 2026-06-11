@@ -15,11 +15,11 @@ import type {
 } from './types';
 import type { WalletSet, SettlementProbe } from '../adapters/types';
 import type { Tab, SignedVoucher } from '../tab/types';
-import { toNetworkRef } from './network-map';
 import { createX402Client } from '../client/x402-client';
 import { voucherToHeader } from '../tab/tab';
 import { classifyPaidFailure } from './errors';
 import { confirmSettlement } from './confirm-settlement';
+import { parseV2Challenge, decodePaymentRequiredHeader } from './v2-challenge';
 
 /**
  * Schemes the GENERIC per-request path can actually construct a payment
@@ -110,59 +110,10 @@ async function payWithTab(
   };
 }
 
-function decodeHeader(raw: string): unknown {
-  const padded = raw.replace(/-/g, '+').replace(/_/g, '/');
-  const normalized = padded + '='.repeat((4 - (padded.length % 4 || 4)) % 4);
-  return JSON.parse(Buffer.from(normalized, 'base64').toString('utf8'));
-}
-
-function toOptions(accepts: unknown[]): ChallengeOption[] {
-  const out: ChallengeOption[] = [];
-  for (const a of accepts) {
-    if (!a || typeof a !== 'object') continue;
-    const o = a as Record<string, unknown>;
-    const net = toNetworkRef(String(o.network ?? ''));
-    if (!net) continue;
-    out.push({
-      scheme: String(o.scheme ?? 'exact'),
-      network: net,
-      amount: String(o.amount ?? o.maxAmountRequired ?? '0'),
-      asset: String(o.asset ?? ''),
-      payTo: String(o.payTo ?? ''),
-      maxTimeoutSeconds:
-        typeof o.maxTimeoutSeconds === 'number' ? o.maxTimeoutSeconds : undefined,
-      extra:
-        o.extra && typeof o.extra === 'object'
-          ? (o.extra as Record<string, unknown>)
-          : undefined,
-    });
-  }
-  return out;
-}
-
 export const v2Strategy: PaymentStrategy = {
   version: 2,
 
-  async parseChallenge(res: Response): Promise<PaymentChallenge | null> {
-    const header = res.headers.get('payment-required');
-    if (!header) return null;
-    let decoded: Record<string, unknown>;
-    try {
-      decoded = decodeHeader(header) as Record<string, unknown>;
-    } catch {
-      return null;
-    }
-    const accepts = Array.isArray(decoded.accepts) ? decoded.accepts : [];
-    if (accepts.length === 0) return null;
-    return {
-      x402Version: 2,
-      options: toOptions(accepts),
-      resourceUrl:
-        decoded.resource && typeof decoded.resource === 'object'
-          ? String((decoded.resource as Record<string, unknown>).url ?? '')
-          : undefined,
-    };
-  },
+  async parseChallenge(res: Response): Promise<PaymentChallenge | null> { return parseV2Challenge(res); },
 
   async pay(
     url: string,
@@ -296,7 +247,7 @@ export const v2Strategy: PaymentStrategy = {
       const paymentResponseHeader = response.headers.get('PAYMENT-RESPONSE');
       if (paymentResponseHeader) {
         try {
-          const decoded = decodeHeader(paymentResponseHeader) as Record<string, unknown>;
+          const decoded = decodePaymentRequiredHeader(paymentResponseHeader) as Record<string, unknown>;
           if (decoded && typeof decoded.transaction === 'string') {
             txSignature = decoded.transaction;
           }
