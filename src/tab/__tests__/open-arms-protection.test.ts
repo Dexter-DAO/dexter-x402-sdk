@@ -11,15 +11,16 @@ describe("armTabOpen", () => {
       ok: true, json: async () => ({ success: true, armed: true, signature: "SIG" }),
     });
     vi.stubGlobal("fetch", fetchMock);
-    await expect(armTabOpen(FAC, "Swig1", 1000n, "solana:mainnet")).resolves.toEqual({ armed: true, signature: "SIG" });
+    await expect(armTabOpen(FAC, "Swig1", 1000n, "solana:mainnet", "Seller1")).resolves.toEqual({ armed: true, signature: "SIG" });
     expect(String(fetchMock.mock.calls[0][0])).toBe(`${FAC}/tab/open`);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body)).seller).toBe("Seller1");
   });
 
   it("THROWS tab_open_unprotected when the facilitator rejects", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: true, json: async () => ({ success: false, error: "vault_gate_failed" }),
     }));
-    await expect(armTabOpen(FAC, "Swig1", 1000n, "solana:mainnet"))
+    await expect(armTabOpen(FAC, "Swig1", 1000n, "solana:mainnet", "Seller1"))
       .rejects.toThrow(/tab_open_unprotected.*vault_gate_failed/);
   });
 });

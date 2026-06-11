@@ -435,6 +435,7 @@ export async function armTabOpen(
   buyerSwigAddress: string,
   maxAmountAtomic: bigint,
   network: string,
+  counterparty: string,
 ): Promise<{ armed: true; signature: string }> {
   const url = `${facilitatorUrl.replace(/\/$/, '')}/tab/open`;
   const res = await fetch(url, {
@@ -442,6 +443,9 @@ export async function armTabOpen(
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       buyer_swig_address: buyerSwigAddress,
+      // The tab's allowed_counterparty — V6 settle_voucher raises THIS session's
+      // meter, so the facilitator needs it to derive the session PDA.
+      seller: counterparty,
       max_amount_atomic: maxAmountAtomic.toString(),
       network,
     }),
@@ -521,6 +525,7 @@ export async function openTab(options: OpenTabOptions): Promise<Tab> {
     options.vault.swigAddress,
     totalCapAtomic,
     options.network,
+    counterparty,
   );
 
   return new TabImpl({
