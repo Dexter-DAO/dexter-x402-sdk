@@ -24,14 +24,32 @@ the enrollment role layout in `set_swig_atomic`):
 Net: Dexter cannot move funds spontaneously. Every settlement opportunity is
 created by the buyer, one voucher at a time, within buyer-set caps.
 
-**Under audit (stated honestly):** within a voucher-authorized settlement
-transaction, the transfer's destination and amount pinning depends on the
-depth of upstream Swig's ProgramExec inner-instruction validation (the role's
-action set is `All`; the vault instruction constrains the accounting, not the
-sibling transfer). Until that audit confirms destination pinning, "cannot
-*redirect* an authorized settlement" is design intent, not a verified
-guarantee — which is why this document's headline says *initiate*, the half
-that is proven.
+**Audit result (resolved 2026-06-12 — destination is NOT chain-pinned):**
+within a voucher-authorized settlement transaction, the USDC transfer is a
+sibling Swig `SignV2` instruction the facilitator constructs; `settle_tab_voucher`
+does not take the destination ATA as an account and so cannot constrain it.
+Upstream Swig's `ProgramExec` validator (`program_exec_authenticate`,
+swig-wallet rev `c2e8eb4`) checks only that the preceding instruction is the
+right program, carries the `settle_tab` data prefix, and passes the swig
+config + wallet as its first two accounts — it does **not** inspect the
+sibling transfer's destination or amount. Therefore **"cannot *redirect* an
+authorized settlement" is enforced by facilitator code, not by the chain.**
+
+The exploit this admits, and its bound: a compromised facilitator, holding a
+voucher the buyer already signed, could point that settlement's transfer at a
+wrong destination. It requires facilitator key compromise (the role cannot act
+without the vault instruction + a real buyer voucher in the same transaction;
+the facilitator cannot mint vouchers — the buyer's session key signs them
+client-side). The amount is capped at exactly what the buyer signed for that
+counterparty, so the blast radius is **in-flight, accrued-but-unsettled value
+misdirected** — never vault balances, never unsigned amounts. Vault withdrawal
+(buyer-passkey-keyed, freeze-gated) is unaffected.
+
+The fix (tracked, post-audit, small): have `settle_tab_voucher` take the
+seller destination ATA as a constrained account and require it to equal the
+registered counterparty's ATA — then the chain pins the destination and the
+"cannot redirect" clause becomes true by construction. Until then this
+document's headline claims only *initiate*, the half that is chain-proven.
 
 The freeze that blocks withdrawal while a tab is open is not a custody handle
 either: it is a temporary, **buyer-escapable** gate (`force_release`, signed by
