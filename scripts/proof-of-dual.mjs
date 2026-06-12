@@ -43,9 +43,13 @@ const passkeyKp = {
   privateKey: Uint8Array.from(Buffer.from(cred.passkeyPrivateKeyBase64, 'base64')),
 };
 const feePayer = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(FEE_PAYER_FILE, 'utf8'))));
-// Fixed seed 8 (3a's proof-of-loop uses 7) so re-runs replace THIS proof's
-// session in place without colliding with proof-of-loop's counterparty.
-const seller = Keypair.fromSeed(new Uint8Array(32).fill(8));
+// FIXED seller from a PRIVATE keypair file — fixed so V6 re-registers replace
+// this proof's session in place across runs, private because deterministic
+// seeds (fromSeed(fill(N))) are WEAK KEYS: proof-of-loop's fill(7) seller was
+// swept by a bot (3a proof money gone, ATA closed) within the hour. Never
+// settle real value to a derivable key.
+const SELLER_FILE = `${process.env.HOME}/.config/solana/dexter-proof-seller.json`;
+const seller = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(SELLER_FILE, 'utf8'))));
 const conn = new Connection(HELIUS, 'confirmed');
 
 // The catalog verifier's wallet — the EXACT leg uses the same key the real
