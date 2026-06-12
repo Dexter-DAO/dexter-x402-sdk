@@ -67,4 +67,15 @@ describe('resolveTabTerms', () => {
     const result = await resolveTabTerms('https://s.example/tick', {}, { fetchImpl });
     expect(result.kind).toBe('error');
   });
+
+  it('refuses a non-USDC tab offer instead of mispricing the human figure', async () => {
+    const NOT_USDC = 'So11111111111111111111111111111111111111112';
+    const fetchImpl = vi.fn(async () => challenge402([{ ...TAB_ACCEPT, asset: NOT_USDC }]));
+    const cache = new Map<string, TabTerms>();
+    const result = await resolveTabTerms('https://s.example/tick', {}, { fetchImpl, cache });
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') throw new Error('unreachable');
+    expect(result.detail).toContain(NOT_USDC);
+    expect(cache.size).toBe(0);
+  });
 });

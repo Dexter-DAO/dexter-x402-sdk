@@ -11,11 +11,17 @@
  */
 import { resolveTabOffer, type TabOffer } from './resolve';
 import { atomicToHuman } from './tab';
+import { USDC_MINT } from '../constants';
 
 export interface TabTerms {
   /** Seller counterparty (base58) — read off the wire, never caller-supplied. */
   counterparty: string;
-  /** Per-request price the seller quoted. */
+  /**
+   * Per-request price the seller quoted. `human` is USDC-denominated
+   * (6 decimals) — guaranteed by the USDC-only guard in resolveTabTerms;
+   * a non-USDC tab offer resolves to kind 'error', never a mispriced human
+   * figure. `atomic` is always authoritative.
+   */
   perRequest: { atomic: string; human: string };
   asset: string;
   network: { caip2: string };
@@ -76,6 +82,17 @@ export async function resolveTabTerms(
 
   const result = await resolveTabOffer(url, init, opts.fetchImpl ?? fetch);
   if (result.kind !== 'offer') return result;
+
+  // Terms are for HUMANS (consent UIs, directories): a 9-decimal asset
+  // rendered with USDC's 6 decimals would misprice by 1000x. The Dexter tab
+  // rail settles USDC only today, so anything else is refused outright
+  // rather than mis-rendered.
+  if (result.offer.asset !== USDC_MINT) {
+    return {
+      kind: 'error',
+      detail: `tab offer asset is not USDC ("${result.offer.asset}"); refusing to render a human price`,
+    };
+  }
 
   const terms = offerToTerms(result.offer);
   opts.cache?.set(url, terms);
