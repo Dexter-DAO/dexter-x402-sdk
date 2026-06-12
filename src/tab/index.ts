@@ -61,6 +61,14 @@ export {
 // Phase 2 implementations.
 export { openTab, resumeTab, humanToAtomic, atomicToHuman, voucherToHeader, DEFAULT_FACILITATOR_URL } from './tab';
 
+// Step 3a: pay-a-URL — counterparty resolved from the wire, never the caller.
+export { resolveTabOffer, type TabOffer, type TabOfferResult } from './resolve';
+export {
+  payUrlWithTab,
+  type PayUrlWithTabOptions,
+  type PayUrlWithTabResult,
+} from './pay-url';
+
 // Protocol primitives — re-exported from @dexterai/vault through the local
 // shim so existing consumers of `@dexterai/x402/tab` can import them by name.
 export {

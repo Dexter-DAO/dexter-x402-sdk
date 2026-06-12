@@ -138,7 +138,50 @@ Batch settlement lets a buyer pre-fund an escrow channel once, make many **discr
 
 It is **not** a streaming primitive; it batches discrete purchases. EVM only (Base, Arbitrum, Polygon). The buyer never needs a gas token: every step (deposit, voucher, claim, settle, refund) is signature-based; the Dexter facilitator submits the transactions and pays the gas.
 
-> **Coming: `@dexterai/x402/tab` — OTS-backed streaming payments.** A peer module for *continuous metered consumption* (tokens, bytes, frames, seconds) where the unit of billing is smaller than a request. One passkey-authorized session signs many vouchers; the seller verifies locally and demands a fresh signature before each chunk. The contract is locked (`@dexterai/x402/tab` + `@dexterai/x402/tab/seller` subpaths emit type stubs today); implementation is phased in [`docs/DESIGN-tab-streaming.md`](./docs/DESIGN-tab-streaming.md). Architectural roadmap on [github.com/Dexter-DAO/dexter-vault/issues](https://github.com/Dexter-DAO/dexter-vault/issues?q=is%3Aissue+label%3Aroadmap).
+---
+
+## Tabs (Solana) — streaming micropayments, settled on close
+
+`@dexterai/x402/tab` is the streaming peer of batch settlement: *continuous metered consumption* (tokens, bytes, frames, seconds) where the unit of billing is smaller than a request. One passkey-authorized, drain-protected session signs many vouchers off-chain; the seller verifies locally; one on-chain settle on close moves USDC from the buyer's vault to the seller. Non-custodial — funds never leave the buyer's vault until settle, and the vault freezes withdrawals while a tab is open so the seller can't be rugged. Design: [`docs/DESIGN-tab-streaming.md`](./docs/DESIGN-tab-streaming.md).
+
+### Pay a URL — zero seller knowledge
+
+Given ONLY a URL, the buyer discovers the seller from the URL's own standard
+x402 `402` challenge, opens a freeze-protected tab to it, and pays. The seller
+pubkey comes off the wire — never from your code.
+
+```ts
+import { payUrlWithTab } from '@dexterai/x402/tab';
+
+const tabs = new Map(); // reuse one open tab per seller across calls
+const { result, tab } = await payUrlWithTab(
+  'https://api.example.com/paid/infer',
+  { method: 'GET' },
+  { vault, perUnitCap: '0.01', totalCap: '1.00', tabs },
+);
+// ...more payUrlWithTab calls reuse the same tab via `tabs`...
+await tab?.close(); // ONE on-chain settle for everything streamed
+```
+
+`resolveTabOffer(url)` is the underlying resolution primitive — probe a URL and read its tab terms (counterparty, quote, network) without paying.
+
+### Tab seller (Express)
+
+Compose `tabChallengeMiddleware` (answers voucher-less requests with the standard x402 challenge, so strangers can discover you) BEFORE `tabMiddleware` (verifies vouchers):
+
+```ts
+import { tabChallengeMiddleware, tabMiddleware, requireTab, openSse } from '@dexterai/x402/tab/seller';
+
+app.get('/paid/infer',
+  tabChallengeMiddleware({ sellerPubkey, network: 'solana:mainnet', perUnit: '0.001', facilitatorUrl }),
+  tabMiddleware({ connection, sellerPubkey, network: 'solana:mainnet', perUnit: '0.001', settle: 'on-close', facilitatorUrl }),
+  async (req, res) => {
+    const meter = openSse(res, { tab: requireTab(req), perUnit: '0.001' });
+    await meter.charge(1);
+    meter.send('...');
+    meter.end();
+  });
+```
 
 ### Buyer
 
