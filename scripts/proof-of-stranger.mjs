@@ -24,7 +24,7 @@ import {
 } from '@dexterai/x402/tab/adapters/solana';
 
 const URL_UNDER_TEST = 'https://api.dexter.cash/api/x402/tab-demo/tick';
-const HELIUS = 'https://mainnet.helius-rpc.com/?api-key=8fd1a2cd-76e7-4462-b38b-1026960edd40';
+const HELIUS = process.env.SOLANA_RPC_URL || 'https://rpc.dexter.cash'; // Dexter RPC proxy (key server-side); NEVER mainnet-beta
 const PER_UNIT_CAP = '0.02';
 const TOTAL_CAP = '0.02';
 

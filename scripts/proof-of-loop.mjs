@@ -34,7 +34,7 @@ import {
 } from '@dexterai/x402/tab/adapters/solana';
 
 // ── Config ──────────────────────────────────────────────────────────────
-const HELIUS = 'https://mainnet.helius-rpc.com/?api-key=8fd1a2cd-76e7-4462-b38b-1026960edd40';
+const HELIUS = process.env.SOLANA_RPC_URL || 'https://rpc.dexter.cash'; // Dexter RPC proxy (key server-side); NEVER mainnet-beta
 const FACILITATOR = 'http://127.0.0.1:4072';
 const USDC_MINT = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
 const NETWORK = 'solana:mainnet';           // SDK v1 alias; facilitator normalizes -> v2 CAIP-2
