@@ -71,3 +71,10 @@ export {
   ScopeViolationError,
   type ParsedRegistration,
 } from './verify';
+
+// Discovery: standard x402 v2 challenge for voucher-less requests.
+// Compose BEFORE tabMiddleware.
+export {
+  tabChallengeMiddleware,
+  type TabChallengeConfig,
+} from './challenge';
