@@ -91,3 +91,11 @@ export {
   type BuildRegisterSessionKeyArgs,
   type BuildRevokeSessionKeyArgs,
 } from './instructions';
+
+// Step 3b: pre-flight resolution — a URL's tab terms without paying.
+export {
+  resolveTabTerms,
+  type TabTerms,
+  type TabTermsResult,
+  type ResolveTabTermsOptions,
+} from './terms';

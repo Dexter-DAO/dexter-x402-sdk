@@ -78,3 +78,5 @@ export {
   tabChallengeMiddleware,
   type TabChallengeConfig,
 } from './challenge';
+
+export { tabOrExactMiddleware, type TabOrExactConfig } from './dual';

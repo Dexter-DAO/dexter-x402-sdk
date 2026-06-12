@@ -165,6 +165,19 @@ await tab?.close(); // ONE on-chain settle for everything streamed
 
 `resolveTabOffer(url)` is the underlying resolution primitive — probe a URL and read its tab terms (counterparty, quote, network) without paying.
 
+Use `resolveTabTerms` when you want a human-readable price and settlement descriptor — for consent UIs, directories, or agents that decide before acting:
+
+```ts
+import { resolveTabTerms } from '@dexterai/x402/tab';
+
+// Decide BEFORE you pay: what would a tab to this URL cost and settle into?
+const resolved = await resolveTabTerms('https://api.example.com/paid/tick');
+if (resolved.kind === 'terms') {
+  console.log(resolved.terms.counterparty, resolved.terms.perRequest.human);
+  // settlement: { custody: 'non-custodial', protection: 'freeze', settleOn: 'close' }
+}
+```
+
 ### Tab seller (Express)
 
 Compose `tabChallengeMiddleware` (answers voucher-less requests with the standard x402 challenge, so strangers can discover you) BEFORE `tabMiddleware` (verifies vouchers):
@@ -179,6 +192,26 @@ app.get('/paid/infer',
     const meter = openSse(res, { tab: requireTab(req), perUnit: '0.001' });
     await meter.charge(1);
     meter.send('...');
+    meter.end();
+  });
+```
+
+For sellers who also want to accept one-shot payments (catalog verifiers, non-tab buyers), `tabOrExactMiddleware` is the recommended default — ONE middleware advertising both rails in a single 402 challenge:
+
+```ts
+import { tabOrExactMiddleware, requireTab, openSse } from '@dexterai/x402/tab/seller';
+import type { X402Request } from '@dexterai/x402/server';
+
+// ONE middleware, two rails: agents pay by tab; one-shot buyers (and
+// catalog verifiers) pay exact. Same price on both.
+app.get('/paid/tick',
+  tabOrExactMiddleware({ connection, sellerPubkey, network: 'solana:mainnet', perUnit: '0.01' }),
+  async (req, res) => {
+    if ((req as X402Request).x402) { res.json({ data: '...', paidVia: 'exact' }); return; } // exact rail
+    const tab = requireTab(req);                                                              // tab rail
+    const meter = openSse(res, { tab, perUnit: '0.01' });
+    await meter.charge(1);
+    meter.send(JSON.stringify({ data: '...' }));
     meter.end();
   });
 ```
