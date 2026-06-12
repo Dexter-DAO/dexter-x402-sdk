@@ -10,7 +10,8 @@ const FEE_PAYER = 'DexFeePayer1111111111111111111111111111111';
 // Records facilitator calls so tests can assert WHAT we sent (the
 // underpayment pin reads the /verify request body).
 const calls: Array<{ path: string; body: unknown }> = [];
-const verifyResponse: unknown = { isValid: false, invalidReason: 'test_invalid' };
+let verifyResponse: unknown = { isValid: false, invalidReason: 'test_invalid' };
+let settleResponse: unknown = { success: false, errorReason: 'settle_not_stubbed' };
 
 function fakeFacilitatorFetch(): typeof fetch {
   return (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
@@ -25,6 +26,10 @@ function fakeFacilitatorFetch(): typeof fetch {
     if (url.includes('/verify')) {
       calls.push({ path: '/verify', body });
       return new Response(JSON.stringify(verifyResponse), { status: 200 });
+    }
+    if (url.includes('/settle')) {
+      calls.push({ path: '/settle', body });
+      return new Response(JSON.stringify(settleResponse), { status: 200 });
     }
     throw new Error(`unexpected facilitator call: ${url}`);
   }) as typeof fetch;
@@ -68,6 +73,8 @@ function mw() {
 
 beforeEach(() => {
   calls.length = 0;
+  verifyResponse = { isValid: false, invalidReason: 'test_invalid' };
+  settleResponse = { success: false, errorReason: 'settle_not_stubbed' };
   vi.stubGlobal('fetch', fakeFacilitatorFetch());
 });
 afterEach(() => {
@@ -151,6 +158,86 @@ describe('tabOrExactMiddleware', () => {
     expect(requirements.maxAmountRequired).toBe('10000');
     expect(JSON.stringify(calls[0].body)).toContain('"10000"');
     expect(JSON.stringify(requirements)).not.toContain('"amount":"1"');
+  });
+
+  it('SUCCESS PATH: valid payment -> settle -> req.x402 + PAYMENT-RESPONSE + next()', async () => {
+    verifyResponse = { isValid: true, payer: 'BuyerPayer1111111111111111111111111111111111' };
+    settleResponse = { success: true, transaction: 'TxSig123', network: CAIP2 };
+    const paidHeader = Buffer.from(JSON.stringify({
+      accepted: { network: CAIP2, scheme: 'exact', amount: '10000', maxAmountRequired: '10000' },
+      payload: { transaction: 'AAAA' },
+    })).toString('base64');
+
+    const { req, res } = fakeReqRes({ 'payment-signature': paidHeader });
+    const next = vi.fn();
+    await mw()(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.statusCode).toBe(0); // middleware never wrote a status — handler owns it
+    expect(req.x402).toEqual({
+      transaction: 'TxSig123',
+      payer: 'BuyerPayer1111111111111111111111111111111111',
+      network: CAIP2,
+    });
+    const receipt = decodePaymentRequired(res.headers['PAYMENT-RESPONSE']);
+    expect(receipt).toEqual({
+      success: true,
+      transaction: 'TxSig123',
+      network: CAIP2,
+      payer: 'BuyerPayer1111111111111111111111111111111111',
+    });
+    // Settle was called with the SAME explicit requirements as verify.
+    const settleCall = calls.find((c) => c.path === '/settle');
+    expect((settleCall!.body as any).paymentRequirements.amount).toBe('10000');
+  });
+
+  it('settle failure -> 402 with the settlement error, no next()', async () => {
+    verifyResponse = { isValid: true, payer: 'BuyerPayer1111111111111111111111111111111111' };
+    settleResponse = { success: false, errorReason: 'insufficient_funds' };
+    const paidHeader = Buffer.from(JSON.stringify({
+      accepted: { network: CAIP2, scheme: 'exact', amount: '10000' },
+      payload: { transaction: 'AAAA' },
+    })).toString('base64');
+
+    const { req, res } = fakeReqRes({ 'payment-signature': paidHeader });
+    const next = vi.fn();
+    await mw()(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(402);
+    expect(res.body).toEqual({ error: 'Payment settlement failed', reason: 'insufficient_funds' });
+  });
+
+  it('facilitator down on the EXACT rail -> 503 challenge_unavailable, not 500', async () => {
+    vi.stubGlobal('fetch', (async () => {
+      throw new Error('connect ECONNREFUSED');
+    }) as typeof fetch);
+    const paidHeader = Buffer.from(JSON.stringify({
+      accepted: { network: CAIP2, scheme: 'exact', amount: '10000' },
+      payload: { transaction: 'AAAA' },
+    })).toString('base64');
+
+    const { req, res } = fakeReqRes({ 'payment-signature': paidHeader });
+    const next = vi.fn();
+    await mw()(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(503);
+    expect(res.headers['Retry-After']).toBe('5');
+    expect((res.body as any).error).toBe('challenge_unavailable');
+  });
+
+  it('header precedence: voucher wins when BOTH payment headers are present', async () => {
+    const { req, res } = fakeReqRes({
+      'x-tab-voucher': 'garbage-not-a-voucher',
+      'payment-signature': 'also-present',
+    });
+    const next = vi.fn();
+    await mw()(req, res, next);
+    // Dispatched to the tab rail: no challenge, no exact /verify call.
+    expect(res.headers['PAYMENT-REQUIRED']).toBeUndefined();
+    expect(calls.filter((c) => c.path === '/verify')).toHaveLength(0);
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
   });
 
   it('answers 503 + Retry-After when the facilitator is unreachable', async () => {

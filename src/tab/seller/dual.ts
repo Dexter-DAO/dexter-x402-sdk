@@ -93,12 +93,26 @@ export function tabOrExactMiddleware(config: TabOrExactConfig): RequestHandler {
     // Rail 2: exact payment -> verify + settle inline, explicit requirements.
     const paymentSignature = req.headers['payment-signature'] as string | undefined;
     if (paymentSignature) {
+      // Building the accept can hit the facilitator (/supported, cached after
+      // first success). That failing is the SAME transient condition the
+      // challenge path maps to 503 — a paying buyer must not get a 500 for a
+      // cold-start facilitator blip.
+      let accept;
       try {
-        const accept = await exactServer.getPaymentAccept({
+        accept = await exactServer.getPaymentAccept({
           amountAtomic,
           resourceUrl,
           description: config.description,
         });
+      } catch (err) {
+        const detail = (err as { message?: string })?.message ?? String(err);
+        res
+          .status(503)
+          .set({ 'Retry-After': '5' })
+          .json({ error: 'challenge_unavailable', detail });
+        return;
+      }
+      try {
         const verify = await exactServer.verifyPayment(paymentSignature, accept);
         if (!verify.isValid) {
           res.status(402).json({
