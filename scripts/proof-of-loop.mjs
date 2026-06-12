@@ -57,7 +57,10 @@ const passkeyKp = {
 const feePayer = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(FEE_PAYER_FILE, 'utf8'))));
 // Fixed seller so re-runs REPLACE the session for this counterparty in place
 // (V6 re-register replaces) instead of leaking a new live session each run.
-const seller = Keypair.fromSeed(new Uint8Array(32).fill(7));
+// PRIVATE keypair file, NOT a deterministic seed: the original fill(7) seller
+// was a weak key and a bot swept its settle proceeds within the hour.
+const SELLER_FILE = `${process.env.HOME}/.config/solana/dexter-proof-seller.json`;
+const seller = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(SELLER_FILE, 'utf8'))));
 const conn = new Connection(HELIUS, 'confirmed');
 
 log('buyer swig   :', cred.swigAddress);
