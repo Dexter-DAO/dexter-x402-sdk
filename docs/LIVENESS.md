@@ -1,6 +1,6 @@
 # Liveness vs. Custody — what "non-custodial" means when the facilitator is unreachable
 
-The one-line answer: **Dexter can fail to deliver a payment; Dexter cannot take or redirect one.**
+The one-line answer: **Dexter can fail to deliver a payment; Dexter cannot initiate one.**
 
 The tab rail has exactly one Dexter-operated component on the money path: the
 facilitator (`https://x402.dexter.cash`), which arms tab protection at open and
@@ -9,14 +9,29 @@ being reachable — and what provably does not.
 
 ## Custody: who can move the money
 
-The facilitator can never move a buyer's funds anywhere it chooses. The only
-transfer it can execute against a vault is a settle whose **destination is the
-registered counterparty** of a session the *buyer's passkey* created, for an
-amount the *buyer's session key* signed in a voucher, bounded by the caps the
-buyer set when opening the tab. These constraints are enforced by the
-dexter-vault program on-chain — there is no instruction path that sends a
-buyer's USDC to Dexter, to a third party, or to any address other than the
-seller the buyer explicitly opened a tab with.
+What is **program-enforced today** (verified in `settle_tab_voucher` +
+the enrollment role layout in `set_swig_atomic`):
+
+- The Dexter settle authority is a Swig `ProgramExec(vault, settle_tab)`
+  role: it **cannot act at all** unless the same transaction executes the
+  vault's `settle_tab_voucher` instruction.
+- `settle_tab_voucher` requires consuming a **fresh buyer-signed voucher**:
+  the session PDA is seed-bound to the counterparty the *buyer's passkey*
+  registered, the voucher signature is ed25519-verified on-chain against the
+  buyer's session key, the cumulative amount is bounded by the buyer-signed
+  session cap, and the frontier guard makes each voucher range one-shot.
+
+Net: Dexter cannot move funds spontaneously. Every settlement opportunity is
+created by the buyer, one voucher at a time, within buyer-set caps.
+
+**Under audit (stated honestly):** within a voucher-authorized settlement
+transaction, the transfer's destination and amount pinning depends on the
+depth of upstream Swig's ProgramExec inner-instruction validation (the role's
+action set is `All`; the vault instruction constrains the accounting, not the
+sibling transfer). Until that audit confirms destination pinning, "cannot
+*redirect* an authorized settlement" is design intent, not a verified
+guarantee — which is why this document's headline says *initiate*, the half
+that is proven.
 
 The freeze that blocks withdrawal while a tab is open is not a custody handle
 either: it is a temporary, **buyer-escapable** gate (`force_release`, signed by
