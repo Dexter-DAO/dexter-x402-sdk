@@ -59,7 +59,7 @@ Usage: node scripts/proof-of-connect.mjs --vault <vaultPda> [options]
   --agent-key <path>  ed25519 session keypair JSON array (default:
                       ${DEFAULT_AGENT_KEY}
                       — generated mode 600 if absent).
-  --wait-mins <n>     Minutes to wait for the human passkey tap (default 10).
+  --wait-mins <n>     Minutes to wait for the human passkey tap (default 15).
   --help              Print this and exit.
 
 Env:
@@ -73,7 +73,7 @@ tap on ${CONNECT_ORIGIN}/tab/connect; spend + settle are real mainnet USDC
 against ${TICK_URL}.`;
 
 function parseArgs(argv) {
-  const args = { agentKey: DEFAULT_AGENT_KEY, waitMins: 10, vault: null };
+  const args = { agentKey: DEFAULT_AGENT_KEY, waitMins: 15, vault: null };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--help' || a === '-h') { console.log(USAGE); process.exit(0); }
@@ -90,11 +90,20 @@ function parseArgs(argv) {
 // proofs for consistency). The key never lives in this repo: SOLANA_RPC_URL
 // env wins, else read the operator box's dexter-api env. NEVER mainnet-beta.
 function resolveRpcUrl() {
-  if (process.env.SOLANA_RPC_URL) return process.env.SOLANA_RPC_URL;
-  const apiEnv = readFileSync('/home/branchmanager/websites/dexter-api/.env', 'utf8');
-  const m = apiEnv.match(/^SOLANA_RPC_ENDPOINT=(.+)$/m);
-  if (!m) throw new Error('set SOLANA_RPC_URL to a Solana RPC URL');
-  return m[1].trim();
+  let url;
+  if (process.env.SOLANA_RPC_URL) {
+    url = process.env.SOLANA_RPC_URL;
+  } else {
+    const apiEnv = readFileSync('/home/branchmanager/websites/dexter-api/.env', 'utf8');
+    const m = apiEnv.match(/^SOLANA_RPC_ENDPOINT=(.+)$/m);
+    if (!m) throw new Error('set SOLANA_RPC_URL to a Solana RPC URL');
+    url = m[1].trim();
+  }
+  if (!url.includes('helius')) {
+    console.warn('\n[connect-proof] ⚠⚠⚠ RPC URL is not Helius — public RPC WILL rate-limit the');
+    console.warn('[connect-proof] ⚠⚠⚠ poll loops in this proof. Proceeding anyway, but expect 429s.\n');
+  }
+  return url;
 }
 
 function loadOrCreateAgentKey(p) {
@@ -155,15 +164,35 @@ async function main() {
   // Preflight BEFORE asking for the human tap — a doomed run must not burn one.
   const vault = await readVaultFull(conn, vaultPda);
   if (!vault.exists) throw new Error(`vault ${vaultPda.toBase58()} does not exist on-chain`);
+  if (vault.version !== 6) {
+    throw new Error(`vault ${vaultPda.toBase58()} is version ${vault.version}, expected V6 — migrate before granting`);
+  }
   if (!vault.swigAddress) throw new Error('vault has no swigAddress (not production-enrolled?)');
+  if (!vault.dexterAuthority) {
+    throw new Error('vault has no dexterAuthority — sponsored register/settle cannot work against it');
+  }
   // Settle does NOT create the seller ATA (R8 breaker 8) — verify it pre-exists.
   const sellerAta = getAssociatedTokenAddressSync(USDC_MINT, SELLER);
   const sellerBalAtStart = await sellerUsdcBalance(conn, sellerAta);
   if (sellerBalAtStart === null) {
     throw new Error(`seller USDC ATA ${sellerAta.toBase58()} does not exist — settle would strand`);
   }
+  // Invite-status preflight: the sponsored grant path only works if the seller
+  // is on the sponsor invite list — refuse to waste a human tap if it isn't.
+  const inviteRes = await fetch(
+    `https://api.dexter.cash/api/passkey-vault/grants/invite-status?counterparty=${SELLER.toBase58()}`,
+  );
+  const inviteBody = await inviteRes.json().catch(() => ({}));
+  receipt('inviteStatus', { status: inviteRes.status, body: inviteBody });
+  if (inviteBody.invited !== true) {
+    throw new Error(
+      'seller not on the sponsor invite list — seed it first (POST /internal/admin/vault-grant-sponsors), then re-run.',
+    );
+  }
   receipt('preflight', {
+    vaultVersion: vault.version,
     swigAddress: vault.swigAddress,
+    dexterAuthority: vault.dexterAuthority,
     sellerAta: sellerAta.toBase58(),
     sellerUsdcAtStart: sellerBalAtStart.toString(),
   });
@@ -196,7 +225,9 @@ async function main() {
     timeoutMs: Math.round(args.waitMins * 60_000),
     pollIntervalMs: 5_000,
   });
-  if (!isSessionLive(state.session)) throw new Error('session found but not live (expired?)');
+  // isSessionLive takes the FULL SessionAccountState (checks state.version === 1
+  // AND state.session.expiresAt) — never pass the inner .session.
+  if (!isSessionLive(state)) throw new Error('session found but not live (expired?)');
   // The assertion that the deep link carried the key through the ENTIRE
   // ceremony: the on-chain session_pubkey IS our agent pubkey.
   if (!Buffer.from(state.session.sessionPubkey).equals(agent.publicKey.toBuffer())) {
@@ -215,6 +246,11 @@ async function main() {
   // ───────────────────────────────────────────────────────────────────────────
   STEP = 'STEP 3 (arm via facilitator /tab/open)';
   log('═══ STEP 3 — arm freeze protection via PUBLIC facilitator /tab/open ═══');
+  // Read the meter BEFORE arming — the post-arm assertion must see an INCREASE,
+  // not a stale prior arm that already satisfied >= DELTA.
+  const preArm = await fetchSessionAccount(conn, vaultPda, SELLER);
+  const outstandingBeforeArm = preArm?.session.currentOutstanding ?? 0n;
+  receipt('outstandingBeforeArm', outstandingBeforeArm.toString());
   const openRes = await fetch(`${FACILITATOR_URL}/tab/open`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -231,18 +267,25 @@ async function main() {
   if (openRes.status !== 200 || openBody.success !== true) {
     throw new Error(`/tab/open did not arm: ${openRes.status} ${JSON.stringify(openBody)}`);
   }
-  // The-poll-is-the-assertion: confirm the outstanding actually rose on-chain.
+  // The-poll-is-the-assertion: confirm the outstanding actually ROSE on-chain
+  // (strictly above the pre-arm value — `>= DELTA` alone could pass on stale
+  // prior-run state).
   {
     const deadline = Date.now() + 60_000;
     let s = await fetchSessionAccount(conn, vaultPda, SELLER);
-    while ((s === null || s.session.currentOutstanding < DELTA) && Date.now() < deadline) {
+    while ((s === null || s.session.currentOutstanding <= outstandingBeforeArm) && Date.now() < deadline) {
       await sleep(2_000);
       s = await fetchSessionAccount(conn, vaultPda, SELLER);
     }
-    if (s === null || s.session.currentOutstanding < DELTA) {
-      throw new Error('armed per /tab/open but currentOutstanding never reached the arm amount');
+    if (s === null || s.session.currentOutstanding <= outstandingBeforeArm) {
+      throw new Error(
+        `armed per /tab/open but currentOutstanding never rose above pre-arm ${outstandingBeforeArm} (last: ${s?.session.currentOutstanding})`,
+      );
     }
-    receipt('outstandingAfterArm', s.session.currentOutstanding.toString());
+    receipt('outstandingAfterArm', {
+      before: outstandingBeforeArm.toString(),
+      after: s.session.currentOutstanding.toString(),
+    });
   }
   log('armed ✓ tx:', openBody.signature);
 
@@ -251,7 +294,7 @@ async function main() {
   log('═══ STEP 4 — voucher -> X-Tab-Voucher -> GET the live route ═══');
   // Fresh read AFTER arming: cumulative MUST anchor to on-chain spent (R8 breaker 2).
   const fresh = await fetchSessionAccount(conn, vaultPda, SELLER);
-  if (fresh === null || !isSessionLive(fresh.session)) throw new Error('session vanished before spend');
+  if (fresh === null || !isSessionLive(fresh)) throw new Error('session vanished before spend');
   const cumulative = fresh.session.spent + DELTA;
   const channelId = crypto.randomBytes(32); // FRESH per run — seller cache is keyed by channelId (R8 breaker 3)
   const sequenceNumber = 1;
@@ -344,18 +387,26 @@ async function main() {
   }
   // …and (b) the seller's USDC ATA grows by the NET transfer (fee live since
   // 2026-06-11: seller receives gross − fee = transferAmount).
+  // FKF63w is a LIVE public demo seller — concurrent traffic can land between
+  // our before/after reads, so the delta is a FLOOR (>= expected), not equality.
   const expectedDelta = BigInt(settleBody.transferAmount ?? settleBody.netAmount);
   {
     const deadline = Date.now() + 60_000;
     let sellerAfter = await sellerUsdcBalance(conn, sellerAta);
-    while ((sellerAfter ?? 0n) - (sellerBefore ?? 0n) !== expectedDelta && Date.now() < deadline) {
+    while ((sellerAfter ?? 0n) - (sellerBefore ?? 0n) < expectedDelta && Date.now() < deadline) {
       await sleep(2_000);
       sellerAfter = await sellerUsdcBalance(conn, sellerAta);
     }
     const delta = (sellerAfter ?? 0n) - (sellerBefore ?? 0n);
-    receipt('sellerDelta', delta.toString());
-    if (delta !== expectedDelta) {
-      throw new Error(`seller USDC delta ${delta} != expected net ${expectedDelta}`);
+    receipt('sellerDelta', {
+      observed: delta.toString(),
+      expected: expectedDelta.toString(),
+      note: delta > expectedDelta
+        ? 'observed > expected — concurrent public traffic also paid this seller during the window'
+        : 'exact match',
+    });
+    if (delta < expectedDelta) {
+      throw new Error(`seller USDC delta ${delta} < expected net ${expectedDelta}`);
     }
   }
   log('settled ✓ meter advanced AND seller USDC landed');
