@@ -279,6 +279,46 @@ describe('payUrlWithTab', () => {
     expect(tab).toBe(seededTab);
   });
 
+  it('6. payment fails AFTER the tab opened — tab is non-null so the caller can close it', async () => {
+    // Script: (a) resolve probe → 402, (b) /tab/open → armed,
+    //         (c) payAndFetch probe → 402, (d) voucher request → 500.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = inputToUrl(input);
+        const headers = new Headers(init?.headers ?? undefined);
+        if (url.includes('/tab/open')) {
+          return new Response(
+            JSON.stringify({ success: true, armed: true, signature: 'x' }),
+            { status: 200 },
+          );
+        }
+        const voucher = headers.get('X-Tab-Voucher') ?? headers.get('x-tab-voucher');
+        if (voucher) {
+          return new Response('seller exploded', { status: 500 });
+        }
+        return makeChallenge402([tabAccept]);
+      }),
+    );
+
+    const { result, tab } = await payUrlWithTab(
+      URL,
+      { method: 'GET' },
+      {
+        vault: fakeAdapter,
+        perUnitCap: '0.02',
+        totalCap: '0.02',
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    // The recovery contract: the opened tab IS returned so the caller can
+    // close() it (settle whatever streamed, free the freeze).
+    expect(tab).not.toBeNull();
+    expect(tab!.counterparty).toBe(SELLER);
+    expect(tab!.state.isOpen).toBe(true);
+  });
+
   it('5. no tab offered — only exact scheme → reason no_payment_options, tab null', async () => {
     const exactAccept = {
       scheme: 'exact',

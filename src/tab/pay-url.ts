@@ -4,7 +4,14 @@
  * openTab, and payAndFetch; no new on-chain or settlement code.
  *
  * The caller owns close(): tabs amortize settle cost across requests, so
- * this function never closes the tab it returns.
+ * this function never closes the tab it returns — including when payment
+ * FAILS after the tab opened (tab is non-null there; close it to settle
+ * whatever streamed and free the freeze).
+ *
+ * Request count: two unpaid GETs precede the paid one — resolveTabOffer
+ * probes to discover the offer, then payAndFetch probes again as part of
+ * protocol dispatch. Three requests total per call; sellers see the extra
+ * probes as ordinary 402s.
  */
 import type { Tab, VaultAdapter, HumanAmount } from './types';
 import type { PayResult } from '../payment/types';
@@ -89,6 +96,12 @@ export async function payUrlWithTab(
     opts.tabs?.set(offer.payTo, tab);
   }
 
+  // Empty WalletSet is deliberate: the tab path needs no wallet, and a tab
+  // that can't pay must FAIL here, never silently fall back to 'exact'.
+  // Known legibility gap: an EXHAUSTED reused tab surfaces as
+  // 'no_payment_options' ("got: tab") because signNextVoucher's refusal
+  // falls through to the wallet-less generic path. Check tab.state.remaining
+  // when recovering.
   const result = await payAndFetch(url, init, {}, { tab });
   return { result, tab };
 }
