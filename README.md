@@ -142,7 +142,7 @@ It is **not** a streaming primitive; it batches discrete purchases. EVM only (Ba
 
 ## Tabs (Solana) — streaming micropayments, settled on close
 
-`@dexterai/x402/tab` is the streaming peer of batch settlement: *continuous metered consumption* (tokens, bytes, frames, seconds) where the unit of billing is smaller than a request. One passkey-authorized, drain-protected session signs many vouchers off-chain; the seller verifies locally; one on-chain settle on close moves USDC from the buyer's vault to the seller. Non-custodial — funds never leave the buyer's vault until settle, and the vault freezes withdrawals while a tab is open so the seller can't be rugged. Design: [`docs/DESIGN-tab-streaming.md`](./docs/DESIGN-tab-streaming.md).
+`@dexterai/x402/tab` is the streaming peer of batch settlement: *continuous metered consumption* (tokens, bytes, frames, seconds) where the unit of billing is smaller than a request. One passkey-authorized, drain-protected session signs many vouchers off-chain; the seller verifies locally; one on-chain settle on close moves USDC from the buyer's vault to the seller. Non-custodial — funds never leave the buyer's vault until settle, and the vault freezes withdrawals while a tab is open so the seller can't be rugged. Design: [`docs/DESIGN-tab-streaming.md`](./docs/DESIGN-tab-streaming.md). See [docs/CUSTODY.md](./docs/CUSTODY.md) for where the root key can live (the custody dial) and which guarantee each position earns.
 
 ### Pay a URL — zero seller knowledge
 
