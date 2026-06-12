@@ -41,6 +41,19 @@ describe('resolveTabOffer', () => {
     expect(out.offer.resourceUrl).toBe('http://s/paid');
   });
 
+  it('picks the FIRST svm tab option when several are offered', async () => {
+    const otherSeller = '4Nd1mY5K6kBpFNDdYWvvz4gG8hpHQNYJdEPGuoNFhq9b';
+    const out = await resolveTabOffer('http://s/paid', {}, fetchReturning(challenge402([
+      { ...tabAccept, scheme: 'exact' },          // non-tab: skipped
+      tabAccept,                                   // first tab: wins
+      { ...tabAccept, payTo: otherSeller, maxAmountRequired: '5000' },
+    ])));
+    expect(out.kind).toBe('offer');
+    if (out.kind !== 'offer') return;
+    expect(out.offer.payTo).toBe(SELLER);
+    expect(out.offer.amountAtomic).toBe('10000');
+  });
+
   it('returns free for a 200 response', async () => {
     const out = await resolveTabOffer('http://s/free', {}, fetchReturning(new Response('ok', { status: 200 })));
     expect(out.kind).toBe('free');

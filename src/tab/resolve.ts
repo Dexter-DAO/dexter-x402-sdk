@@ -19,6 +19,9 @@ export interface TabOffer {
 
 export type TabOfferResult =
   | { kind: 'offer'; offer: TabOffer }
+  /** The resource answered without demanding payment. `response` is the
+   *  LIVE probe response — the caller owns consuming (or cancelling) its
+   *  body, same contract as payAndFetch's unpaid branch. */
   | { kind: 'free'; response: Response }
   | { kind: 'no_tab'; schemesOffered: string[] }
   | { kind: 'error'; detail: string };
@@ -61,6 +64,9 @@ export async function resolveTabOffer(
     };
   }
 
+  // Pick-first selection, matching v2-strategy's option picking: the FIRST
+  // svm tab option wins. Sellers list options in preference order; a caller
+  // that needs to compare amounts across options reads the challenge itself.
   const tabOption = challenge.options.find(
     (o) => o.scheme === 'tab' && o.network.family === 'svm',
   );
