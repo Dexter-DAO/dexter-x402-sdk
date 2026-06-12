@@ -15,6 +15,9 @@ export function decodePaymentRequiredHeader(raw: string): unknown {
   return JSON.parse(Buffer.from(normalized, 'base64').toString('utf8'));
 }
 
+/** Normalize raw `accepts[]` entries into ChallengeOptions. Entries whose
+ *  network is not in the canonical map are silently DROPPED — callers never
+ *  see a half-resolved option. */
 export function toChallengeOptions(accepts: unknown[]): ChallengeOption[] {
   const out: ChallengeOption[] = [];
   for (const a of accepts) {
