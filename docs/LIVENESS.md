@@ -45,11 +45,13 @@ counterparty, so the blast radius is **in-flight, accrued-but-unsettled value
 misdirected** — never vault balances, never unsigned amounts. Vault withdrawal
 (buyer-passkey-keyed, freeze-gated) is unaffected.
 
-The fix (tracked, post-audit, small): have `settle_tab_voucher` take the
-seller destination ATA as a constrained account and require it to equal the
-registered counterparty's ATA — then the chain pins the destination and the
-"cannot redirect" clause becomes true by construction. Until then this
-document's headline claims only *initiate*, the half that is chain-proven.
+The fix (scheduled): have `settle_tab_voucher` take the seller destination
+ATA as a constrained account and require it to equal the registered
+counterparty's ATA — then the chain pins the destination and the "cannot
+redirect" clause becomes true by construction. It is a one-account-constraint
+change scheduled to ride the next dexter-vault program deploy (default home:
+the Step-4 / lock-mode release). Until it lands, this document's headline
+claims only *initiate*, the half that is chain-proven.
 
 The freeze that blocks withdrawal while a tab is open is not a custody handle
 either: it is a temporary, **buyer-escapable** gate (`force_release`, signed by
