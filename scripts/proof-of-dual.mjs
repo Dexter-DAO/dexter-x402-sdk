@@ -23,7 +23,18 @@ import {
 } from '@dexterai/x402/tab/adapters/solana';
 
 // ── Config (identical to proof-of-loop.mjs except seller seed + port) ──
-const HELIUS = process.env.SOLANA_RPC_URL || 'https://rpc.dexter.cash'; // Dexter RPC proxy (key server-side); NEVER mainnet-beta
+// Write-capable Solana RPC (the proofs SEND transactions; the public
+// rpc.dexter.cash proxy is read-only). The key never lives in this repo:
+// SOLANA_RPC_URL env wins, else read the operator box's dexter-api env.
+// NEVER mainnet-beta.
+function resolveRpcUrl() {
+  if (process.env.SOLANA_RPC_URL) return process.env.SOLANA_RPC_URL;
+  const apiEnv = readFileSync('/home/branchmanager/websites/dexter-api/.env', 'utf8');
+  const m = apiEnv.match(/^SOLANA_RPC_ENDPOINT=(.+)$/m);
+  if (!m) throw new Error('set SOLANA_RPC_URL to a write-capable Solana RPC');
+  return m[1].trim();
+}
+const HELIUS = resolveRpcUrl();
 const FACILITATOR = 'http://127.0.0.1:4072';
 const USDC_MINT = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
 const PER_TICK = '0.01';
