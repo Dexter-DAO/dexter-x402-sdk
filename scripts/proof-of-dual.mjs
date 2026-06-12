@@ -140,7 +140,12 @@ async function main() {
   const { result, tab } = await payUrlWithTab(url, { method: 'GET' }, {
     vault, perUnitCap: PER_UNIT_CAP, totalCap: TOTAL_CAP, facilitatorUrl: FACILITATOR,
   });
-  if (!result.ok || !result.paid) throw new Error(`tab leg failed: ${result.reason} ${result.detail ?? ''}`);
+  if (!result.ok || !result.paid) {
+    // Failure after open leaves a non-null tab with the freeze armed —
+    // close it (settles anything charged, frees the freeze) before failing.
+    try { await tab?.close(); } catch { /* surfaced by the throw below */ }
+    throw new Error(`tab leg failed: ${result.reason} ${result.detail ?? ''}`);
+  }
   const tabBody = result.response ? (await result.response.text()).trim() : '';
   const closeResult = await tab.close();
   log('LEG 3 tab OK: settle', closeResult.settleTx);
