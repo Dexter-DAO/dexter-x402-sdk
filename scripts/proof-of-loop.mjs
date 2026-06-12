@@ -1,16 +1,18 @@
 /**
- * Thin proof-of-loop: ONE real seller, ONE real buyer, a real HTTP 402 tab
- * exchange, settled on Solana mainnet. The receipt the thesis lacked —
- * "a real service billed a real buyer through a tab, fee kept, buyer couldn't rug."
+ * Thin proof-of-loop, Step-3a edition: ONE real seller, ONE real buyer, a
+ * real HTTP 402 tab exchange, settled on Solana mainnet — and the buyer is
+ * given ONLY A URL. No seller pubkey anywhere in the buyer's inputs; the
+ * counterparty is discovered from the URL's own standard x402 402 challenge.
  *
- * Single process: the seller (Express + tabMiddleware) listens on localhost; the
- * buyer (openTab -> stream -> close) pays it over real HTTP. The on-chain bits
- * (session register, freeze arm, settle) are REAL mainnet txs.
+ * Single process: the seller (Express + tabChallengeMiddleware +
+ * tabMiddleware) listens on localhost; the buyer (payUrlWithTab -> close)
+ * pays it over real HTTP. The on-chain bits (session register, freeze arm,
+ * settle) are REAL mainnet txs.
  *
- *   buyer openTab  -> passkey ceremony registers session + facilitator arms freeze
- *   buyer stream() -> signs a voucher, opens SSE to the seller
- *   seller verify  -> on-chain session check + voucher verify, charges, sends 1 tick
- *   buyer close()  -> POST /tab/settle -> on-chain USDC swig->seller + fee split
+ *   buyer GET url          -> seller answers standard 402 {accepts:[{scheme:'tab', payTo, ...}]}
+ *   buyer resolves payTo   -> openTab (passkey ceremony + facilitator arms freeze)
+ *   buyer pays w/ voucher  -> seller verifies (V6 session PDA), charges, serves
+ *   buyer close()          -> POST /tab/settle -> on-chain USDC swig->seller + fee split
  *
  * Run: node scripts/proof-of-loop.mjs
  */
@@ -24,8 +26,8 @@ import {
   createAssociatedTokenAccountIdempotentInstruction,
 } from '@solana/spl-token';
 
-import { tabMiddleware, requireTab, openSse } from '@dexterai/x402/tab/seller';
-import { openTab } from '@dexterai/x402/tab';
+import { tabMiddleware, tabChallengeMiddleware, requireTab, openSse } from '@dexterai/x402/tab/seller';
+import { payUrlWithTab } from '@dexterai/x402/tab';
 import {
   createSolanaVaultAdapter,
   passkeySignerFromP256Keypair,
@@ -85,8 +87,16 @@ async function main() {
   await conn.confirmTransaction(ataSig, 'confirmed');
   log('seller USDC ATA ready:', sellerAta.toBase58(), 'tx', ataSig.slice(0, 12) + '…');
 
-  // 2. Stand up the seller.
+  // 2. Stand up the seller. tabChallengeMiddleware answers voucher-less
+  //    requests with the STANDARD x402 v2 challenge (so a stranger can
+  //    discover the counterparty); tabMiddleware verifies vouchers.
   const app = express();
+  const challenge = tabChallengeMiddleware({
+    sellerPubkey: seller.publicKey,
+    network: NETWORK,
+    perUnit: PER_TICK,
+    facilitatorUrl: FACILITATOR,
+  });
   const mw = tabMiddleware({
     connection: conn,
     sellerPubkey: seller.publicKey,
@@ -95,7 +105,7 @@ async function main() {
     settle: 'on-close',
     facilitatorUrl: FACILITATOR,
   });
-  app.get('/paid/tick', mw, async (req, res) => {
+  app.get('/paid/tick', challenge, mw, async (req, res) => {
     const tab = requireTab(req);
     log('seller: request in, channel', tab.channelId);
     const meter = openSse(res, { tab, perUnit: PER_TICK });
@@ -111,35 +121,44 @@ async function main() {
   const sellerBefore = await usdcBalance(seller.publicKey);
   log('seller USDC before:', sellerBefore);
 
-  // 3. Buyer opens a tab and pays.
-  const vault = createSolanaVaultAdapter({
-    connection: conn,
-    swigAddress: cred.swigAddress,
-    vaultPda: cred.vaultPda,
-    passkeySigner: passkeySignerFromP256Keypair(passkeyKp),
-    feePayer,
-  });
+  // 3. Buyer: pays the URL knowing NOTHING but the URL. This function must
+  //    never reference the `seller` keypair — the counterparty comes off
+  //    the wire (the 402 challenge's payTo).
+  async function buyerPaysUrl(url) {
+    const vault = createSolanaVaultAdapter({
+      connection: conn,
+      swigAddress: cred.swigAddress,
+      vaultPda: cred.vaultPda,
+      passkeySigner: passkeySignerFromP256Keypair(passkeyKp),
+      feePayer,
+    });
+    log('buyer: resolving + paying', url, '(zero seller knowledge)…');
+    const { result, tab } = await payUrlWithTab(url, { method: 'GET' }, {
+      vault,
+      perUnitCap: PER_UNIT_CAP,
+      totalCap: TOTAL_CAP,
+      facilitatorUrl: FACILITATOR,
+    });
+    if (!result.ok) {
+      throw new Error(`payUrlWithTab failed: ${result.reason} ${result.detail ?? ''}`);
+    }
+    if (!result.paid) throw new Error('expected a PAID response, got free');
+    const body = result.response ? await result.response.text() : '';
+    log('buyer: paid response received; discovered counterparty:', tab.counterparty);
+    log('buyer: closing tab (settle on mainnet)…');
+    const closeResult = await tab.close();
+    log('buyer: close result:', JSON.stringify(closeResult));
+    return { body, closeResult, discovered: tab.counterparty, channelId: tab.channelId };
+  }
 
-  log('buyer: opening tab (passkey ceremony + facilitator arm)…');
-  const tab = await openTab({
-    vault,
-    network: NETWORK,
-    seller: seller.publicKey.toBase58(),
-    perUnitCap: PER_UNIT_CAP,
-    totalCap: TOTAL_CAP,
-    facilitatorUrl: FACILITATOR,
-  });
-  log('buyer: tab open, channel', tab.channelId);
-
-  log('buyer: streaming /paid/tick …');
-  const stream = await tab.stream(`http://127.0.0.1:${PORT}/paid/tick`, { method: 'GET' });
-  let body = '';
-  for await (const chunk of stream) body += new TextDecoder().decode(chunk);
+  const { body, closeResult: result, discovered, channelId } =
+    await buyerPaysUrl(`http://127.0.0.1:${PORT}/paid/tick`);
   log('buyer: received payload:', body.trim());
 
-  log('buyer: closing tab (settle on mainnet)…');
-  const result = await tab.close();
-  log('buyer: close result:', JSON.stringify(result));
+  // THE STEP-3a ASSERTION: the buyer discovered the seller off the wire.
+  if (discovered !== seller.publicKey.toBase58()) {
+    throw new Error(`discovery mismatch: buyer resolved ${discovered}, seller is ${seller.publicKey.toBase58()}`);
+  }
 
   // 4. Verify on-chain effect.
   await new Promise((r) => setTimeout(r, 4000));
@@ -149,7 +168,7 @@ async function main() {
 
   server.close();
 
-  console.log('\n===== PROOF-OF-LOOP RESULT =====');
+  console.log('\n===== PROOF-OF-LOOP RESULT (STEP 3a: pay-a-URL) =====');
   console.log(JSON.stringify({
     sellerPaidPayload: body.trim(),
     settleTx: result.settleTx,
@@ -158,7 +177,9 @@ async function main() {
     netAmount: result.netAmount,
     sellerUsdcDelta: ((sellerAfter ?? 0n) - (sellerBefore ?? 0n)).toString(),
     seller: seller.publicKey.toBase58(),
-    channelId: tab.channelId,
+    discoveredSeller: discovered,
+    sellerHardcodedInBuyer: false,
+    channelId,
   }, null, 2));
   process.exit(0);
 }
