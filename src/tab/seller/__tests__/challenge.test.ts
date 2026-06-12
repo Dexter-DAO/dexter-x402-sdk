@@ -90,6 +90,22 @@ describe('tabChallengeMiddleware', () => {
     expect(tab).toBeDefined();
     expect(tab!.payTo).toBe(SELLER);
     expect(tab!.network.family).toBe('svm');
+    // Pin the RAW CAIP-2 too: family-only would still pass if the wire
+    // regressed to an alias that happened to resolve.
+    expect(tab!.network.caip2).toBe(CAIP2);
+  });
+
+  it('answers 503 + Retry-After when the facilitator is unreachable', async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error('connect ECONNREFUSED');
+    }) as any;
+    const { req, res } = fakeReqRes();
+    const next = vi.fn();
+    await mw()(req, res, next);
+    expect(next).not.toHaveBeenCalled(); // transient → honest 503, not a 500
+    expect(res.statusCode).toBe(503);
+    expect(res.headers['Retry-After']).toBe('5');
+    expect((res.body as any).error).toBe('challenge_unavailable');
   });
 
   it('passes voucher-carrying requests through to tabMiddleware', async () => {

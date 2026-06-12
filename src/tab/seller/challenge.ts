@@ -49,6 +49,12 @@ export function tabChallengeMiddleware(config: TabChallengeConfig): RequestHandl
       : config.sellerPubkey.toBase58();
   new PublicKey(payTo); // validate at construction, not per request
 
+  // CHALLENGE-ONLY server: only buildRequirements/create402Response are
+  // wired. verify/settle are NOT served through this instance — voucher
+  // verification belongs to tabMiddleware, settlement to the facilitator's
+  // /tab/settle. (Its requirements cache is keyed by payTo, which is
+  // constant here; reusing this instance for verify/settle would read
+  // whichever resourceUrl was challenged last.)
   const server: X402Server = createX402Server({
     payTo,
     network: caip2,
@@ -69,7 +75,15 @@ export function tabChallengeMiddleware(config: TabChallengeConfig): RequestHandl
       const r = server.create402Response(requirements);
       res.set(r.headers).status(r.status).json(r.body);
     } catch (err) {
-      next(err);
+      // Almost always "facilitator unreachable" (the challenge embeds its
+      // feePayer extra, fetched once per process). That is a TRANSIENT
+      // seller-side condition — answer 503 + Retry-After so a discovering
+      // agent retries, instead of a 500 that reads as a hard failure.
+      const detail = (err as { message?: string })?.message ?? String(err);
+      res
+        .status(503)
+        .set({ 'Retry-After': '5' })
+        .json({ error: 'challenge_unavailable', detail });
     }
   };
 }
