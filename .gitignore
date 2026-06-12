@@ -19,3 +19,6 @@ test-wallet*.json
 # Model evaluation results (keep the directory structure)
 test/model-eval/results/*
 !test/model-eval/results/.gitkeep
+
+# Proof-run receipts (mainnet tx evidence — never committed)
+scripts/receipts/
