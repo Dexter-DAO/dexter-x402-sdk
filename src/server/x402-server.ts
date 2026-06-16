@@ -243,7 +243,7 @@ export function createX402Server(config: X402ServerConfig): X402Server {
   // Requirements cache: payTo address -> PaymentAccept + expiry.
   // Populated by buildRequirements/getPaymentAccept, consumed by verify/settle.
   // Prevents the bug where verify/settle fabricates requirements with amount '0'.
-  // Parallels the SettlementCache pattern from coinbase/x402.
+  // Parallels the SettlementCache pattern from x402-foundation/x402.
   const requirementsCache = new Map<string, { accept: PaymentAccept; expiresAt: number }>();
   const CACHE_PRUNE_INTERVAL = 30_000;
   let lastPrune = Date.now();
