@@ -55,3 +55,44 @@ describe('InMemoryChannelLedger', () => {
     expect(await ledger.get(channelId)).toBeNull();
   });
 });
+
+import { FileChannelLedger } from '../channel-ledger';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join as pathJoin } from 'node:path';
+
+describe('FileChannelLedger', () => {
+  const channelId = 'b'.repeat(64);
+
+  it('persists across instances (survives a simulated restart)', async () => {
+    const dir = await mkdtemp(pathJoin(tmpdir(), 'chanledger-'));
+    try {
+      const writer = new FileChannelLedger(dir);
+      await writer.set(channelId, {
+        lastVoucher: fakeVoucher(channelId, '200000'),
+        deliveredCumulativeAtomic: '150000',
+      });
+      // New instance, same dir = a process restart.
+      const reader = new FileChannelLedger(dir);
+      const got = await reader.get(channelId);
+      expect(got?.deliveredCumulativeAtomic).toBe('150000');
+      expect(got?.lastVoucher.payload.cumulativeAmount).toBe('200000');
+      expect(got?.lastVoucher.sessionSignature.length).toBe(64);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a missing file and rejects unsafe channel ids', async () => {
+    const dir = await mkdtemp(pathJoin(tmpdir(), 'chanledger-'));
+    try {
+      const ledger = new FileChannelLedger(dir);
+      expect(await ledger.get('c'.repeat(64))).toBeNull();
+      await expect(
+        ledger.set('../escape', { lastVoucher: fakeVoucher('x', '1'), deliveredCumulativeAtomic: '0' }),
+      ).rejects.toThrow(/unsafe channelId/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

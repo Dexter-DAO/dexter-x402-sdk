@@ -126,6 +126,46 @@ function deserialize(s: SerializedEntry): ChannelLedgerEntry {
   };
 }
 
-// FileChannelLedger is added in Task 2.
-export const __ledgerSerde = { serialize, deserialize, bytesToHex, hexToBytes };
-export { fs as __fs, join as __join, dirname as __dirname };
+// ── File-backed ledger (durable across restarts; one JSON file per channel) ──
+//
+// Atomicity matches FileVoucherStore: write-then-rename. The middleware
+// serializes writes per channel, so concurrent same-channel writes don't race
+// in practice. Production sellers expecting high concurrency implement
+// ChannelLedger over Redis/Postgres and pass it into tabMiddleware.
+
+export class FileChannelLedger implements ChannelLedger {
+  constructor(private readonly dir: string) {}
+
+  private pathFor(channelId: string): string {
+    if (!/^[a-z0-9_-]+$/i.test(channelId)) {
+      throw new Error(`unsafe channelId for filesystem: ${channelId}`);
+    }
+    return join(this.dir, `${channelId}.json`);
+  }
+
+  async get(channelId: string): Promise<ChannelLedgerEntry | null> {
+    try {
+      const raw = await fs.readFile(this.pathFor(channelId), 'utf8');
+      return deserialize(JSON.parse(raw) as SerializedEntry);
+    } catch (e: any) {
+      if (e?.code === 'ENOENT') return null;
+      throw e;
+    }
+  }
+
+  async set(channelId: string, entry: ChannelLedgerEntry): Promise<void> {
+    const path = this.pathFor(channelId);
+    await fs.mkdir(dirname(path), { recursive: true });
+    const tmp = `${path}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(serialize(entry)));
+    await fs.rename(tmp, path);
+  }
+
+  async delete(channelId: string): Promise<void> {
+    try {
+      await fs.unlink(this.pathFor(channelId));
+    } catch (e: any) {
+      if (e?.code !== 'ENOENT') throw e;
+    }
+  }
+}
