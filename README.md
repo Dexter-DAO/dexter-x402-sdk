@@ -5,13 +5,18 @@
 <h1 align="center">@dexterai/x402</h1>
 
 <p align="center">
-  <strong>HTTP-native micropayments for agents. Solana and the major EVM chains.</strong>
+  <strong>Give your agent a spending limit it can't exceed.</strong>
+</p>
+
+<p align="center">
+  Open a tab, set a cap, and your agent pays as it works, with no signature on each charge. Your money stays in your own wallet, and the seller is still guaranteed payment. Buyer and seller SDKs, on Solana and the major EVM chains.
 </p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@dexterai/x402"><img src="https://img.shields.io/npm/v/@dexterai/x402.svg" alt="npm"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E=18-brightgreen.svg" alt="Node"></a>
-  <a href="https://dexter.cash/sdk"><img src="https://img.shields.io/badge/Live_Demo-dexter.cash%2Fsdk-blueviolet" alt="Live Demo"></a>
+  <img src="https://img.shields.io/badge/non--custodial-passkey-brightgreen" alt="Non-custodial">
+  <a href="https://dexter.cash/sdk"><img src="https://img.shields.io/badge/Try_it-real_payments-blueviolet" alt="Live Demo"></a>
 </p>
 
 <p align="center">
@@ -20,25 +25,130 @@
 
 ---
 
-## What is x402?
+## Why a tab
 
-x402 is HTTP's missing payment protocol. A server returns `402 Payment Required` with a `PAYMENT-REQUIRED` header describing what it wants paid; the client signs a payment, retries with `PAYMENT-SIGNATURE`, and gets the resource.
+A tab gives an agent a spending limit that the Solana program enforces at consensus. You set a cap, the agent pays against it call by call with no signature on each charge, and your USDC stays in your own wallet the entire time.
 
-The audience this is built for in 2026 is **agents**: Claude, ChatGPT, Cursor, and the rest, making paid HTTP calls on behalf of humans. This SDK is the buyer side and the seller side, with USDC on Solana and the major EVM chains, behind a single API.
+The two older ways to let an agent spend each give up something a tab keeps. Prefunding an escrow moves your money to a custodian, so your balance is on the table and you have paid a stranger in advance. Handing a wallet a spending delegate keeps your custody but lets you withdraw the funds mid-charge, so the seller can be left unpaid and serious sellers decline it. A tab keeps both halves: the money never leaves your wallet, and while the tab is open the chain blocks you from pulling it out from under accrued charges. The seller gets paid when they settle, and settlement is automatic.
 
-You call `payAndFetch()` on the client. You add `x402Middleware()` on the server. Payments happen.
-
-Built against the official x402 v1 and v2 specs. Adds the multi-chain buyer and seller surface, the React hook, a discriminated `PayResult` type, and batch-settlement channels for high-frequency calls.
+The closest familiar shape is an auth-and-capture card hold, with the hold enforced on-chain instead of by a processor.
 
 ---
 
-## Quick start
+## Install
 
 ```bash
 npm install @dexterai/x402
 ```
 
-### Pay for a resource (Node.js, any chain)
+One install is both sides: the buyer surface at `@dexterai/x402/tab`, the seller surface at `@dexterai/x402/tab/seller`.
+
+## Open a tab and pay (buyer)
+
+A buyer drives tabs through a `vault` adapter over their passkey-rooted Solana vault. Build it once from the vault's addresses, which you receive when you enroll at [dexter.cash](https://dexter.cash), plus your passkey signer:
+
+```ts
+import { createSolanaVaultAdapter } from '@dexterai/x402/tab/adapters/solana';
+
+const vault = createSolanaVaultAdapter({
+  connection,        // your Solana Connection (any RPC)
+  swigAddress,       // the vault's Swig state account, from enrollment
+  vaultPda,          // the vault's gate PDA, from enrollment
+  passkeySigner,     // browser: WebAuthnAssertion; server agent: passkeySignerFromP256Keypair(kp)
+  feePayer,          // lamport fee payer (a Signer)
+});
+```
+
+Given only a URL, the buyer then reads the seller's terms from the URL's own `402` challenge, opens a freeze-protected tab, and pays. The seller's address comes off the wire, never from your code:
+
+```ts
+import { payUrlWithTab } from '@dexterai/x402/tab';
+
+const tabs = new Map(); // one open tab per seller, reused across calls
+const { result, tab } = await payUrlWithTab(
+  'https://api.example.com/paid/infer',
+  { method: 'GET' },
+  { vault, perUnitCap: '0.01', totalCap: '1.00', tabs },
+);
+// ...more payUrlWithTab calls reuse the same tab via `tabs`...
+await tab?.close(); // one on-chain settle for everything the agent spent
+```
+
+To decide before you pay, `resolveTabTerms(url)` reads a URL's price and settlement terms without paying, for consent screens, directories, or an agent that plans ahead:
+
+```ts
+import { resolveTabTerms } from '@dexterai/x402/tab';
+
+const resolved = await resolveTabTerms('https://api.example.com/paid/tick');
+if (resolved.kind === 'terms') {
+  console.log(resolved.terms.counterparty, resolved.terms.perRequest.human);
+  // settlement: { custody: 'non-custodial', protection: 'freeze', settleOn: 'close' }
+}
+```
+
+## Accept tabs on your API (seller)
+
+`tabOrExactMiddleware` is the recommended default: one middleware that advertises a tab and a one-shot price in a single 402 challenge, so agents pay by tab and one-shot callers pay exact, at the same price.
+
+```ts
+import { tabOrExactMiddleware, requireTab, openSse } from '@dexterai/x402/tab/seller';
+import type { X402Request } from '@dexterai/x402/server';
+
+app.get('/paid/tick',
+  tabOrExactMiddleware({ connection, sellerPubkey, network: 'solana:mainnet', perUnit: '0.01' }),
+  async (req, res) => {
+    if ((req as X402Request).x402) { res.json({ data: '...', paidVia: 'exact' }); return; } // exact rail
+    const tab = requireTab(req);                                                              // tab rail
+    const meter = openSse(res, { tab, perUnit: '0.01' });
+    await meter.charge(1);
+    meter.send(JSON.stringify({ data: '...' }));
+    meter.end();
+  });
+```
+
+For a tab-only endpoint, compose the two middlewares directly: `tabChallengeMiddleware` (answers voucher-less requests with the standard x402 challenge, so any agent can discover you) before `tabMiddleware` (verifies the per-charge vouchers). Both are exported from `@dexterai/x402/tab/seller`.
+
+---
+
+## How it works
+
+Three nouns and one actor.
+
+- **Vault:** your money, held in your own wallet and locked by your passkey. The program never takes custody.
+- **Tab:** a capped spending limit you open against your vault, for one agent and one counterparty. The agent draws against it; the vault enforces the cap.
+- **Passkey:** your key. You tap it to set up the vault and to open or approve a tab. Nothing else can authorize a withdrawal.
+- **Your agent:** who you open the tab for.
+
+A tab opens with one passkey tap, the agent spends against it with no further prompts, and one on-chain settle pays the seller and closes it. Everything between open and settle is off-chain, so a charge costs no gas and no signature.
+
+---
+
+## Why you can trust it
+
+The word "unruggable" has to be earned, so here is what actually backs it. The properties below are enforced by the on-chain program, not by this SDK.
+
+- **Non-custodial.** Your USDC stays in your own wallet. The program holds no funds; it records bindings and gates a withdrawal. There is no escrow account and no custodian to fail.
+- **The cap is enforced on-chain.** The limit is checked by the Solana program at consensus, not by this library and not by Dexter. You can read the program and verify the cap yourself: [`Hg3wRaydFtJhYrdvYrKECacpJYDsC9Px7yKmpncj2fhc`](https://solscan.io/account/Hg3wRaydFtJhYrdvYrKECacpJYDsC9Px7yKmpncj2fhc) on Solana mainnet.
+- **Only your passkey moves funds.** Withdrawals require a WebAuthn assertion verified by Solana's secp256r1 precompile. The SDK and the facilitator never hold a key that can drain your wallet.
+- **The seller is protected.** While a tab is open the program blocks the buyer's withdrawal, so funds can't be pulled out from under accrued charges. If a seller ever goes silent, the buyer recovers an abandoned tab themselves after a fixed grace period; nobody's funds can be frozen indefinitely.
+- **Live on Solana mainnet.** Tabs settle on mainnet today. We can demonstrate the program rejecting a forged passkey from a clone: see the [`dexter-vault`](https://github.com/Dexter-DAO/dexter-vault) program repo.
+- **Pre-audit, and we say so.** Not yet externally audited; funding is in flight. The report and any findings publish in the program repo. Responsible disclosure: branch@dexter.cash.
+
+The full threat model and trust assumptions live in the program's [`SECURITY.md`](https://github.com/Dexter-DAO/dexter-vault).
+
+---
+
+## Approving a tab is one hosted screen
+
+When a partner's app opens a tab for a user, the approval runs on one Dexter-hosted consent screen, deep-linked from the partner's app. The user sees the counterparty, the cap, and the expiry, taps their passkey once, and control returns to the app. The partner builds no approval UI and never handles a passkey.
+
+The screen is hosted by Dexter for a structural reason, not a stylistic one: the vault's passkey can only sign on Dexter's own origin, so a user cannot be phished into approving on a look-alike page. The safety is a property of where the key will sign. Flow and routing: [docs.dexter.cash/tabs](https://docs.dexter.cash). **[TODO: confirm final docs path once #5 lands.]**
+
+---
+
+## One-shot payments
+
+When a charge is a single discrete purchase rather than metered consumption, pay it one-shot. x402 is HTTP's payment protocol: a server returns `402 Payment Required` describing what it wants paid, the client signs and retries, and the resource comes back. USDC on Solana and the major EVM chains, behind one API.
 
 ```typescript
 import { payAndFetch, createKeypairWallet, createEvmKeypairWallet } from '@dexterai/x402/client';
@@ -57,374 +167,43 @@ if (result.ok && result.paid) {
   const data = await result.response.json();
   console.log(`Paid ${result.amountPaid} on ${result.network.bare}, tx ${result.txSignature}`);
 } else if (result.ok && !result.paid) {
-  // Endpoint didn't demand payment; response came through unchanged.
-  const data = await result.response.json();
+  const data = await result.response.json(); // endpoint didn't demand payment; passed through
 } else {
   console.error(result.reason, result.detail);
 }
 ```
 
-`payAndFetch` is version-agnostic (handles x402 v1 and v2 transparently) and returns a discriminated `PayResult`. The `ok: true` branch is further split by `paid: true | false`, so a free 200 response is distinguishable from an actually-paid one. No throws for expected failures.
+`payAndFetch` handles x402 v1 and v2 transparently and returns a discriminated `PayResult`: `ok` splits into `paid: true | false`, so a free 200 is distinguishable from a paid one, and expected failures don't throw.
 
-### Pay for a resource (Browser, React)
-
-`useX402Payment` accepts wallets from your existing providers (`@solana/wallet-adapter-react`, `wagmi`) and exposes a `fetch` that pays automatically.
-
-```tsx
-import { useX402Payment } from '@dexterai/x402/react';
-import { useWallet } from '@solana/wallet-adapter-react';
-import { useAccount } from 'wagmi';
-
-function PayButton({ url }: { url: string }) {
-  const solanaWallet = useWallet();
-  const evmWallet = useAccount();
-
-  const { fetch, isLoading, balances, transactionUrl } = useX402Payment({
-    wallets: { solana: solanaWallet, evm: evmWallet },
-  });
-
-  return (
-    <div>
-      <p>Balance: ${balances[0]?.balance.toFixed(2)}</p>
-      <button onClick={() => fetch(url)} disabled={isLoading}>
-        {isLoading ? 'Paying…' : 'Pay'}
-      </button>
-      {transactionUrl && <a href={transactionUrl}>View transaction</a>}
-    </div>
-  );
-}
-```
-
-### Protect an endpoint (server)
+Protect an endpoint with `x402Middleware`; the handler runs only after payment settles. In React, `useX402Payment` takes wallets from `@solana/wallet-adapter-react` or `wagmi` and returns a `fetch` that pays automatically. Read a settled receipt off any paid response with `getPaymentReceipt(response)`.
 
 ```typescript
-import express from 'express';
 import { x402Middleware } from '@dexterai/x402/server';
 
-const app = express();
-
-app.get(
-  '/api/protected',
-  x402Middleware({
-    payTo: 'YourReceivingAddress',
-    amount: '0.01',                // $0.01 USDC
-    network: 'eip155:8453',        // Base. Pass an array for multi-chain.
-  }),
+app.get('/api/protected',
+  x402Middleware({ payTo: 'YourReceivingAddress', amount: '0.01', network: 'eip155:8453' }),
   (req, res) => res.json({ data: 'protected content' }),
 );
 ```
 
-The handler only runs after a successful payment. Pass `network` as an array to accept across multiple chains; the buyer picks the chain they have balance on.
-
-### Reading the receipt
-
-`getPaymentReceipt(response)` returns the settled-payment info attached to any paid response (whether the payment came from `payAndFetch`, the legacy `wrapFetch`, or the React hook).
-
-```typescript
-import { payAndFetch, getPaymentReceipt } from '@dexterai/x402/client';
-
-const result = await payAndFetch(url, { method: 'GET' }, wallets, {});
-if (result.ok && result.paid) {
-  const receipt = getPaymentReceipt(result.response);
-  console.log('tx:', receipt?.transaction, 'on', receipt?.network);
-}
-```
-
 ---
 
-## Batch settlement (EVM)
+## Also in this package
 
-Batch settlement lets a buyer pre-fund an escrow channel once, make many **discrete** paid API calls against it with cheap off-chain vouchers, and then close the channel. The seller's many charges are batched into a handful of on-chain transactions instead of one per call. It amortizes gas across high-frequency discrete purchasing.
+Four supporting surfaces, each with its own reference below.
 
-It is **not** a streaming primitive; it batches discrete purchases. EVM only (Base, Arbitrum, Polygon). The buyer never needs a gas token: every step (deposit, voucher, claim, settle, refund) is signature-based; the Dexter facilitator submits the transactions and pays the gas.
+- **Batch settlement (EVM).** Prepay an escrow once, make many discrete paid calls against it with off-chain vouchers, and settle in a handful of transactions to amortize gas. EVM only. `openBatchChannel` / `createBatchSettlementSeller`.
+- **Discovery (bazaar).** Make any `x402Middleware`-protected route discoverable through the official x402 bazaar spec, so agents find it by capability. `bazaarExtension()`.
+- **Sponsored access.** When an agent pays through Dexter's facilitator, a matched recommendation can ride along in the receipt; the agent's model may act on it. `sponsoredAccess: true`.
+- **Auto-listing.** Endpoints paid through the facilitator are auto-discovered, named, and quality-tested, then surfaced in `x402_search` across MCP clients. No registration step.
 
----
-
-## Tabs (Solana) — streaming micropayments, settled on close
-
-`@dexterai/x402/tab` is the streaming peer of batch settlement: *continuous metered consumption* (tokens, bytes, frames, seconds) where the unit of billing is smaller than a request. One passkey-authorized, drain-protected session signs many vouchers off-chain; the seller verifies locally; one on-chain settle on close moves USDC from the buyer's vault to the seller. Non-custodial — funds never leave the buyer's vault until settle, and the vault freezes withdrawals while a tab is open so the seller can't be rugged. Design: [`docs/DESIGN-tab-streaming.md`](./docs/DESIGN-tab-streaming.md). See [docs/CUSTODY.md](./docs/CUSTODY.md) for where the root key can live (the custody dial) and which guarantee each position earns.
-
-### Pay a URL — zero seller knowledge
-
-Given ONLY a URL, the buyer discovers the seller from the URL's own standard
-x402 `402` challenge, opens a freeze-protected tab to it, and pays. The seller
-pubkey comes off the wire — never from your code.
-
-```ts
-import { payUrlWithTab } from '@dexterai/x402/tab';
-
-const tabs = new Map(); // reuse one open tab per seller across calls
-const { result, tab } = await payUrlWithTab(
-  'https://api.example.com/paid/infer',
-  { method: 'GET' },
-  { vault, perUnitCap: '0.01', totalCap: '1.00', tabs },
-);
-// ...more payUrlWithTab calls reuse the same tab via `tabs`...
-await tab?.close(); // ONE on-chain settle for everything streamed
-```
-
-`resolveTabOffer(url)` is the underlying resolution primitive — probe a URL and read its tab terms (counterparty, quote, network) without paying.
-
-Use `resolveTabTerms` when you want a human-readable price and settlement descriptor — for consent UIs, directories, or agents that decide before acting:
-
-```ts
-import { resolveTabTerms } from '@dexterai/x402/tab';
-
-// Decide BEFORE you pay: what would a tab to this URL cost and settle into?
-const resolved = await resolveTabTerms('https://api.example.com/paid/tick');
-if (resolved.kind === 'terms') {
-  console.log(resolved.terms.counterparty, resolved.terms.perRequest.human);
-  // settlement: { custody: 'non-custodial', protection: 'freeze', settleOn: 'close' }
-}
-```
-
-### Tab seller (Express)
-
-Compose `tabChallengeMiddleware` (answers voucher-less requests with the standard x402 challenge, so strangers can discover you) BEFORE `tabMiddleware` (verifies vouchers):
-
-```ts
-import { tabChallengeMiddleware, tabMiddleware, requireTab, openSse } from '@dexterai/x402/tab/seller';
-
-app.get('/paid/infer',
-  tabChallengeMiddleware({ sellerPubkey, network: 'solana:mainnet', perUnit: '0.001', facilitatorUrl }),
-  tabMiddleware({ connection, sellerPubkey, network: 'solana:mainnet', perUnit: '0.001', settle: 'on-close', facilitatorUrl }),
-  async (req, res) => {
-    const meter = openSse(res, { tab: requireTab(req), perUnit: '0.001' });
-    await meter.charge(1);
-    meter.send('...');
-    meter.end();
-  });
-```
-
-For sellers who also want to accept one-shot payments (catalog verifiers, non-tab buyers), `tabOrExactMiddleware` is the recommended default — ONE middleware advertising both rails in a single 402 challenge:
-
-```ts
-import { tabOrExactMiddleware, requireTab, openSse } from '@dexterai/x402/tab/seller';
-import type { X402Request } from '@dexterai/x402/server';
-
-// ONE middleware, two rails: agents pay by tab; one-shot buyers (and
-// catalog verifiers) pay exact. Same price on both.
-app.get('/paid/tick',
-  tabOrExactMiddleware({ connection, sellerPubkey, network: 'solana:mainnet', perUnit: '0.01' }),
-  async (req, res) => {
-    if ((req as X402Request).x402) { res.json({ data: '...', paidVia: 'exact' }); return; } // exact rail
-    const tab = requireTab(req);                                                              // tab rail
-    const meter = openSse(res, { tab, perUnit: '0.01' });
-    await meter.charge(1);
-    meter.send(JSON.stringify({ data: '...' }));
-    meter.end();
-  });
-```
-
-### Buyer
-
-```ts
-import { openBatchChannel } from '@dexterai/x402/batch-settlement';
-
-const channel = await openBatchChannel({
-  wallet: evmWallet,            // any { address, signTypedData }
-  network: 'eip155:8453',       // Base
-  deposit: '0.30',              // USDC escrowed for this channel
-});
-
-const a = await channel.fetch('https://api.example.com/v1/data');
-const b = await channel.fetch('https://api.example.com/v1/data');
-
-console.log(channel.state); // { deposited: '0.3', spent: '0.16', remaining: '0.14' }
-
-const { closed } = await channel.close();
-```
-
-Each `openBatchChannel` call opens a new channel: a fresh random channel-config salt is generated, so a buyer can hold several independent channels with the same seller over time. The salt is exposed as `channel.salt`; persist it if you will later need to resume that exact channel.
-
-Resume after a process restart with the wallet, network, and the channel's salt:
-
-```ts
-import { resumeBatchChannel } from '@dexterai/x402/batch-settlement';
-
-const channel = await resumeBatchChannel({
-  wallet: evmWallet,
-  network: 'eip155:8453',
-  salt: savedSalt,
-});
-```
-
-Channel state auto-persists (localStorage in the browser, a file under `~/.dexter-x402/channels` in Node); the resumed channel's accounting is recovered from storage, or from on-chain state if storage was lost.
-
-#### Escape hatch: `forceWithdraw()` / `finalizeWithdraw()`
-
-If the seller never settles, the buyer can reclaim unspent escrow directly via the channel contract's timed withdrawal:
-
-```ts
-await channel.forceWithdraw();
-// after the channel's withdraw delay elapses
-await channel.finalizeWithdraw();
-```
-
-Last-resort safety net; normal operation never needs it. Unlike every other batch-settlement step, the escape hatch costs the buyer gas: the wallet must expose a `sendTransaction` method.
-
-### Seller
-
-`createBatchSettlementSeller(config)` returns an Express request handler. Mount it directly; it accepts vouchers, persists them, and settles in the background. Dexter operates the delegate authorizer, so the seller manages no signing key.
-
-```ts
-import { createBatchSettlementSeller } from '@dexterai/x402/batch-settlement/seller';
-
-const seller = createBatchSettlementSeller({
-  payTo: '0xYourReceivingAddress',
-  network: 'eip155:8453',
-  price: '0.08',
-});
-
-app.use('/api/data', seller);
-
-process.on('SIGTERM', async () => {
-  await seller.stop();   // flushes a final settle so no vouchers are lost
-});
-```
-
-Mounting via `x402Middleware` also works. With `scheme: 'batch-settlement'` it returns the same callable seller object, so you keep the `.stop()` / `.closeAll()` / `.closeChannel()` handle.
-
----
-
-## Discovery (bazaar extension)
-
-Shipped in 3.8.0. The bazaar extension makes any `x402Middleware`-protected route discoverable through the official x402 bazaar spec, so agents browsing a bazaar-compliant indexer find your endpoint by capability, not by URL.
-
-The 402 response carries a spec-compliant `extensions.bazaar` block describing the route's inputs, output schema, and template path. Discovery indexers read it and surface your endpoint in agent-facing catalogs.
-
-```typescript
-import {
-  x402Middleware,
-  bazaarExtension,
-  declareDiscoveryExtension,
-} from '@dexterai/x402/server';
-
-app.post(
-  '/v1/translate',
-  x402Middleware({
-    payTo: '...',
-    amount: '0.02',
-    network: 'eip155:8453',
-    extensions: [bazaarExtension()],
-    declarations: {
-      ...declareDiscoveryExtension({
-        method: 'POST',
-        bodyType: 'json',
-        inputSchema: {
-          properties: {
-            text: { type: 'string', description: 'Source text' },
-            targetLang: { type: 'string', description: 'ISO 639-1 code' },
-          },
-          required: ['text', 'targetLang'],
-        },
-        output: {
-          example: { translation: 'Bonjour' },
-        },
-      }),
-    },
-  }),
-  (req, res) => res.json({ translation: translate(req.body) }),
-);
-```
-
-`extensions` is opt-in: middleware without an `extensions` array emits a 402 byte-identical to pre-3.8.0 behavior. `method` may be omitted from `declareDiscoveryExtension`; the extension stamps the actual request method at 402 time.
-
-Failure isolation: if an extension throws, it's caught, logged, and skipped. The 402 still goes out, just without that key. The payment path is never affected.
-
----
-
-## Sponsored Access (Instinct ad network)
-
-This is how MCP agents (Claude, ChatGPT, Cursor) see your sponsored placements. When an agent pays for an API through Dexter's facilitator, a matched recommendation can be injected into the settlement receipt; the agent's LLM reads it and may call the suggested resource next. Both blockchain transactions become proof of the conversion.
-
-The buyer-side helpers are wired into every MCP `fetch` tool in the Dexter ecosystem, plus the human-facing receipt UI on x402gle. If you're shipping an x402 endpoint, sponsored access is how you reach the agents already using paid APIs.
-
-### Seller: enable recommendation injection
-
-```typescript
-import { x402Middleware } from '@dexterai/x402/server';
-
-app.get(
-  '/api/data',
-  x402Middleware({
-    payTo: '...',
-    amount: '0.01',
-    sponsoredAccess: true,         // injects _x402_sponsored into JSON responses
-  }),
-  (req, res) => res.json({ data: 'content' }),
-);
-// Response: { _x402_sponsored: [{ resourceUrl, description, sponsor }], data: 'content' }
-```
-
-For custom placement (where in the body the recommendation appears, conversion logging, etc.), pass an object instead of `true`:
-
-```typescript
-sponsoredAccess: {
-  inject: (body, recs) => ({ ...body, related_tools: recs }),
-  onMatch: (recs, settlement) => log(`matched ${recs.length} for tx ${settlement.transaction}`),
-},
-```
-
-### Buyer: read recommendations off a paid response
-
-```typescript
-import {
-  payAndFetch,
-  getSponsoredRecommendations,
-  fireImpressionBeacon,
-} from '@dexterai/x402/client';
-
-const result = await payAndFetch(url, { method: 'GET' }, wallets, {});
-if (result.ok && result.paid) {
-  const recs = getSponsoredRecommendations(result.response);
-  if (recs) {
-    for (const rec of recs) {
-      console.log(`${rec.sponsor}: ${rec.description} (${rec.resourceUrl})`);
-    }
-    await fireImpressionBeacon(result.response);
-  }
-}
-```
-
-### React: recommendations in the hook
-
-```tsx
-import { useX402Payment } from '@dexterai/x402/react';
-
-function PayButton() {
-  const { fetch, isLoading, sponsoredRecommendations } = useX402Payment({ wallets });
-
-  return (
-    <div>
-      <button onClick={() => fetch(url)} disabled={isLoading}>Pay</button>
-      {sponsoredRecommendations?.map((rec, i) => (
-        <a key={i} href={rec.resourceUrl}>{rec.sponsor}: {rec.description}</a>
-      ))}
-    </div>
-  );
-}
-```
-
-### Advertise
-
-Campaign creation is x402-gated at `x402ads.io`. Your wallet is your identity. Full advertiser guide at [docs.dexter.cash/docs/sponsored-access/for-advertisers](https://docs.dexter.cash/docs/sponsored-access/for-advertisers).
-
----
-
-## Auto-listing in OpenDexter
-
-When an agent pays for your API through the Dexter facilitator, your endpoint is auto-discovered, AI-named, and quality-tested. Quality-verified endpoints surface in `x402_search` results across MCP clients (ChatGPT, Claude, Cursor). No registration step.
-
-Browse the live catalog at [dexter.cash/opendexter](https://dexter.cash/opendexter).
+Full examples for each are in the [reference](#reference) section.
 
 ---
 
 ## Supported networks
 
-All networks supported by the [Dexter facilitator](https://x402.dexter.cash/supported). USDC on every chain.
-
-**Mainnets:**
+All networks supported by the [Dexter facilitator](https://x402.dexter.cash/supported). USDC on every chain. Tabs are Solana; one-shot and batch settlement span Solana and the EVM chains below.
 
 | Network | CAIP-2 | Status |
 |---------|--------|--------|
@@ -437,139 +216,46 @@ All networks supported by the [Dexter facilitator](https://x402.dexter.cash/supp
 | BSC | `eip155:56` | Production |
 | SKALE Base | `eip155:1187947933` | Production (zero gas) |
 
-**Testnets:**
-
-| Network | CAIP-2 |
-|---------|--------|
-| Solana Devnet | `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1` |
-| Solana Testnet | `solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z` |
-| Base Sepolia | `eip155:84532` |
-| SKALE Base Sepolia | `eip155:324705682` |
-
-Multi-chain endpoints accept payments on any chain in the list. The buyer picks:
-
-```typescript
-app.get('/api/data', x402Middleware({
-  payTo: {
-    'solana:*': 'YourSolanaAddress...',
-    'eip155:*': '0xYourEvmAddress...',
-  },
-  amount: '0.01',
-  network: [
-    'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
-    'eip155:8453',
-    'eip155:137',
-    'eip155:42161',
-    'eip155:10',
-    'eip155:43114',
-    'eip155:56',
-    'eip155:1187947933',
-  ],
-}));
-```
+Testnets: Solana Devnet/Testnet, Base Sepolia, SKALE Base Sepolia. Multi-chain endpoints accept any chain in the list; the buyer picks. Pass `network` as an array to `x402Middleware`, with a `payTo` map for per-chain receivers.
 
 ---
 
-## Package exports
+## Reference
+
+### Package exports
 
 ```typescript
-// Client: canonical entrypoint
-import { payAndFetch, createKeypairWallet, createEvmKeypairWallet, getPaymentReceipt } from '@dexterai/x402/client';
+// Tabs (Solana): buyer
+import { payUrlWithTab, resolveTabTerms, resolveTabOffer } from '@dexterai/x402/tab';
 
-// Client: sponsored access reader
-import { getSponsoredRecommendations, fireImpressionBeacon } from '@dexterai/x402/client';
+// Tabs (Solana): seller
+import { tabChallengeMiddleware, tabMiddleware, tabOrExactMiddleware, requireTab, openSse } from '@dexterai/x402/tab/seller';
+
+// One-shot client
+import { payAndFetch, createKeypairWallet, createEvmKeypairWallet, getPaymentReceipt } from '@dexterai/x402/client';
 
 // React
 import { useX402Payment } from '@dexterai/x402/react';
 
-// Server: middleware
-import { x402Middleware } from '@dexterai/x402/server';
-
-// Server: discovery (bazaar extension)
-import { bazaarExtension, declareDiscoveryExtension } from '@dexterai/x402/server';
-
-// Server: manual control
-import { createX402Server } from '@dexterai/x402/server';
+// Server middleware + discovery
+import { x402Middleware, bazaarExtension, declareDiscoveryExtension, createX402Server } from '@dexterai/x402/server';
 
 // Batch settlement
 import { openBatchChannel, resumeBatchChannel } from '@dexterai/x402/batch-settlement';
 import { createBatchSettlementSeller } from '@dexterai/x402/batch-settlement/seller';
 
-// Adapters (advanced)
+// Adapters (advanced) + utilities
 import { createSolanaAdapter, createEvmAdapter } from '@dexterai/x402/adapters';
-
-// Utilities
 import { toAtomicUnits, fromAtomicUnits } from '@dexterai/x402/utils';
 ```
 
----
+### `payUrlWithTab(url, init, opts) → Promise<{ result, tab }>`
 
-## Utilities
+Opens (or reuses) a freeze-protected tab to the seller discovered from the URL's `402` challenge, and pays. `opts`: `{ vault, perUnitCap, totalCap, tabs }`. Reuse one `tabs` map across calls to keep a single open tab per seller; `tab.close()` settles everything spent in one transaction.
 
-```typescript
-import { toAtomicUnits, fromAtomicUnits } from '@dexterai/x402/utils';
+### `resolveTabTerms(url) → Promise<TabResolution>`
 
-toAtomicUnits(0.05, 6);          // '50000'
-toAtomicUnits(1.50, 6);          // '1500000'
-fromAtomicUnits('50000', 6);     // 0.05
-fromAtomicUnits(1500000n, 6);    // 1.5
-```
-
----
-
-## Manual server (advanced)
-
-For full control over the payment flow without `x402Middleware`:
-
-```typescript
-import { createX402Server } from '@dexterai/x402/server';
-
-const server = createX402Server({
-  payTo: 'YourAddress...',
-  network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
-});
-
-app.post('/protected', async (req, res) => {
-  const paymentSig = req.headers['payment-signature'];
-
-  if (!paymentSig) {
-    const requirements = await server.buildRequirements({
-      amountAtomic: '50000',  // $0.05 USDC
-      resourceUrl: req.originalUrl,
-    });
-    res.setHeader('PAYMENT-REQUIRED', server.encodeRequirements(requirements));
-    return res.status(402).json({});
-  }
-
-  const result = await server.settlePayment(paymentSig);
-  if (!result.success) {
-    return res.status(402).json({ error: result.errorReason });
-  }
-
-  res.json({ data: 'protected content' });
-});
-```
-
----
-
-## Legacy capabilities
-
-Several v1-era helpers ship with `@deprecated` markers in 3.9. They keep working. The markers exist to steer new code at the canonical paths. Each has a JSDoc pointing at its migration target.
-
-| Symbol | Migration target |
-|---|---|
-| `wrapFetch` (`@dexterai/x402/client`) | `payAndFetch` (version-agnostic, discriminated return type) |
-| `createX402Client` (`@dexterai/x402/client`) | `payAndFetch` |
-| `x402AccessPass`, `useAccessPass` | No replacement. Per-request `x402Middleware` + `payAndFetch` covers the same usage pattern. |
-| `createDynamicPricing`, `createTokenPricing`, `MODEL_PRICING` | Price requests in your handler (use your model provider's live API for LLM cases) and pass the amount to `x402Middleware`. The v1 character-based and tiktoken-based helpers were stopgaps before x402 v2 dynamic pricing landed. |
-| `stripePayTo` | No replacement in the SDK. Integrate Stripe at your application layer if needed. |
-| `x402BrowserSupport` | No replacement. Build a custom paywall page if you need one. |
-
-None of these will be removed in 3.x.
-
----
-
-## API reference
+Reads a URL's tab terms without paying. Returns `{ kind: 'terms', terms: { counterparty, perRequest, network, settlement } }`, or a non-terms kind when the URL offers no tab.
 
 ### `payAndFetch(url, init, wallets, opts) → Promise<PayResult>`
 
@@ -580,19 +266,16 @@ None of these will be removed in 3.x.
 | `wallets` | `WalletSet` | `{ solana?, evm? }`. The SDK picks the chain by what the merchant accepts and what you can pay |
 | `opts` | `PayAndFetchOptions` | `maxAmountAtomic`, `timeoutMs`, `solanaRpcUrl` |
 
-`PayResult` is a discriminated union. Narrow on `ok` first, then on `paid`:
+`PayResult` is a discriminated union. Narrow on `ok`, then on `paid`:
 
 ```typescript
 if (result.ok && result.paid) {
-  result.response;       // the merchant's response
-  result.amountPaid;     // amount actually paid, in the token's smallest denomination
-  result.network;        // NetworkRef { caip2, bare, family }
-  result.txSignature;    // optional; tx hash where the chain reports one
+  result.response; result.amountPaid; result.network; result.txSignature;
 } else if (result.ok && !result.paid) {
-  result.response;       // the merchant didn't demand payment; pass-through
+  result.response;       // merchant didn't demand payment; pass-through
 } else {
   result.reason;         // 'merchant_rejected' | 'settlement_failed' | 'timeout' | ...
-  result.detail;         // verbatim merchant error for settlement_failed
+  result.detail;
 }
 ```
 
@@ -603,41 +286,31 @@ if (result.ok && result.paid) {
 | `payTo` | `string \| { 'solana:*'?, 'eip155:*'?, [caip2]? }` | Yes | Receiver address; map for per-chain receivers |
 | `amount` | `string` | Yes | USD amount, e.g., `'0.01'` |
 | `network` | `string \| string[]` | No | CAIP-2 network(s). Default: Solana mainnet |
-| `description` | `string` | No | Human-readable description |
-| `scheme` | `'exact' \| 'batch-settlement'` | No | Use `'batch-settlement'` to mount as a batch-settlement seller |
+| `scheme` | `'exact' \| 'batch-settlement'` | No | `'batch-settlement'` mounts as a batch-settlement seller |
 | `extensions` | `ResourceServerExtension[]` | No | E.g., `[bazaarExtension()]` |
-| `declarations` | `Record<string, unknown>` | No | Per-route extension config (see `declareDiscoveryExtension`) |
-| `sponsoredAccess` | `boolean \| { inject?, onMatch? }` | No | Enable Instinct ad-network recommendation injection |
+| `sponsoredAccess` | `boolean \| { inject?, onMatch? }` | No | Instinct ad-network recommendation injection |
 | `facilitatorUrl` | `string` | No | Override facilitator (default: `x402.dexter.cash`) |
-| `verbose` | `boolean` | No | Debug logging |
 
-### `useX402Payment({ wallets })`
+### Batch settlement
 
-Returns `{ fetch, isLoading, status, error, transactionId, transactionUrl, balances, refreshBalances, reset, sponsoredRecommendations }`. Accepts wallets directly from `@solana/wallet-adapter-react` and `wagmi`, with no manual adapter wrapping.
+```ts
+import { openBatchChannel } from '@dexterai/x402/batch-settlement';
 
-### `createBatchSettlementSeller(config)`
+const escrow = await openBatchChannel({ wallet: evmWallet, network: 'eip155:8453', deposit: '0.30' });
+await escrow.fetch('https://api.example.com/v1/data');
+console.log(escrow.state); // { deposited: '0.3', spent: '0.16', remaining: '0.14' }
+await escrow.close();
+```
 
-| Option | Type | Description |
-|---|---|---|
-| `payTo` | `string` | EVM receiver |
-| `network` | `string` | CAIP-2 network |
-| `price` | `string` | Per-call USD price |
-| `storage` | `ChannelStorage` | Optional. Defaults to file storage under `~/.dexter-x402/channels` |
+State auto-persists and resumes with `resumeBatchChannel({ wallet, network, salt })`. If the seller never settles, reclaim unspent escrow with `forceWithdraw()` then `finalizeWithdraw()`. The seller mounts `createBatchSettlementSeller(config)` as an Express handler; Dexter operates the authorizer, so the seller manages no signing key. Returns a handler with `.stop()`, `.closeAll()`, `.closeChannel(id)`.
 
-Returns an Express handler with `.stop()`, `.closeAll()`, `.closeChannel(channelId)`.
+### Discovery, sponsored access
 
-### `bazaarExtension()` / `declareDiscoveryExtension(config)`
+`bazaarExtension()` plus `declareDiscoveryExtension(config)` attach a spec-compliant `extensions.bazaar` block to a route's 402; extensions are opt-in and failure-isolated, so the payment path is never affected. `sponsoredAccess` injects `_x402_sponsored` into responses; read it with `getSponsoredRecommendations(response)`. Campaign creation is x402-gated at `x402ads.io`.
 
-The bazaar extension factory takes no arguments. Per-route discovery config is supplied through `declareDiscoveryExtension(config)`:
+### Legacy
 
-| Field | Type | Notes |
-|---|---|---|
-| `method` | `'GET' \| 'HEAD' \| 'DELETE' \| 'POST' \| 'PUT' \| 'PATCH'` | Optional. If omitted, the actual request method is used. |
-| `queryParams` | `Record<string, ParamSpec>` | For GET/HEAD/DELETE routes |
-| `bodyType` | `'json' \| 'form'` | For POST/PUT/PATCH routes |
-| `body` | `Record<string, ParamSpec>` | For POST/PUT/PATCH routes |
-| `inputSchema` | JSON Schema (Draft 2020-12) | Validates `info` |
-| `output` | `{ example, schema? }` | Example response payload |
+v1-era helpers (`wrapFetch`, `createX402Client`, `x402AccessPass`, `createDynamicPricing`, `stripePayTo`, `x402BrowserSupport`) ship `@deprecated` with JSDoc migration targets and keep working. None will be removed in 3.x. New code should use `payAndFetch` and `x402Middleware`.
 
 ---
 
@@ -649,8 +322,6 @@ npm run dev        # Watch mode
 npm run typecheck
 npm test           # 273 vitest tests
 ```
-
----
 
 ## License
 
