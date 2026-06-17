@@ -39,8 +39,9 @@ import {
   ScopeViolationError,
 } from './verify';
 
-import { InMemoryChannelLedger, withChannelLock, type ChannelLedger } from './channel-ledger';
-import { atomicToHuman, humanToAtomic } from '../tab';
+import { InMemoryChannelLedger, withChannelLock, type ChannelLedger, type ChannelLedgerEntry } from './channel-ledger';
+import { atomicToHuman, humanToAtomic, DEFAULT_FACILITATOR_URL } from '../tab';
+import { maybeCrystallize, crystallizeNow, type LockCadence } from './crystallize';
 
 // ── Augmented Express request type ─────────────────────────────────────
 
@@ -209,6 +210,15 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
     ? BigInt(config.maxPerVoucherAtomic)
     : BigInt(humanToAtomic(config.perUnit)) * 100n;
 
+  // Resolve the keyless crystallization cadence (Step-4 lock-mode). Defaults:
+  // threshold 0.10 (atomic) and crystallize at close. All crystallize calls are
+  // BEST-EFFORT — they never block, await-gate, or reject the response path.
+  const facilitatorUrl = config.facilitatorUrl ?? DEFAULT_FACILITATOR_URL;
+  const lockCadence: LockCadence = {
+    thresholdAtomic: config.lockCadence?.thresholdAtomic ?? humanToAtomic('0.10'),
+    onClose: config.lockCadence?.onClose ?? true,
+  };
+
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
       // 1. Decode the voucher off the header.
@@ -278,6 +288,69 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
       res.on('close', releaseOnce);
       res.on('finish', releaseOnce);
 
+      // Keyless crystallization (Step-4 lock-mode). Threshold-driven cadence,
+      // invoked from the recordDelivered closure; persists any advance to the
+      // ledger. BEST-EFFORT throughout — never throws, never gates the response.
+      const crystallizeCadence = async (entry: ChannelLedgerEntry): Promise<void> => {
+        const before = entry.lastCrystallizedCumulativeAtomic ?? '0';
+        await maybeCrystallize(entry, channelId, facilitatorUrl, config.network, lockCadence);
+        if (entry.lastCrystallizedCumulativeAtomic !== before) {
+          // A lock landed — persist the advanced watermark under the lock so the
+          // next request reads it and doesn't re-fire on the same delivered span.
+          await withChannelLock(channelId, async () => {
+            const cur = await ledger.get(channelId);
+            if (cur) {
+              await ledger.set(channelId, {
+                ...cur,
+                lastCrystallizedCumulativeAtomic: entry.lastCrystallizedCumulativeAtomic,
+              });
+            }
+          }).catch(() => {});
+        }
+      };
+
+      // At close: crystallize the channel's FINAL signed voucher exactly once if
+      // the cadence wants it. We read `lastVoucher` from the ledger at close —
+      // NOT a `delivered` snapshot — which sidesteps the close-handler ordering
+      // problem entirely: `lastVoucher` is persisted during the request (step 6,
+      // before next()), so it is already the final signed voucher at close
+      // regardless of when the meter's own `persistDelivered` close handler
+      // writes `delivered`. We crystallize that voucher and advance the watermark
+      // to ITS cumulative (FIX C1/C2), so the watermark is truthful and never
+      // lies about a delivered span the lock didn't actually secure.
+      //
+      // Fully best-effort: detached + swallows all errors. The `closeCrystallized`
+      // flag is INDEPENDENT of `leaseReleased` — they guard different concerns and
+      // must not be merged. Both handlers are registered on the same events; the
+      // bodies are detached and run concurrently, so the lease release
+      // (`releaseOnce`, registered earlier) is not gated on this crystallize.
+      let closeCrystallized = false;
+      const crystallizeOnClose = () => {
+        if (!lockCadence.onClose || closeCrystallized) return;
+        closeCrystallized = true;
+        void (async () => {
+          const cur = await ledger.get(channelId);
+          if (!cur || !cur.lastVoucher) return;
+          // The cumulative we will lock is the FINAL signed voucher's — captured
+          // before the POST so a later mutation can't shift the watermark.
+          const lockedCumulative = cur.lastVoucher.payload.cumulativeAmount;
+          const result = await crystallizeNow(cur, channelId, facilitatorUrl, config.network);
+          if (result.crystallized) {
+            await withChannelLock(channelId, async () => {
+              const latest = await ledger.get(channelId);
+              if (latest) {
+                await ledger.set(channelId, {
+                  ...latest,
+                  lastCrystallizedCumulativeAtomic: lockedCumulative,
+                });
+              }
+            });
+          }
+        })().catch(() => {});
+      };
+      res.on('close', crystallizeOnClose);
+      res.on('finish', crystallizeOnClose);
+
       // 6. Read the durable delivered baseline for the budget, then persist the
       //    accepted voucher WITHOUT touching delivered (delivered only advances
       //    on the meter's terminal path). Locked so a concurrent request can't
@@ -307,17 +380,31 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
         // lease (held by the request lifecycle until the response closes) and
         // onChain — omitting them would erase the lease mid-stream.
         async (incrementAtomic: string) => {
+          let updated: ChannelLedgerEntry | null = null;
           await withChannelLock(channelId, async () => {
             const cur = await ledger.get(channelId);
             const base = cur ? BigInt(cur.deliveredCumulativeAtomic) : 0n;
             const inc = BigInt(incrementAtomic);
             const nextDelivered = inc > 0n ? base + inc : base; // monotonic, never backward
-            await ledger.set(channelId, {
+            const next: ChannelLedgerEntry = {
               ...cur,
               lastVoucher: cur?.lastVoucher ?? voucher,
               deliveredCumulativeAtomic: nextDelivered.toString(),
-            });
+              lastCrystallizedCumulativeAtomic:
+                cur?.lastCrystallizedCumulativeAtomic ?? '0',
+            };
+            await ledger.set(channelId, next);
+            updated = next;
           });
+          // Keyless crystallization cadence (Step-4). BEST-EFFORT: fire OUTSIDE
+          // the channel lock so the network POST never serializes delivered
+          // writes, and detach it so a slow/failed lock never blocks or rejects
+          // the meter's terminal path. maybeCrystallize advances
+          // `lastCrystallizedCumulativeAtomic` in memory on success; persist
+          // that advance back so the next request doesn't re-fire.
+          if (updated) {
+            void crystallizeCadence(updated).catch(() => {});
+          }
         },
         // charge stub (unchanged): the route handler doesn't drive charging.
         async (_inc) => {

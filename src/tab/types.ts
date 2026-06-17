@@ -192,7 +192,7 @@ export interface OpenTabOptions {
   revolvingCapacity?: HumanAmount;
   /** Session expiry, seconds from now. Default: 3600 (1 hour). */
   sessionDuration?: number;
-  /** Facilitator base URL. Default: https://facilitator.dexter.cash, overridable. */
+  /** Facilitator base URL. Default: DEFAULT_FACILITATOR_URL (https://x402.dexter.cash), overridable. */
   facilitatorUrl?: string;
 }
 
