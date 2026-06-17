@@ -63,8 +63,14 @@ export interface OnChainLedgerSnapshot {
 }
 
 export interface ChannelLedgerEntry {
-  /** Latest accepted voucher. `payload.cumulativeAmount` is the signedCumulative. */
-  lastVoucher: SignedVoucher;
+  /**
+   * Latest accepted voucher (`payload.cumulativeAmount` is the signedCumulative),
+   * or `null` for a lease-only entry created when the first request on a channel
+   * acquires its single-stream lease BEFORE any voucher is persisted. The
+   * middleware writes the real voucher immediately after acquiring the lease, so
+   * a null `lastVoucher` is only ever a transient pre-first-voucher state.
+   */
+  lastVoucher: SignedVoucher | null;
   /**
    * Off-chain cumulative the meter has DELIVERED on this channel across all
    * requests. Monotonic; never reset. The leak-fix field.
@@ -121,7 +127,7 @@ export class InMemoryChannelLedger implements ChannelLedger {
       const now = Date.now();
       if (cur?.lease && cur.lease.heldUntilUnixMs > now) return false; // held & unexpired
       const base: ChannelLedgerEntry =
-        cur ?? { lastVoucher: null as any, deliveredCumulativeAtomic: '0' };
+        cur ?? { lastVoucher: null, deliveredCumulativeAtomic: '0' };
       this.map.set(channelId, { ...base, lease: { heldUntilUnixMs: now + ttlMs } });
       return true;
     });
@@ -143,7 +149,7 @@ interface SerializedEntry {
     sessionPublicKey: string;
     sessionRegistration: string;
     sessionSignature: string;
-  };
+  } | null;
   deliveredCumulativeAtomic: AtomicAmount;
   onChain?: OnChainLedgerSnapshot;
   lease?: { heldUntilUnixMs: number };
@@ -164,12 +170,14 @@ function hexToBytes(hex: string): Uint8Array {
 
 function serialize(entry: ChannelLedgerEntry): SerializedEntry {
   return {
-    lastVoucher: {
-      payload: entry.lastVoucher.payload,
-      sessionPublicKey: bytesToHex(entry.lastVoucher.sessionPublicKey),
-      sessionRegistration: bytesToHex(entry.lastVoucher.sessionRegistration),
-      sessionSignature: bytesToHex(entry.lastVoucher.sessionSignature),
-    },
+    lastVoucher: entry.lastVoucher
+      ? {
+          payload: entry.lastVoucher.payload,
+          sessionPublicKey: bytesToHex(entry.lastVoucher.sessionPublicKey),
+          sessionRegistration: bytesToHex(entry.lastVoucher.sessionRegistration),
+          sessionSignature: bytesToHex(entry.lastVoucher.sessionSignature),
+        }
+      : null,
     deliveredCumulativeAtomic: entry.deliveredCumulativeAtomic,
     onChain: entry.onChain,
     lease: entry.lease,
@@ -178,12 +186,14 @@ function serialize(entry: ChannelLedgerEntry): SerializedEntry {
 
 function deserialize(s: SerializedEntry): ChannelLedgerEntry {
   return {
-    lastVoucher: {
-      payload: s.lastVoucher.payload,
-      sessionPublicKey: hexToBytes(s.lastVoucher.sessionPublicKey),
-      sessionRegistration: hexToBytes(s.lastVoucher.sessionRegistration),
-      sessionSignature: hexToBytes(s.lastVoucher.sessionSignature),
-    },
+    lastVoucher: s.lastVoucher
+      ? {
+          payload: s.lastVoucher.payload,
+          sessionPublicKey: hexToBytes(s.lastVoucher.sessionPublicKey),
+          sessionRegistration: hexToBytes(s.lastVoucher.sessionRegistration),
+          sessionSignature: hexToBytes(s.lastVoucher.sessionSignature),
+        }
+      : null,
     deliveredCumulativeAtomic: s.deliveredCumulativeAtomic,
     onChain: s.onChain,
     lease: s.lease,
@@ -239,7 +249,7 @@ export class FileChannelLedger implements ChannelLedger {
       const now = Date.now();
       if (cur?.lease && cur.lease.heldUntilUnixMs > now) return false;
       const base: ChannelLedgerEntry =
-        cur ?? { lastVoucher: null as any, deliveredCumulativeAtomic: '0' };
+        cur ?? { lastVoucher: null, deliveredCumulativeAtomic: '0' };
       await this.set(channelId, { ...base, lease: { heldUntilUnixMs: now + ttlMs } });
       return true;
     });

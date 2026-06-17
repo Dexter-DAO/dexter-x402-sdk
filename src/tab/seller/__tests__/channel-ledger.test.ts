@@ -28,7 +28,7 @@ describe('InMemoryChannelLedger', () => {
     await ledger.set(channelId, entry);
     const got = await ledger.get(channelId);
     expect(got?.deliveredCumulativeAtomic).toBe('50000');
-    expect(got?.lastVoucher.payload.cumulativeAmount).toBe('100000');
+    expect(got?.lastVoucher?.payload.cumulativeAmount).toBe('100000');
   });
 
   it('preserves the optional onChain snapshot when present', async () => {
@@ -93,8 +93,8 @@ describe('FileChannelLedger', () => {
       const reader = new FileChannelLedger(dir);
       const got = await reader.get(channelId);
       expect(got?.deliveredCumulativeAtomic).toBe('150000');
-      expect(got?.lastVoucher.payload.cumulativeAmount).toBe('200000');
-      expect(got?.lastVoucher.sessionSignature.length).toBe(64);
+      expect(got?.lastVoucher?.payload.cumulativeAmount).toBe('200000');
+      expect(got?.lastVoucher?.sessionSignature.length).toBe(64);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -138,5 +138,22 @@ describe('channel lease — reject concurrent same-channel metering', () => {
     await ledger.tryAcquireLease(channelId, 60_000);
     await ledger.releaseLease(channelId);
     expect((await ledger.get(channelId))?.deliveredCumulativeAtomic).toBe('70000');
+  });
+
+  it('FileChannelLedger acquires a lease on a FRESH channel without throwing (durable-path regression)', async () => {
+    // The first request on any channel acquires the lease BEFORE any voucher is
+    // persisted (middleware step 5b precedes step 6). On a durable/file ledger
+    // that means serializing a lease-only entry with no voucher — must not throw.
+    const dir = await mkdtemp(pathJoin(tmpdir(), 'chanledger-'));
+    try {
+      const fresh = 'a'.repeat(64);
+      const ledger = new FileChannelLedger(dir);
+      expect(await ledger.tryAcquireLease(fresh, 60_000)).toBe(true);
+      const got = await ledger.get(fresh);
+      expect(got?.lease?.heldUntilUnixMs).toBeGreaterThan(0);
+      expect(got?.lastVoucher).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
