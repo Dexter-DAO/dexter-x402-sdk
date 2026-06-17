@@ -31,9 +31,8 @@
  * await tab.close();
  * ```
  *
- * Implementation phases tracked in `docs/DESIGN-tab-streaming.md` §6. Phase 1
- * (this file) locks the contract; downstream phases fill the bodies without
- * being able to drift the public shape.
+ * Phase 1 (this file) locks the public contract; downstream phases fill the
+ * bodies without being able to drift the public shape.
  */
 
 export type {

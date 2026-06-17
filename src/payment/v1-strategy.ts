@@ -73,7 +73,7 @@ export const v1Strategy: PaymentStrategy = {
   ): Promise<PayResult> {
     // pay() MUST never throw — every path returns a typed PayResult.
     //
-    // Two-phase timeout (see DESIGN-timeout-double-charge.md): the unpaid
+    // Two-phase timeout: the unpaid
     // build/sign runs under a short pre-payment deadline; the `fetch()` that
     // carries the X-PAYMENT header runs under a long post-payment deadline,
     // because once that header is sent the facilitator may settle and a

@@ -46,7 +46,7 @@ import { deriveChannelId } from './sessions';
 const DEFAULT_SESSION_DURATION_SEC = 3600;
 
 /** Live Dexter x402 facilitator API. NOT facilitator.dexter.cash —
- *  that's a marketing redirect. See reference_dexter_facilitator_url.md. */
+ *  that's a marketing redirect. */
 export const DEFAULT_FACILITATOR_URL = 'https://x402.dexter.cash';
 
 /** USDC decimals on Solana. Hardcoded — every SPL USDC mint on every
