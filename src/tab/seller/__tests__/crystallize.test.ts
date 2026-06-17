@@ -100,6 +100,42 @@ describe('crystallizeNow', () => {
     expect(result.crystallized).toBe(false);
     expect(result.error).toBeTruthy();
   });
+
+  // FIX B — bounded fetch: the POST must carry an AbortSignal so a hung
+  // facilitator can't leak the connection forever.
+  it('passes an AbortSignal on the fetch init (bounded POST)', async () => {
+    const { fetchImpl, calls } = okFetch();
+    const entry = entryFor('100000');
+
+    await crystallizeNow(entry, CHANNEL_ID, FACILITATOR, NETWORK, fetchImpl as any);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('an aborted fetch still resolves on the best-effort path (no throw)', async () => {
+    // Simulate the abort the timeout would produce.
+    const fetchImpl = vi.fn(async () => {
+      const err = new Error('The operation was aborted');
+      err.name = 'AbortError';
+      throw err;
+    });
+    const entry = entryFor('100000');
+
+    const result = await crystallizeNow(entry, CHANNEL_ID, FACILITATOR, NETWORK, fetchImpl as any);
+    expect(result.crystallized).toBe(false);
+    expect(result.error).toBeTruthy();
+  });
+
+  // FIX D — _channelId is now a cheap correctness guard, not a dead param.
+  it('returns channel_id_mismatch (does not POST) when the voucher channelId disagrees', async () => {
+    const { fetchImpl, calls } = okFetch();
+    const entry = entryFor('100000'); // voucher.payload.channelId === CHANNEL_ID
+
+    const result = await crystallizeNow(entry, 'b'.repeat(64), FACILITATOR, NETWORK, fetchImpl as any);
+    expect(result.crystallized).toBe(false);
+    expect(result.error).toBe('channel_id_mismatch');
+    expect(calls).toHaveLength(0); // never POSTed a mismatched voucher
+  });
 });
 
 describe('maybeCrystallize', () => {
@@ -135,15 +171,20 @@ describe('maybeCrystallize', () => {
     expect(entry.lastCrystallizedCumulativeAtomic).toBe('100000');
 
     // Deliver a bit more, but not a full threshold past the last crystallize.
+    // The buyer's voucher advances in lock-step (the meter caps delivery at the
+    // signed voucher, so a higher delivered implies a higher signed voucher).
     entry.deliveredCumulativeAtomic = '150000';
+    entry.lastVoucher = fakeVoucher(CHANNEL_ID, '150000');
     await maybeCrystallize(entry, CHANNEL_ID, FACILITATOR, NETWORK, cadence, { fetchImpl: fetchImpl as any });
     expect(calls).toHaveLength(1); // no second fire
     expect(entry.lastCrystallizedCumulativeAtomic).toBe('100000');
 
     // Now cross the next threshold.
     entry.deliveredCumulativeAtomic = '200000';
+    entry.lastVoucher = fakeVoucher(CHANNEL_ID, '200000');
     await maybeCrystallize(entry, CHANNEL_ID, FACILITATOR, NETWORK, cadence, { fetchImpl: fetchImpl as any });
     expect(calls).toHaveLength(2);
+    // Watermark advances to the POSTed voucher cumulative (FIX C1).
     expect(entry.lastCrystallizedCumulativeAtomic).toBe('200000');
   });
 
@@ -165,6 +206,24 @@ describe('maybeCrystallize', () => {
     await maybeCrystallize(entry, CHANNEL_ID, FACILITATOR, NETWORK, cadence, { fetchImpl: okImpl as any });
     expect(calls).toHaveLength(1);
     expect(entry.lastCrystallizedCumulativeAtomic).toBe('100000');
+  });
+
+  // FIX C1 — the watermark tracks the CRYSTALLIZED VOUCHER cumulative, not a
+  // delivered snapshot. When the signed voucher's cumulative exceeds delivered
+  // (it always >= delivered, since the meter caps delivery at signed), the
+  // watermark must advance to the voucher cumulative that was actually POSTed.
+  it('advances lastCrystallized to the POSTed voucher cumulative, not the delivered snapshot', async () => {
+    const { fetchImpl, calls } = okFetch();
+    // delivered = 100000 (crosses threshold), but the signed voucher cumulative
+    // is HIGHER at 130000 — that 130000 is what gets crystallized on-chain.
+    const entry = entryFor('100000', '0', '130000');
+
+    await maybeCrystallize(entry, CHANNEL_ID, FACILITATOR, NETWORK, cadence, { fetchImpl: fetchImpl as any });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body.cumulativeAmount).toBe('130000'); // POSTed the voucher cumulative
+    // Watermark advances to the POSTED voucher cumulative, NOT delivered (100000).
+    expect(entry.lastCrystallizedCumulativeAtomic).toBe('130000');
   });
 
   it('does not reject even if fetch throws (best-effort contract)', async () => {

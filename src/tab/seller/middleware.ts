@@ -40,7 +40,7 @@ import {
 } from './verify';
 
 import { InMemoryChannelLedger, withChannelLock, type ChannelLedger, type ChannelLedgerEntry } from './channel-ledger';
-import { atomicToHuman, humanToAtomic } from '../tab';
+import { atomicToHuman, humanToAtomic, DEFAULT_FACILITATOR_URL } from '../tab';
 import { maybeCrystallize, crystallizeNow, type LockCadence } from './crystallize';
 
 // ── Augmented Express request type ─────────────────────────────────────
@@ -213,7 +213,7 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
   // Resolve the keyless crystallization cadence (Step-4 lock-mode). Defaults:
   // threshold 0.10 (atomic) and crystallize at close. All crystallize calls are
   // BEST-EFFORT — they never block, await-gate, or reject the response path.
-  const facilitatorUrl = config.facilitatorUrl ?? 'https://facilitator.dexter.cash';
+  const facilitatorUrl = config.facilitatorUrl ?? DEFAULT_FACILITATOR_URL;
   const lockCadence: LockCadence = {
     thresholdAtomic: config.lockCadence?.thresholdAtomic ?? humanToAtomic('0.10'),
     onClose: config.lockCadence?.onClose ?? true,
@@ -309,16 +309,31 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
         }
       };
 
-      // At close: crystallize once if the cadence wants it. Fully best-effort —
-      // detached, swallows all errors, and only runs after the lease release so
-      // it never fights the existing close/finish lifecycle.
+      // At close: crystallize the channel's FINAL signed voucher exactly once if
+      // the cadence wants it. We read `lastVoucher` from the ledger at close —
+      // NOT a `delivered` snapshot — which sidesteps the close-handler ordering
+      // problem entirely: `lastVoucher` is persisted during the request (step 6,
+      // before next()), so it is already the final signed voucher at close
+      // regardless of when the meter's own `persistDelivered` close handler
+      // writes `delivered`. We crystallize that voucher and advance the watermark
+      // to ITS cumulative (FIX C1/C2), so the watermark is truthful and never
+      // lies about a delivered span the lock didn't actually secure.
+      //
+      // Fully best-effort: detached + swallows all errors. The `closeCrystallized`
+      // flag is INDEPENDENT of `leaseReleased` — they guard different concerns and
+      // must not be merged. Both handlers are registered on the same events; the
+      // bodies are detached and run concurrently, so the lease release
+      // (`releaseOnce`, registered earlier) is not gated on this crystallize.
       let closeCrystallized = false;
       const crystallizeOnClose = () => {
         if (!lockCadence.onClose || closeCrystallized) return;
         closeCrystallized = true;
         void (async () => {
           const cur = await ledger.get(channelId);
-          if (!cur) return;
+          if (!cur || !cur.lastVoucher) return;
+          // The cumulative we will lock is the FINAL signed voucher's — captured
+          // before the POST so a later mutation can't shift the watermark.
+          const lockedCumulative = cur.lastVoucher.payload.cumulativeAmount;
           const result = await crystallizeNow(cur, channelId, facilitatorUrl, config.network);
           if (result.crystallized) {
             await withChannelLock(channelId, async () => {
@@ -326,7 +341,7 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
               if (latest) {
                 await ledger.set(channelId, {
                   ...latest,
-                  lastCrystallizedCumulativeAtomic: latest.deliveredCumulativeAtomic,
+                  lastCrystallizedCumulativeAtomic: lockedCumulative,
                 });
               }
             });

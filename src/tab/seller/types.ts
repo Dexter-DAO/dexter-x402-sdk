@@ -68,7 +68,7 @@ export interface TabMiddlewareOptions {
   network: TabNetworkId;
   /** When to settle on chain: at tab close (the common case) vs periodically. */
   settle: 'on-close' | 'periodic';
-  /** Facilitator base URL. Default: https://facilitator.dexter.cash. */
+  /** Facilitator base URL. Default: DEFAULT_FACILITATOR_URL (https://x402.dexter.cash). */
   facilitatorUrl?: string;
   /**
    * Durable per-channel state (latest voucher + delivered cumulative).

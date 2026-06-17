@@ -29,6 +29,8 @@
  * field is needed to crystallize.
  */
 
+import { bytesToHex } from '@noble/hashes/utils';
+
 import type { ChannelLedgerEntry } from './channel-ledger';
 import type { TabNetworkId } from '../types';
 
@@ -50,11 +52,11 @@ export interface CrystallizeDeps {
   fetchImpl?: typeof fetch;
 }
 
-function bytesToHex(b: Uint8Array): string {
-  let out = '';
-  for (const x of b) out += x.toString(16).padStart(2, '0');
-  return out;
-}
+/** Hard ceiling on a single crystallize POST so a hung facilitator can't leak
+ *  the connection forever. Best-effort: an abort hits the catch → no advance,
+ *  retries on the next threshold crossing. House style uses 20s on the RPC
+ *  adapter; 15s is fine for this server-to-server lock POST. */
+const CRYSTALLIZE_TIMEOUT_MS = 15_000;
 
 /**
  * POST the stored signed voucher (`entry.lastVoucher`) to
@@ -65,16 +67,23 @@ function bytesToHex(b: Uint8Array): string {
  */
 export async function crystallizeNow(
   entry: ChannelLedgerEntry,
-  // Accepted for call-site symmetry with maybeCrystallize / the ledger key; the
-  // canonical channel id POSTed to the facilitator is read from the voucher
-  // payload (the signed value), not this param.
-  _channelId: string,
+  // The ledger-key channel id. Used as a cheap correctness guard: it must match
+  // the SIGNED voucher's payload.channelId before we POST, so we never lock a
+  // voucher under the wrong channel. The value actually POSTed is the voucher's
+  // own payload.channelId (the signed value).
+  channelId: string,
   facilitatorUrl: string,
   network: TabNetworkId,
   fetchImpl: typeof fetch = fetch,
 ): Promise<CrystallizeResult> {
   const voucher = entry.lastVoucher;
   if (!voucher) return { crystallized: false };
+
+  // Guard: never crystallize a voucher whose signed channelId disagrees with the
+  // ledger key we were asked to lock. Surfaced as a result, never thrown.
+  if (voucher.payload.channelId !== channelId) {
+    return { crystallized: false, error: 'channel_id_mismatch' };
+  }
 
   try {
     const url = `${facilitatorUrl.replace(/\/$/, '')}/tab/lock`;
@@ -91,6 +100,9 @@ export async function crystallizeNow(
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
+      // Bounded POST: an unresponsive facilitator aborts here → AbortError →
+      // caught below → best-effort { crystallized: false } (no advance, retries).
+      signal: AbortSignal.timeout(CRYSTALLIZE_TIMEOUT_MS),
     });
     const text = await res.text();
     if (!res.ok) {
@@ -117,9 +129,13 @@ export async function crystallizeNow(
  *   delivered - lastCrystallized >= thresholdAtomic
  *
  * No-op below threshold. On a successful POST, advances
- * `entry.lastCrystallizedCumulativeAtomic` to the delivered cumulative that was
- * crystallized so the next call doesn't double-fire. On a FAILED POST it does
- * NOT advance (so the next threshold check retries). Never throws.
+ * `entry.lastCrystallizedCumulativeAtomic` to the cumulative of the VOUCHER that
+ * was POSTed (`lastVoucher.payload.cumulativeAmount`) — the value actually
+ * crystallized on-chain — so the watermark is truthful (it tracks the highest
+ * voucher cumulative secured, not a delivered snapshot). The meter caps delivery
+ * at the signed voucher, so the voucher cumulative >= delivered: crystallizing
+ * it secures at least what's delivered — conservative and correct. On a FAILED
+ * POST it does NOT advance (so the next threshold check retries). Never throws.
  */
 export async function maybeCrystallize(
   entry: ChannelLedgerEntry,
@@ -137,11 +153,12 @@ export async function maybeCrystallize(
     return { crystallized: false };
   }
 
-  // Snapshot the cumulative we're about to crystallize BEFORE the POST, so an
-  // in-flight delivery bump doesn't let us advance past what the lock covered.
-  const target = entry.deliveredCumulativeAtomic;
+  // The voucher we're about to POST is what actually gets crystallized on-chain;
+  // capture ITS cumulative as the watermark target (FIX C1). Read before the
+  // POST so an in-flight voucher swap can't let us advance past what we locked.
+  const target = entry.lastVoucher?.payload.cumulativeAmount;
   const result = await crystallizeNow(entry, channelId, facilitatorUrl, network, deps.fetchImpl);
-  if (result.crystallized) {
+  if (result.crystallized && target !== undefined) {
     entry.lastCrystallizedCumulativeAtomic = target;
   }
   return result;
