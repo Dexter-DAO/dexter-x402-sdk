@@ -88,9 +88,7 @@ if (resolved.kind === 'terms') {
 
 ## Accept tabs on your API (seller)
 
-> **Just want to get paid by agents?** [**SELLER.md**](./SELLER.md) is the focused,
-> self-contained seller integration guide — read it (or point your coding agent at it)
-> and wire in in one pass. The rest of this README is the full package reference.
+You get paid for what you serve. As an agent spends against its tab, accrued charges crystallize on-chain into a reservation against the buyer's wallet — sized to exactly what's accrued, not the whole wallet — so the buyer can't withdraw out from under your charges. One on-chain settle at close pays your `sellerPubkey` for everything metered; you hold no key and sign nothing.
 
 `tabOrExactMiddleware` is the recommended default: one middleware that advertises a tab and a one-shot price in a single 402 challenge, so agents pay by tab and one-shot callers pay exact, at the same price.
 
@@ -104,13 +102,15 @@ app.get('/paid/tick',
     if ((req as X402Request).x402) { res.json({ data: '...', paidVia: 'exact' }); return; } // exact rail
     const tab = requireTab(req);                                                              // tab rail
     const meter = openSse(res, { tab, perUnit: '0.01' });
-    await meter.charge(1);
+    await meter.charge(1);                  // demand a fresh voucher; throws if the cap is exceeded
     meter.send(JSON.stringify({ data: '...' }));
-    await meter.end();
+    await meter.end();                      // ALWAYS await — persists the final delivered amount
   });
 ```
 
 For a tab-only endpoint, compose the two middlewares directly: `tabChallengeMiddleware` (answers voucher-less requests with the standard x402 challenge, so any agent can discover you) before `tabMiddleware` (verifies the per-charge vouchers). Both are exported from `@dexterai/x402/tab/seller`.
+
+**At scale:** the default per-channel ledger enforces one live stream per tab within a single process. If you run multiple instances behind a load balancer, back the ledger with an atomic lease (Redis `SET NX PX`, Postgres advisory lock / `INSERT ON CONFLICT`) or route a tab's requests to a consistent instance; single-process sellers need nothing extra. The on-chain program is pre-audit — see [Why you can trust it](#why-you-can-trust-it).
 
 ---
 
