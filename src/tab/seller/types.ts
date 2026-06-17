@@ -58,6 +58,11 @@ export interface SellerTab {
    * per request on the terminal path (end / cap-reject / disconnect).
    */
   recordDelivered(incrementAtomic: AtomicAmount): Promise<void>;
+  /**
+   * Release the channel's single-stream lease; called by the meter on the
+   * terminal path.
+   */
+  releaseLease(): Promise<void>;
 }
 
 /** Options for `tabMiddleware`. */
@@ -76,6 +81,11 @@ export interface TabMiddlewareOptions {
    * your own ChannelLedger for restart-safe revenue + resumeTab support.
    */
   ledger?: ChannelLedger;
+  /**
+   * Max single-stream duration before a crashed holder's lease auto-expires.
+   * Default 300000 (5 min).
+   */
+  leaseTtlMs?: number;
   /**
    * Hard cap on a single voucher's incremental amount. Protects the seller's
    * middleware from accepting a buyer trying to slip in a giant single
@@ -114,7 +124,8 @@ export class InvalidVoucherError extends Error {
       | 'cap_exceeded'
       | 'session_expired'
       | 'wrong_counterparty'
-      | 'non_monotonic',
+      | 'non_monotonic'
+      | 'channel_busy',
     detail?: string,
   ) {
     super(`Invalid voucher: ${reason}${detail ? ` (${detail})` : ''}`);

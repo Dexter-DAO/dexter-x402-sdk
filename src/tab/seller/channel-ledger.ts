@@ -61,12 +61,30 @@ export interface ChannelLedgerEntry {
   deliveredCumulativeAtomic: AtomicAmount;
   /** RESERVED (Step 4): on-chain money ledger snapshot. Unset today. */
   onChain?: OnChainLedgerSnapshot;
+  /**
+   * Active-stream lease. Set while a meter is live on this channel; cleared on
+   * the meter's terminal path. `heldUntilUnixMs` is a TTL so a crashed holder's
+   * lease auto-expires (a stuck lease would otherwise block the buyer's own
+   * next request on this tab). Enforces one live stream per channel — the
+   * defense against the concurrent-same-channel over-delivery rug.
+   */
+  lease?: { heldUntilUnixMs: number };
 }
 
 export interface ChannelLedger {
   get(channelId: string): Promise<ChannelLedgerEntry | null>;
   set(channelId: string, entry: ChannelLedgerEntry): Promise<void>;
   delete(channelId: string): Promise<void>;
+  /**
+   * Atomically acquire the channel's single-stream lease if free or expired.
+   * Returns true if acquired, false if another live stream holds it. The
+   * in-process/file impls serialize via the per-channel lock (correct for a
+   * single seller process). A multi-instance seller MUST back this with a store
+   * that makes acquire atomic across processes (Redis SETNX, Postgres, ...).
+   */
+  tryAcquireLease(channelId: string, ttlMs: number): Promise<boolean>;
+  /** Release the channel's lease (no-op if not held). */
+  releaseLease(channelId: string): Promise<void>;
 }
 
 // ── In-memory ledger (zero-config default; loses state on restart) ──────
@@ -85,6 +103,25 @@ export class InMemoryChannelLedger implements ChannelLedger {
   async delete(channelId: string): Promise<void> {
     this.map.delete(channelId);
   }
+
+  async tryAcquireLease(channelId: string, ttlMs: number): Promise<boolean> {
+    return withChannelLock(channelId, async () => {
+      const cur = this.map.get(channelId);
+      const now = Date.now();
+      if (cur?.lease && cur.lease.heldUntilUnixMs > now) return false; // held & unexpired
+      const base: ChannelLedgerEntry =
+        cur ?? { lastVoucher: null as any, deliveredCumulativeAtomic: '0' };
+      this.map.set(channelId, { ...base, lease: { heldUntilUnixMs: now + ttlMs } });
+      return true;
+    });
+  }
+
+  async releaseLease(channelId: string): Promise<void> {
+    await withChannelLock(channelId, async () => {
+      const cur = this.map.get(channelId);
+      if (cur) this.map.set(channelId, { ...cur, lease: undefined });
+    });
+  }
 }
 
 // ── Serialization helpers (Uint8Array voucher fields → hex) ─────────────
@@ -98,6 +135,7 @@ interface SerializedEntry {
   };
   deliveredCumulativeAtomic: AtomicAmount;
   onChain?: OnChainLedgerSnapshot;
+  lease?: { heldUntilUnixMs: number };
 }
 
 function bytesToHex(b: Uint8Array): string {
@@ -123,6 +161,7 @@ function serialize(entry: ChannelLedgerEntry): SerializedEntry {
     },
     deliveredCumulativeAtomic: entry.deliveredCumulativeAtomic,
     onChain: entry.onChain,
+    lease: entry.lease,
   };
 }
 
@@ -136,6 +175,7 @@ function deserialize(s: SerializedEntry): ChannelLedgerEntry {
     },
     deliveredCumulativeAtomic: s.deliveredCumulativeAtomic,
     onChain: s.onChain,
+    lease: s.lease,
   };
 }
 
@@ -180,5 +220,24 @@ export class FileChannelLedger implements ChannelLedger {
     } catch (e: any) {
       if (e?.code !== 'ENOENT') throw e;
     }
+  }
+
+  async tryAcquireLease(channelId: string, ttlMs: number): Promise<boolean> {
+    return withChannelLock(channelId, async () => {
+      const cur = await this.get(channelId);
+      const now = Date.now();
+      if (cur?.lease && cur.lease.heldUntilUnixMs > now) return false;
+      const base: ChannelLedgerEntry =
+        cur ?? { lastVoucher: null as any, deliveredCumulativeAtomic: '0' };
+      await this.set(channelId, { ...base, lease: { heldUntilUnixMs: now + ttlMs } });
+      return true;
+    });
+  }
+
+  async releaseLease(channelId: string): Promise<void> {
+    await withChannelLock(channelId, async () => {
+      const cur = await this.get(channelId);
+      if (cur) await this.set(channelId, { ...cur, lease: undefined });
+    });
   }
 }

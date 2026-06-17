@@ -54,6 +54,7 @@ async function makeStubTab(
         deliveredCumulativeAtomic: (base + (BigInt(incrementAtomic) > 0n ? BigInt(incrementAtomic) : 0n)).toString(),
       });
     },
+    releaseLease: async () => {},
   };
 }
 
@@ -145,6 +146,7 @@ describe('SellerTabImpl delivered hooks', () => {
       BigInt(humanToAtomic('0.20')),         // signed cumulative
       BigInt(humanToAtomic('0.05')),         // delivered baseline
       async (cumAtomic: string) => { recorded.push(cumAtomic); },
+      async () => {},                        // releaseLease stub
       async () => { throw new Error('tab.charge stub'); },
     );
     expect(tab.cumulative()).toBe(atomicToHuman(humanToAtomic('0.20')));
@@ -152,5 +154,41 @@ describe('SellerTabImpl delivered hooks', () => {
     await tab.recordDelivered(humanToAtomic('0.12'));
     expect(recorded).toEqual([humanToAtomic('0.12')]);
     void ledger;
+  });
+});
+
+describe('meter releases the channel lease on every terminal path', () => {
+  const channelId = 'a'.repeat(64);
+  function tabWithReleaseSpy(signed: string, ledger: InMemoryChannelLedger, released: { n: number }) {
+    return {
+      channelId, network: 'solana:mainnet', sessionPublicKey: new Uint8Array(32),
+      cumulative: () => signed,
+      deliveredCumulative: () => '0',
+      charge: async () => { throw new Error('stub'); },
+      recordDelivered: async () => { void ledger; },
+      releaseLease: async () => { released.n += 1; },
+    } as SellerTab;
+  }
+  it('clean end releases once', async () => {
+    const released = { n: 0 };
+    const m = openSse(fakeSseRes(), { tab: tabWithReleaseSpy('0.10', new InMemoryChannelLedger(), released), perUnit: '0.01' });
+    await m.charge(1); await m.end();
+    expect(released.n).toBe(1);
+  });
+  it('cap-reject releases once', async () => {
+    const released = { n: 0 };
+    const m = openSse(fakeSseRes(), { tab: tabWithReleaseSpy('0.01', new InMemoryChannelLedger(), released), perUnit: '0.01' });
+    await m.charge(1);
+    await expect(m.charge(1)).rejects.toThrow(/cumulative_exceeds_cap/);
+    expect(released.n).toBe(1);
+  });
+  it('disconnect releases once', async () => {
+    const released = { n: 0 };
+    const res = fakeSseRes();
+    const m = openSse(res, { tab: tabWithReleaseSpy('0.10', new InMemoryChannelLedger(), released), perUnit: '0.01' });
+    await m.charge(1);
+    res._emit('close');
+    await flushMicrotasks();
+    expect(released.n).toBe(1);
   });
 });

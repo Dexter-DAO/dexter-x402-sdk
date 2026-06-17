@@ -113,3 +113,30 @@ describe('FileChannelLedger', () => {
     }
   });
 });
+
+describe('channel lease — reject concurrent same-channel metering', () => {
+  const channelId = 'f'.repeat(64);
+
+  it('acquires when free, refuses while held, re-acquires after release', async () => {
+    const ledger = new InMemoryChannelLedger();
+    expect(await ledger.tryAcquireLease(channelId, 60_000)).toBe(true);
+    expect(await ledger.tryAcquireLease(channelId, 60_000)).toBe(false); // held
+    await ledger.releaseLease(channelId);
+    expect(await ledger.tryAcquireLease(channelId, 60_000)).toBe(true);  // free again
+  });
+
+  it('re-acquires after the lease TTL expires (crashed-holder safety)', async () => {
+    const ledger = new InMemoryChannelLedger();
+    expect(await ledger.tryAcquireLease(channelId, 5)).toBe(true); // 5ms TTL
+    await new Promise((r) => setTimeout(r, 15));
+    expect(await ledger.tryAcquireLease(channelId, 60_000)).toBe(true); // expired → free
+  });
+
+  it('preserves deliveredCumulative across lease acquire/release', async () => {
+    const ledger = new InMemoryChannelLedger();
+    await ledger.set(channelId, { lastVoucher: fakeVoucher(channelId, '100000'), deliveredCumulativeAtomic: '70000' });
+    await ledger.tryAcquireLease(channelId, 60_000);
+    await ledger.releaseLease(channelId);
+    expect((await ledger.get(channelId))?.deliveredCumulativeAtomic).toBe('70000');
+  });
+});

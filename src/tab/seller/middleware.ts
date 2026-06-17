@@ -105,6 +105,7 @@ export class SellerTabImpl implements SellerTab {
     initialCumulative: bigint,
     deliveredBaselineAtomic: bigint,
     private readonly recordDeliveredImpl: (cumulativeAtomic: string) => Promise<void>,
+    private readonly releaseLeaseImpl: () => Promise<void>,
     private readonly chargeImpl: (incrementHuman: HumanAmount) => Promise<void>,
   ) {
     this.channelId = channelId;
@@ -123,6 +124,10 @@ export class SellerTabImpl implements SellerTab {
 
   async recordDelivered(cumulativeAtomic: AtomicAmount): Promise<void> {
     return this.recordDeliveredImpl(cumulativeAtomic);
+  }
+
+  async releaseLease(): Promise<void> {
+    return this.releaseLeaseImpl();
   }
 
   bumpCumulative(toAtomic: bigint): void {
@@ -253,6 +258,16 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
         );
       }
 
+      // 5b. One live stream per channel: acquire the lease or reject. Closes the
+      //     concurrent-same-channel over-delivery rug.
+      const leaseTtlMs = config.leaseTtlMs ?? 300_000;
+      if (!(await ledger.tryAcquireLease(channelId, leaseTtlMs))) {
+        throw new InvalidVoucherError(
+          'channel_busy',
+          'another stream is live on this channel; tabs serve one stream at a time',
+        );
+      }
+
       // 6. Read the durable delivered baseline for the budget, then persist the
       //    accepted voucher WITHOUT touching delivered (delivered only advances
       //    on the meter's terminal path). Locked so a concurrent request can't
@@ -289,6 +304,11 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
               onChain: cur?.onChain,
             });
           });
+        },
+        // releaseLease: the meter calls this on terminal events to free the
+        // channel's single-stream lease for the buyer's next request.
+        async () => {
+          await ledger.releaseLease(channelId);
         },
         // charge stub (unchanged): the route handler doesn't drive charging.
         async (_inc) => {
