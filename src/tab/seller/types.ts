@@ -94,7 +94,7 @@ export interface OpenSseOptions {
 export interface SseMeter {
   charge(units?: number): Promise<void>;
   send(chunk: string | Uint8Array): void;
-  end(): void;
+  end(): Promise<void>;
 }
 
 /** Errors thrown by the seller middleware on bad vouchers. */

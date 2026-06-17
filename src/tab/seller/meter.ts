@@ -49,54 +49,80 @@ export function openSse(res: Response, options: OpenSseOptions): SseMeter {
   }
 
   const tab: SellerTab = options.tab;
-  // Cumulative budget for THIS request: what the buyer authorized via the
-  // voucher header. The middleware put it in tab.cumulative() already.
-  const budgetAtomic = BigInt(humanToAtomic(tab.cumulative()));
 
-  // Per-chunk unit price. Defaults are passed via tabMiddleware's perUnit;
-  // openSse can override.
+  // Per-request budget = what the buyer authorized via THIS voucher's signed
+  // cumulative, MINUS what the meter has already delivered on this channel
+  // across prior requests (read from the ChannelLedger at request start).
+  // This enforces lifetime `delivered ≤ signed` and carries unused budget
+  // forward — closing the channel-reuse leak where budgeting against the full
+  // lifetime cumulative let the seller re-deliver it every request.
+  const signedAtomic = BigInt(humanToAtomic(tab.cumulative()));
+  const deliveredBaselineAtomic = BigInt(humanToAtomic(tab.deliveredCumulative()));
+  let budgetAtomic = signedAtomic - deliveredBaselineAtomic;
+  if (budgetAtomic < 0n) budgetAtomic = 0n; // defensive; monotonicity upstream prevents this
+
   const perUnitAtomic = options.perUnit
     ? BigInt(humanToAtomic(options.perUnit))
     : null;
 
-  // Cumulative the meter has authorized so far on this request.
+  // Cumulative delivered DURING this request (resets per request, as before).
   let chargedAtomic = 0n;
   let ended = false;
 
-  function charge(units = 1): Promise<void> {
-    if (ended) return Promise.reject(new Error('meter ended'));
-    if (perUnitAtomic === null) {
-      return Promise.reject(new Error('charge() needs options.perUnit'));
-    }
+  // Persist the lifetime delivered cumulative (baseline + this request's
+  // delivery) to the ledger. Called on EVERY terminal path — clean end,
+  // cap-exceeded, AND client disconnect/abort — so a buyer CANNOT grief the
+  // seller by consuming service then dropping the connection before end()
+  // (that would otherwise leave delivered un-advanced and re-grant the budget
+  // next request — a quadratic giveaway). The only unpersisted window left is a
+  // hard process crash: not buyer-controllable, bounded to in-flight requests,
+  // same class as the existing voucher-store crash window. Per-chunk
+  // checkpointing would only SHRINK that hard-crash window (never close it —
+  // you can always crash between chunk and write) at a write-per-token cost, so
+  // we persist per terminal event instead.
+  async function persistDelivered(): Promise<void> {
+    await tab.recordDelivered((deliveredBaselineAtomic + chargedAtomic).toString());
+  }
+
+  // Buyer-controlled termination: if the client drops the connection mid-stream
+  // the underlying response emits 'close'; commit what we delivered. Best-effort
+  // (can't await in an event handler), but the ledger write completes because on
+  // a disconnect the process is still alive. Guarded by `ended` so a normal
+  // end() — which also emits 'close' via res.end() — doesn't double-write.
+  res.on('close', () => {
+    if (ended) return;
+    ended = true;
+    void persistDelivered();
+  });
+
+  async function charge(units = 1): Promise<void> {
+    if (ended) throw new Error('meter ended');
+    if (perUnitAtomic === null) throw new Error('charge() needs options.perUnit');
     const inc = perUnitAtomic * BigInt(units);
     const next = chargedAtomic + inc;
     if (next > budgetAtomic) {
-      return Promise.reject(
-        new ScopeViolationError(
-          'cumulative_exceeds_cap',
-          `chunk would push request total to ${atomicToHuman(next.toString())} ` +
-          `beyond voucher-authorized budget ${atomicToHuman(budgetAtomic.toString())}`,
-        ),
+      await persistDelivered(); // commit what we DID deliver before refusing
+      throw new ScopeViolationError(
+        'cumulative_exceeds_cap',
+        `chunk would push delivered to ${atomicToHuman((deliveredBaselineAtomic + next).toString())} ` +
+        `beyond signed cumulative ${atomicToHuman(signedAtomic.toString())} ` +
+        `(per-request budget ${atomicToHuman(budgetAtomic.toString())})`,
       );
     }
     chargedAtomic = next;
-    return Promise.resolve();
   }
 
   function send(chunk: string | Uint8Array): void {
     if (ended) throw new Error('meter ended');
     const data = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
-    // SSE format: each event is a line `data: <payload>\n\n`.
-    // We escape newlines inside the payload so the event boundary is clear.
     const escaped = data.replace(/\n/g, '\\n');
     res.write(`data: ${escaped}\n\n`);
   }
 
-  function end(): void {
+  async function end(): Promise<void> {
     if (ended) return;
     ended = true;
-    // SSE close: write an empty event so EventSource sees a clean end,
-    // then end the underlying response.
+    await persistDelivered();
     res.write(`event: end\ndata: {"chargedAtomic":"${chargedAtomic}"}\n\n`);
     res.end();
   }
