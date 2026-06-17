@@ -25,3 +25,6 @@ scripts/receipts/
 
 # Internal agent-workflow docs (plans/specs/research) — private, not for the public SDK
 docs/superpowers/
+
+# Internal/working docs — private, not for the public SDK (kept locally)
+docs/
