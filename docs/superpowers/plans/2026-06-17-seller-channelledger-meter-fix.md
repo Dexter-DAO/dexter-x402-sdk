@@ -430,18 +430,25 @@ import { InMemoryChannelLedger } from '../channel-ledger';
 import type { SellerTab } from '../types';
 import { atomicToHuman, humanToAtomic } from '../../tab';
 
-// Minimal SSE-capable fake Express Response that records writes.
+// Minimal SSE-capable fake Express Response that records writes and supports
+// the 'close' event (for the buyer-disconnect anti-grief test).
 function fakeSseRes() {
   const writes: string[] = [];
+  const listeners: Record<string, Array<() => void>> = {};
   return {
     headersSent: false,
     setHeader() {},
     flushHeaders() {},
     write(s: string) { writes.push(s); return true; },
     end() {},
+    on(event: string, cb: () => void) { (listeners[event] ??= []).push(cb); return this; },
+    _emit(event: string) { (listeners[event] ?? []).forEach((cb) => cb()); },
     _writes: writes,
   } as any;
 }
+
+// Flush the fire-and-forget persist kicked off by the 'close' handler.
+const flushMicrotasks = () => new Promise((r) => setTimeout(r, 0));
 
 // A SellerTab stub backed by the ledger. Mirrors the real middleware: the
 // delivered baseline is read ONCE (async) and captured synchronously; the
@@ -521,6 +528,32 @@ describe('openSse delivered-ledger budget — no channel-reuse leak', () => {
     // delivered persisted at the cap even though end() was never called.
     expect((await ledger.get(channelId))?.deliveredCumulativeAtomic).toBe(humanToAtomic('0.03'));
   });
+
+  it('persists delivered when the buyer disconnects mid-stream before end() (anti-grief)', async () => {
+    const ledger = new InMemoryChannelLedger();
+    const tab = await makeStubTab(channelId, '0.10', ledger);
+    const res = fakeSseRes();
+    const meter = openSse(res, { tab, perUnit: '0.01' });
+    await meter.charge(1);
+    await meter.charge(1); // delivered 0.02 in-flight, never reached end()
+    res._emit('close');     // buyer drops the connection
+    await flushMicrotasks(); // let the fire-and-forget persist settle
+    // Without the close-handler this would be null/0 → req2 re-grants budget
+    // (the quadratic giveaway). With it, delivered is committed at 0.02.
+    expect((await ledger.get(channelId))?.deliveredCumulativeAtomic).toBe(humanToAtomic('0.02'));
+  });
+
+  it('does not double-write on a normal end() (the res.end()-triggered close is ignored)', async () => {
+    const ledger = new InMemoryChannelLedger();
+    const tab = await makeStubTab(channelId, '0.10', ledger);
+    const res = fakeSseRes();
+    const meter = openSse(res, { tab, perUnit: '0.01' });
+    await meter.charge(1); // 0.01
+    await meter.end();     // sets ended=true, persists 0.01
+    res._emit('close');    // would fire after res.end(); must be a no-op
+    await flushMicrotasks();
+    expect((await ledger.get(channelId))?.deliveredCumulativeAtomic).toBe(humanToAtomic('0.01'));
+  });
 });
 ```
 
@@ -556,12 +589,30 @@ Rewrite the body of `openSse` in `src/tab/seller/meter.ts`. Replace the block fr
   let ended = false;
 
   // Persist the lifetime delivered cumulative (baseline + this request's
-  // delivery) to the ledger. Called on terminal events only — stream end and
-  // cap-exceeded — so we write once per request, not per chunk. Crash window =
-  // one request's delivery, same as the voucher-persistence window.
+  // delivery) to the ledger. Called on EVERY terminal path — clean end,
+  // cap-exceeded, AND client disconnect/abort — so a buyer CANNOT grief the
+  // seller by consuming service then dropping the connection before end()
+  // (that would otherwise leave delivered un-advanced and re-grant the budget
+  // next request — a quadratic giveaway). The only unpersisted window left is a
+  // hard process crash: not buyer-controllable, bounded to in-flight requests,
+  // same class as the existing voucher-store crash window. Per-chunk
+  // checkpointing would only SHRINK that hard-crash window (never close it —
+  // you can always crash between chunk and write) at a write-per-token cost, so
+  // we persist per terminal event instead.
   async function persistDelivered(): Promise<void> {
     await tab.recordDelivered((deliveredBaselineAtomic + chargedAtomic).toString());
   }
+
+  // Buyer-controlled termination: if the client drops the connection mid-stream
+  // the underlying response emits 'close'; commit what we delivered. Best-effort
+  // (can't await in an event handler), but the ledger write completes because on
+  // a disconnect the process is still alive. Guarded by `ended` so a normal
+  // end() — which also emits 'close' via res.end() — doesn't double-write.
+  res.on('close', () => {
+    if (ended) return;
+    ended = true;
+    void persistDelivered();
+  });
 
   async function charge(units = 1): Promise<void> {
     if (ended) throw new Error('meter ended');
@@ -603,7 +654,7 @@ In `src/tab/seller/types.ts`, change `SseMeter.end` from `end(): void;` to `end(
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run src/tab/seller/__tests__/meter.test.ts`
-Expected: PASS (3 tests).
+Expected: PASS (5 tests — first-request budget, two-request-reuse, cap-reject persist, buyer-disconnect anti-grief, no-double-write-on-end).
 
 - [ ] **Step 5: Commit**
 
@@ -926,4 +977,4 @@ Leave this task unchecked as a tracked marker. Do not write code for it in this 
 - `SseMeter.end` → `Promise<void>` (Task 3) — callers updated: tests `await meter.end()` (Task 3), docstring `await meter.end()` (Task 6). ✅
 - `AtomicAmount` (atomic string) vs `HumanAmount` — `deliveredCumulativeAtomic` and `recordDelivered` are atomic; `cumulative()`/`deliveredCumulative()` return human; conversions via `humanToAtomic`/`atomicToHuman` (from `../tab`) in the meter and impl. ✅
 
-**Known follow-up (documented, not a gap):** crash durability is per-request (delivered persists on terminal events only), matching the existing voucher-persistence window — noted in `persistDelivered` and Task 2. A per-chunk checkpoint option is YAGNI for v1.
+**Anti-grief (closed in Task 3):** `deliveredCumulative` persists on EVERY terminal path — clean `end()`, cap-reject, AND buyer disconnect (`res.on('close')`). This closes the buyer-controllable griefing window (consume service → drop connection before `end()` → delivered un-advanced → budget re-granted next request = a quadratic giveaway). Covered by the `buyer disconnects mid-stream` and `no double-write on end()` tests. The only residual unpersisted window is a hard process crash (SIGKILL/power loss between the last in-memory charge and the persist) — NOT buyer-controllable, bounded to in-flight requests, same class as the existing voucher-store crash window. Per-chunk checkpointing would only shrink that hard-crash window, never close it, at a write-per-token cost → YAGNI for v1.
