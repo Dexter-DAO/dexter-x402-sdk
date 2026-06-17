@@ -76,6 +76,16 @@ export interface ChannelLedgerEntry {
    * requests. Monotonic; never reset. The leak-fix field.
    */
   deliveredCumulativeAtomic: AtomicAmount;
+  /**
+   * Delivered cumulative (atomic) that the seller has already crystallized into
+   * an on-chain LockedClaim via the keyless `/tab/lock` cadence (Step-4). The
+   * crystallization cadence fires when `deliveredCumulativeAtomic −
+   * lastCrystallizedCumulativeAtomic` crosses the configured threshold, then
+   * advances this on a successful lock so it can't double-fire. Treated as
+   * `'0'` when absent (older entries / lease-only entries). Optional so
+   * pre-Step-4 ledger constructors remain valid without a breaking change.
+   */
+  lastCrystallizedCumulativeAtomic?: AtomicAmount;
   /** RESERVED (Step 4): on-chain money ledger snapshot. Unset today. */
   onChain?: OnChainLedgerSnapshot;
   /**
@@ -127,7 +137,7 @@ export class InMemoryChannelLedger implements ChannelLedger {
       const now = Date.now();
       if (cur?.lease && cur.lease.heldUntilUnixMs > now) return false; // held & unexpired
       const base: ChannelLedgerEntry =
-        cur ?? { lastVoucher: null, deliveredCumulativeAtomic: '0' };
+        cur ?? { lastVoucher: null, deliveredCumulativeAtomic: '0', lastCrystallizedCumulativeAtomic: '0' };
       this.map.set(channelId, { ...base, lease: { heldUntilUnixMs: now + ttlMs } });
       return true;
     });
@@ -151,6 +161,7 @@ interface SerializedEntry {
     sessionSignature: string;
   } | null;
   deliveredCumulativeAtomic: AtomicAmount;
+  lastCrystallizedCumulativeAtomic?: AtomicAmount;
   onChain?: OnChainLedgerSnapshot;
   lease?: { heldUntilUnixMs: number };
 }
@@ -179,6 +190,7 @@ function serialize(entry: ChannelLedgerEntry): SerializedEntry {
         }
       : null,
     deliveredCumulativeAtomic: entry.deliveredCumulativeAtomic,
+    lastCrystallizedCumulativeAtomic: entry.lastCrystallizedCumulativeAtomic,
     onChain: entry.onChain,
     lease: entry.lease,
   };
@@ -195,6 +207,7 @@ function deserialize(s: SerializedEntry): ChannelLedgerEntry {
         }
       : null,
     deliveredCumulativeAtomic: s.deliveredCumulativeAtomic,
+    lastCrystallizedCumulativeAtomic: s.lastCrystallizedCumulativeAtomic ?? '0',
     onChain: s.onChain,
     lease: s.lease,
   };
@@ -249,7 +262,7 @@ export class FileChannelLedger implements ChannelLedger {
       const now = Date.now();
       if (cur?.lease && cur.lease.heldUntilUnixMs > now) return false;
       const base: ChannelLedgerEntry =
-        cur ?? { lastVoucher: null, deliveredCumulativeAtomic: '0' };
+        cur ?? { lastVoucher: null, deliveredCumulativeAtomic: '0', lastCrystallizedCumulativeAtomic: '0' };
       await this.set(channelId, { ...base, lease: { heldUntilUnixMs: now + ttlMs } });
       return true;
     });

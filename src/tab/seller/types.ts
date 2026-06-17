@@ -87,6 +87,20 @@ export interface TabMiddlewareOptions {
    * voucher. Default: 100x `perUnit`.
    */
   maxPerVoucherAtomic?: AtomicAmount;
+  /**
+   * Keyless crystallization cadence (Step-4 lock-mode). On the configured
+   * delivered-amount threshold — and at tab close — the meter POSTs the
+   * buyer's already-stored signed voucher to `${facilitatorUrl}/tab/lock`,
+   * crystallizing it into an on-chain LockedClaim. BEST-EFFORT: a failed
+   * crystallize never blocks or errors the seller's response; a missed lock
+   * just widens the seller's unsecured window (their risk dial).
+   *
+   * Defaults when omitted: `{ thresholdAtomic: humanToAtomic('0.10'),
+   * onClose: true }`. Set `thresholdAtomic` higher to crystallize less often
+   * (cheaper, wider window) or lower to lock more aggressively. Set
+   * `onClose: false` to skip the close-time lock.
+   */
+  lockCadence?: { thresholdAtomic?: string; onClose?: boolean };
 }
 
 /**
