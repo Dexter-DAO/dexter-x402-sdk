@@ -90,17 +90,13 @@ export function openSse(res: Response, options: OpenSseOptions): SseMeter {
   // checkpointing would only SHRINK that hard-crash window (never close it —
   // you can always crash between chunk and write) at a write-per-token cost, so
   // we persist per terminal event instead.
-  async function persistDelivered(): Promise<void> {
-    await tab.recordDelivered(chargedAtomic.toString());
-  }
-
-  // Terminal path: persist what we delivered, then free the channel's
-  // single-stream lease so the buyer's next request on this tab can proceed.
+  // Terminal path: persist what we delivered. The lease is NOT touched here —
+  // its release is owned by the request lifecycle in tabMiddleware (res.on
+  // 'close'/'finish'), so a handler that never opens a meter still releases.
   // Called on EVERY terminal path (clean end, cap-reject, disconnect), each
   // guarded by `ended` so it fires exactly once.
-  async function finishRequest(): Promise<void> {
-    await persistDelivered();
-    await tab.releaseLease();
+  async function persistDelivered(): Promise<void> {
+    await tab.recordDelivered(chargedAtomic.toString());
   }
 
   // Buyer-controlled termination: if the client drops the connection mid-stream
@@ -111,11 +107,10 @@ export function openSse(res: Response, options: OpenSseOptions): SseMeter {
   res.on('close', () => {
     if (ended) return;
     ended = true;
-    void finishRequest().catch((err) => {
-      // Best-effort: a failed disconnect-persist/release must not crash the
-      // process. The residual unpersisted window is the documented hard-crash
-      // case; the lease's TTL also auto-expires a never-released lease.
-      console.error('[tab/seller] terminal persist/release failed on disconnect:', err);
+    void persistDelivered().catch((err) => {
+      // Best-effort: a failed disconnect-persist must not crash the process. The
+      // residual unpersisted window is the documented hard-crash case.
+      console.error('[tab/seller] terminal persist failed on disconnect:', err);
     });
   });
 
@@ -126,7 +121,7 @@ export function openSse(res: Response, options: OpenSseOptions): SseMeter {
     const next = chargedAtomic + inc;
     if (next > budgetAtomic) {
       ended = true; // terminate: no further send()/charge() past the cap
-      await finishRequest(); // commit what we DID deliver + free the lease before refusing
+      await persistDelivered(); // commit what we DID deliver before refusing
       throw new ScopeViolationError(
         'cumulative_exceeds_cap',
         `chunk would push delivered to ${atomicToHuman((deliveredBaselineAtomic + next).toString())} ` +
@@ -147,7 +142,7 @@ export function openSse(res: Response, options: OpenSseOptions): SseMeter {
   async function end(): Promise<void> {
     if (ended) return;
     ended = true;
-    await finishRequest();
+    await persistDelivered();
     res.write(`event: end\ndata: {"chargedAtomic":"${chargedAtomic}"}\n\n`);
     res.end();
   }

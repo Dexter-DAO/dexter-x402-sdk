@@ -58,11 +58,6 @@ export interface SellerTab {
    * per request on the terminal path (end / cap-reject / disconnect).
    */
   recordDelivered(incrementAtomic: AtomicAmount): Promise<void>;
-  /**
-   * Release the channel's single-stream lease; called by the meter on the
-   * terminal path.
-   */
-  releaseLease(): Promise<void>;
 }
 
 /** Options for `tabMiddleware`. */

@@ -140,6 +140,25 @@ describe('channel lease — reject concurrent same-channel metering', () => {
     expect((await ledger.get(channelId))?.deliveredCumulativeAtomic).toBe('70000');
   });
 
+  it('a voucher-persist-style set that spreads ...cur PRESERVES the lease (BUG 1 guard)', async () => {
+    const ledger = new InMemoryChannelLedger();
+    const ch = 'b'.repeat(64);
+    expect(await ledger.tryAcquireLease(ch, 60_000)).toBe(true);
+    // Mirror the middleware step-6 voucher persist: spread cur, then overwrite
+    // lastVoucher + delivered. Omitting ...cur would erase the lease.
+    const cur = await ledger.get(ch);
+    await ledger.set(ch, { ...cur!, lastVoucher: fakeVoucher(ch, '1000'), deliveredCumulativeAtomic: '0' });
+    // Lease must still be held — a concurrent acquire fails.
+    expect(await ledger.tryAcquireLease(ch, 60_000)).toBe(false);
+
+    // Mirror the recordDelivered persist: another ...cur set advancing delivered.
+    const cur2 = await ledger.get(ch);
+    await ledger.set(ch, { ...cur2!, deliveredCumulativeAtomic: '5' });
+    // Lease STILL held after the second write.
+    expect(await ledger.tryAcquireLease(ch, 60_000)).toBe(false);
+    expect((await ledger.get(ch))?.deliveredCumulativeAtomic).toBe('5');
+  });
+
   it('FileChannelLedger acquires a lease on a FRESH channel without throwing (durable-path regression)', async () => {
     // The first request on any channel acquires the lease BEFORE any voucher is
     // persisted (middleware step 5b precedes step 6). On a durable/file ledger
