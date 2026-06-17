@@ -43,6 +43,17 @@ export interface SellerTab {
    * monotonicity check fails. The middleware persists on success.
    */
   charge(incrementHuman: HumanAmount): Promise<void>;
+  /**
+   * Off-chain cumulative (human amount) the meter has DELIVERED on this
+   * channel across ALL requests, read from the ChannelLedger at request start.
+   * The meter's per-request budget is `cumulative() − deliveredCumulative()`.
+   */
+  deliveredCumulative(): HumanAmount;
+  /**
+   * Persist a new delivered-cumulative checkpoint (atomic) to the ledger.
+   * Called by the meter on terminal events (stream end / cap hit).
+   */
+  recordDelivered(cumulativeAtomic: AtomicAmount): Promise<void>;
 }
 
 /** Options for `tabMiddleware`. */
