@@ -921,6 +921,8 @@ export {
 
 3. Fix the docstring example: change `meter.end();` to `await meter.end();` (the meter loop is already inside an `async (req, res)` handler).
 
+4. **README parity (same repo).** `dexter-x402-sdk/README.md` ships a seller example that calls `meter.end();` without await (the `tabOrExactMiddleware` block, ~line 105). Change it to `await meter.end();` so the copy-paste reference matches the now-async API. This rides WITH the meter fix on purpose — version-coupled, so the published README never references a sync `end()` against a build that made it async. (metadexter owns the same edit in his README *draft* `dexter-thesis/architecture/DRAFT-readme-x402-option-a-2026-06-17.md`, which has two such examples — coordinate; not edited by this task.)
+
 - [ ] **Step 2: Run the full seller suite**
 
 Run: `npx vitest run src/tab/seller/`
