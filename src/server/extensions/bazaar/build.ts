@@ -28,13 +28,11 @@
  * silence a validator that's stricter than the spec authorizes.
  *
  * If a future engineer is tempted to "fix" the validator complaints by
- * emitting empty fields here, read first:
- *   - docs/competitive-intel/BRIDGING-SPEC-AND-AGENT-2026-05-20.md
- *     (in the dexter-api repo)
- *   - The bazaar.md spec, especially lines 75 and 410-442
+ * emitting empty fields here, read first the bazaar spec (the relevant
+ * sections cover whether empty fields are required vs accepted).
  *
- * Maintained in this state on purpose. Do not change without revisiting
- * the bridging-spec-and-agent decision.
+ * Maintained in this state on purpose; this reflects a deliberate
+ * spec-vs-validator decision, not an oversight.
  */
 
 import { isValidRouteTemplate } from './route-template';
