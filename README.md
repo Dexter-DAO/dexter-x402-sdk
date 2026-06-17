@@ -88,6 +88,10 @@ if (resolved.kind === 'terms') {
 
 ## Accept tabs on your API (seller)
 
+> **Just want to get paid by agents?** [**SELLER.md**](./SELLER.md) is the focused,
+> self-contained seller integration guide — read it (or point your coding agent at it)
+> and wire in in one pass. The rest of this README is the full package reference.
+
 `tabOrExactMiddleware` is the recommended default: one middleware that advertises a tab and a one-shot price in a single 402 challenge, so agents pay by tab and one-shot callers pay exact, at the same price.
 
 ```ts
