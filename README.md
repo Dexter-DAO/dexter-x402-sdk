@@ -310,9 +310,21 @@ State auto-persists and resumes with `resumeBatchChannel({ wallet, network, salt
 
 `bazaarExtension()` plus `declareDiscoveryExtension(config)` attach a spec-compliant `extensions.bazaar` block to a route's 402; extensions are opt-in and failure-isolated, so the payment path is never affected. `sponsoredAccess` injects `_x402_sponsored` into responses; read it with `getSponsoredRecommendations(response)`. Campaign creation is x402-gated at `x402ads.io`.
 
-### Legacy
+### Removed in v4.0.0 (migration)
 
-v1-era helpers (`wrapFetch`, `createX402Client`, `x402AccessPass`, `createDynamicPricing`, `stripePayTo`, `x402BrowserSupport`) ship `@deprecated` with JSDoc migration targets and keep working. None will be removed in 3.x. New code should use `payAndFetch` and `x402Middleware`.
+The v1-era helpers were removed in `4.0.0`. The payment engine is unchanged — the canonical entrypoints have done their jobs since 3.x:
+
+| Removed | Use instead |
+| --- | --- |
+| `createX402Client(...).fetch(url)` | `payAndFetch(url, init, wallets)` (client) |
+| `wrapFetch(fetch, opts)` | `payAndFetch` (client) — or pass your `WalletSet` directly |
+| `x402AccessPass`, `x402BrowserSupport` | `x402Middleware` (server) |
+| `createDynamicPricing`, `formatPricing` | compute the price per request in your handler, pass it to `x402Middleware` |
+| `createTokenPricing`, `countTokens`, `MODEL_REGISTRY` + model getters | gone — these wrapped a hardcoded Jan-2026 OpenAI snapshot that goes stale; price requests with your model provider's live API and pass the amount to `x402Middleware` |
+| `stripePayTo` | a `PayToProvider` map on `x402Middleware` |
+| `useAccessPass` (react) | `useX402Payment` (react) |
+
+`payAndFetch` speaks both x402 v1 and v2 and returns a discriminated `PayResult`, so it covers everything the old clients did. **EVM one-shot pay-per-call is unchanged** — `payAndFetch` is the EVM path until Tabs reaches EVM. To pin the old surface, stay on `@dexterai/x402@^3`.
 
 ---
 
@@ -322,7 +334,7 @@ v1-era helpers (`wrapFetch`, `createX402Client`, `x402AccessPass`, `createDynami
 npm run build      # ESM + CJS
 npm run dev        # Watch mode
 npm run typecheck
-npm test           # 273 vitest tests
+npm test           # 359 vitest tests
 ```
 
 ## License

@@ -112,13 +112,9 @@ export { X402Error } from '../types';
 export { DEXTER_FACILITATOR_URL, USDC_MINT } from '../types';
 export type { AccessPassClientConfig, AccessPassTier, AccessPassInfo } from '../types';
 
-// ─── @deprecated — predate `payAndFetch` ───────────────────────────────────
-// `createX402Client` and `wrapFetch` were the v2-era client surface. They
-// still work — these exports are unchanged at runtime. New code should reach
-// for `payAndFetch` above instead. Removal targeted for a future major.
-
-export { createX402Client } from './x402-client';
-export type { X402ClientConfig, X402Client } from './x402-client';
-
-export { wrapFetch } from './wrap-fetch';
-export type { WrapFetchOptions } from './wrap-fetch';
+// ─── Removed in v4.0.0 ──────────────────────────────────────────────────────
+// The v2-era `createX402Client` and `wrapFetch` exports are gone. Use the
+// canonical `payAndFetch` (above) — it speaks both x402 v1 and v2 and returns a
+// discriminated `PayResult`. The implementations remain internal (they power
+// `payAndFetch`, the EVM one-shot strategy, and `useX402Payment`); only the
+// public exports were dropped.

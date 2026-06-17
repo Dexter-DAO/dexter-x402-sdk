@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-06-17
+
+### Removed (BREAKING)
+
+The v1-era public exports are gone, completing the 3.9.0 deprecation. The payment engine is unchanged — `payAndFetch` (client) and `x402Middleware` (server) have been the canonical paths since 3.x and cover everything the removed helpers did.
+
+- **client:** `createX402Client`, `wrapFetch` (and the `X402Client`, `X402ClientConfig`, `WrapFetchOptions` types). → `payAndFetch(url, init, wallets)`.
+- **server:** `x402AccessPass`, `x402BrowserSupport`, `escapeHtml`. → `x402Middleware`.
+- **server:** `createDynamicPricing`, `formatPricing`. → compute the price per request in your handler and pass it to `x402Middleware`.
+- **server:** the entire token/model pricing surface — `createTokenPricing`, `countTokens`, `getAvailableModels`, `isValidModel`, `formatTokenPricing`, `MODEL_PRICING`, `MODEL_REGISTRY`, `MODEL_PRICING_MAP`, `getModel`, `findModel`, `isValidModelId`, `getAvailableModelIds`, `getModelsByTier`, `getModelsByFamily`, `getActiveModels`, `getTextModels`, `getCheapestModel`, `estimateCost`, `formatModelPricing` (and their types). This wrapped a hardcoded January-2026 OpenAI snapshot that goes stale fast; price requests with your model provider's live API and pass the amount to `x402Middleware`.
+- **server:** `stripePayTo`. → a `PayToProvider` map on `x402Middleware`. (`getStripeProviderNetwork` stays internal.)
+- **react:** `useAccessPass`. → `useX402Payment`.
+
+### Notes
+
+- **EVM one-shot pay-per-call is unchanged.** `payAndFetch` remains the live EVM path until Tabs reaches EVM. The `createX402Client` / `wrapFetch` implementations are retained internally — they still power `payAndFetch`, the v2 strategy, and `useX402Payment`; only their public *exports* were removed.
+- To stay on the old surface, pin `@dexterai/x402@^3`.
+
 ## [3.9.0] - 2026-05-21
 
 ### Documentation

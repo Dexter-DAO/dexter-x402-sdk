@@ -6,19 +6,22 @@
  *
  * @example
  * ```typescript
- * import { createX402Client, createKeypairWallet } from '@dexterai/x402/client';
+ * import { payAndFetch, createKeypairWallet } from '@dexterai/x402/client';
  *
  * // From base58 private key
- * const wallet = createKeypairWallet('5abc...xyz');
+ * const solana = await createKeypairWallet('5abc...xyz');
  *
  * // Or from a JSON array (like in id.json files)
- * const wallet = createKeypairWallet([1,2,3,...64 bytes]);
+ * const solana = await createKeypairWallet([1,2,3,...64 bytes]);
  *
- * const client = createX402Client({
- *   wallets: { solana: wallet },
- * });
- *
- * const response = await client.fetch('https://api.example.com/protected');
+ * const result = await payAndFetch(
+ *   'https://api.example.com/protected',
+ *   undefined,
+ *   { solana },
+ * );
+ * if (result.ok) {
+ *   const data = await result.response.json();
+ * }
  * ```
  */
 
@@ -51,7 +54,7 @@ export { KEYPAIR_SYMBOL };
  * Create a wallet from a Solana private key
  *
  * @param privateKey - Base58 encoded private key string, or Uint8Array/number[] of 64 bytes
- * @returns Wallet interface compatible with createX402Client
+ * @returns Wallet interface for the `solana` slot of a `payAndFetch` WalletSet
  *
  * @example Base58 private key
  * ```typescript

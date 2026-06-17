@@ -9,16 +9,19 @@
  *
  * @example
  * ```typescript
- * import { createX402Client, createEvmKeypairWallet } from '@dexterai/x402/client';
+ * import { payAndFetch, createEvmKeypairWallet } from '@dexterai/x402/client';
  *
  * // From hex private key (with or without 0x prefix)
- * const wallet = await createEvmKeypairWallet('0xabc123...');
+ * const evm = await createEvmKeypairWallet('0xabc123...');
  *
- * const client = createX402Client({
- *   wallets: { evm: wallet },
- * });
- *
- * const response = await client.fetch('https://api.example.com/protected');
+ * const result = await payAndFetch(
+ *   'https://api.example.com/protected',
+ *   undefined,
+ *   { evm },
+ * );
+ * if (result.ok) {
+ *   const data = await result.response.json();
+ * }
  * ```
  */
 
@@ -35,30 +38,20 @@ import type { EvmWallet } from '../adapters/evm';
  * to ensure compatibility with both ESM and CJS consumers.
  *
  * @param privateKey - Hex-encoded private key (with or without 0x prefix)
- * @returns Wallet interface compatible with createX402Client's `wallets.evm`
+ * @returns Wallet interface for the `evm` slot of a `payAndFetch` WalletSet
  * @throws If viem is not installed or the private key is invalid
  *
  * @example From environment variable
  * ```typescript
- * const wallet = await createEvmKeypairWallet(process.env.BASE_PRIVATE_KEY!);
+ * const evm = await createEvmKeypairWallet(process.env.BASE_PRIVATE_KEY!);
  * ```
  *
- * @example With createX402Client
+ * @example Both chains in one WalletSet
  * ```typescript
- * const client = createX402Client({
- *   wallets: {
- *     solana: createKeypairWallet(process.env.SOLANA_KEY!),
- *     evm: await createEvmKeypairWallet(process.env.BASE_KEY!),
- *   },
+ * const result = await payAndFetch(url, undefined, {
+ *   solana: await createKeypairWallet(process.env.SOLANA_KEY!),
+ *   evm: await createEvmKeypairWallet(process.env.BASE_KEY!),
  * });
- * ```
- *
- * @example With wrapFetch (automatic -- you don't need this directly)
- * ```typescript
- * const x402Fetch = wrapFetch(fetch, {
- *   evmPrivateKey: process.env.BASE_PRIVATE_KEY!,
- * });
- * // wrapFetch calls createEvmKeypairWallet internally
  * ```
  */
 export async function createEvmKeypairWallet(privateKey: string): Promise<EvmWallet> {

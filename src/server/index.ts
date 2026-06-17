@@ -81,64 +81,7 @@ export type {
 } from './extensions/bazaar/types';
 export type { DeclareDiscoveryConfig } from './extensions/bazaar/declare';
 
-// Browser support -- renders HTML paywall for browser 402 responses
-export { x402BrowserSupport, escapeHtml } from './browser-support';
-export type { X402BrowserSupportConfig } from './browser-support';
-
-// Access pass middleware
-export { x402AccessPass } from './access-pass';
-export type { X402AccessPassConfig, X402AccessPassRequest } from './access-pass';
-
 export { FacilitatorClient, type SupportedKind, type SupportedResponse } from './facilitator-client';
-
-// Dynamic pricing (character-based)
-export { createDynamicPricing, formatPricing } from './dynamic-pricing';
-export type { DynamicPricingConfig, DynamicPricing, PriceQuote } from './dynamic-pricing';
-
-// Token pricing (LLM-accurate with tiktoken)
-export { 
-  createTokenPricing, 
-  countTokens, 
-  getAvailableModels, 
-  isValidModel, 
-  formatTokenPricing,
-  MODEL_PRICING,
-} from './token-pricing';
-export type { 
-  TokenPricingConfig, 
-  TokenPricing, 
-  TokenPriceQuote, 
-  ModelPricing,
-} from './token-pricing';
-
-// Model Registry - the single source of truth for all OpenAI models
-export {
-  MODEL_REGISTRY,
-  MODEL_PRICING_MAP,
-  getModel,
-  findModel,
-  isValidModelId,
-  getAvailableModelIds,
-  getModelsByTier,
-  getModelsByFamily,
-  getActiveModels,
-  getTextModels,
-  getCheapestModel,
-  estimateCost,
-  formatModelPricing,
-} from './model-registry';
-export type {
-  ModelTier,
-  ModelModality,
-  ModelApiType,
-  ModelPricing as RegistryModelPricing,
-  ModelParameters,
-  ModelDefinition,
-} from './model-registry';
-
-// Stripe machine payments
-export { stripePayTo } from './stripe-payto';
-export type { StripePayToConfig } from './stripe-payto';
 
 // Sponsored Access (Ads for Agents) types — re-exported from @dexterai/x402-ads-types
 export type {
