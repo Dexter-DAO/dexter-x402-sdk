@@ -102,7 +102,7 @@ app.get('/paid/tick',
     const meter = openSse(res, { tab, perUnit: '0.01' });
     await meter.charge(1);
     meter.send(JSON.stringify({ data: '...' }));
-    meter.end();
+    await meter.end();
   });
 ```
 
