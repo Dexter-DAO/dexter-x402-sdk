@@ -110,8 +110,6 @@ app.get('/paid/tick',
 
 For a tab-only endpoint, compose the two middlewares directly: `tabChallengeMiddleware` (answers voucher-less requests with the standard x402 challenge, so any agent can discover you) before `tabMiddleware` (verifies the per-charge vouchers). Both are exported from `@dexterai/x402/tab/seller`.
 
-**At scale:** the default per-channel ledger enforces one live stream per tab within a single process. If you run multiple instances behind a load balancer, back the ledger with an atomic lease (Redis `SET NX PX`, Postgres advisory lock / `INSERT ON CONFLICT`) or route a tab's requests to a consistent instance; single-process sellers need nothing extra. The on-chain program is pre-audit — see [Why you can trust it](#why-you-can-trust-it).
-
 ---
 
 ## How it works
