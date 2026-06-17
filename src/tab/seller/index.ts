@@ -26,7 +26,7 @@
  *       await meter.charge(1);
  *       meter.send(token);
  *     }
- *     meter.end();
+ *     await meter.end();
  *   }
  * );
  * ```
@@ -42,6 +42,17 @@ export type {
 } from './types';
 export { InvalidVoucherError } from './types';
 
+// Durable per-channel ledger (off-chain deliveredCumulative + last voucher).
+export type {
+  ChannelLedger,
+  ChannelLedgerEntry,
+  OnChainLedgerSnapshot,
+} from './channel-ledger';
+export {
+  InMemoryChannelLedger,
+  FileChannelLedger,
+} from './channel-ledger';
+
 // Middleware + helpers.
 export {
   tabMiddleware,
@@ -52,7 +63,7 @@ export {
 
 export { openSse } from './meter';
 
-// Voucher persistence.
+// Deprecated voucher persistence — superseded by ChannelLedger above.
 export {
   InMemoryVoucherStore,
   FileVoucherStore,
