@@ -962,6 +962,236 @@ Leave this task unchecked as a tracked marker. Do not write code for it in this 
 
 ---
 
+### Task 8: Durable channel lease — reject concurrent same-channel metering (closes the adversarial concurrency rug)
+
+**Files:**
+- Modify: `src/tab/seller/channel-ledger.ts` (lease field + `tryAcquireLease`/`releaseLease` on interface + both impls)
+- Modify: `src/tab/seller/types.ts` (`SellerTab.releaseLease`, `TabMiddlewareOptions.leaseTtlMs`, `InvalidVoucherError` reason `'channel_busy'`)
+- Modify: `src/tab/seller/middleware.ts` (acquire on accept → 402 if busy; wire release closure; release on terminal)
+- Modify: `src/tab/seller/meter.ts` (call `tab.releaseLease()` on every terminal path)
+- Test: `src/tab/seller/__tests__/channel-ledger.test.ts` (lease acquire/release/expiry) + `src/tab/seller/__tests__/meter.test.ts` (release-on-terminal)
+
+**Why:** Without this, a buyer can open N genuinely-concurrent streams on ONE channel. All N read the same `deliveredCumulative` baseline (none has persisted yet), so each budgets independently → the seller delivers ~N streams of service while settle collects only the single highest cumulative voucher → free-service multiplier, attacker controls N. The additive ledger (Tasks 1-7) keeps lifetime accounting honest but does NOT prevent the in-flight over-delivery. This task enforces **one live stream per channel at a time**, through the durable ledger so it holds across processes (given a shared ledger).
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `src/tab/seller/__tests__/channel-ledger.test.ts`:
+
+```ts
+describe('channel lease — reject concurrent same-channel metering', () => {
+  const channelId = 'f'.repeat(64);
+
+  it('acquires when free, refuses while held, re-acquires after release', async () => {
+    const ledger = new InMemoryChannelLedger();
+    expect(await ledger.tryAcquireLease(channelId, 60_000)).toBe(true);
+    expect(await ledger.tryAcquireLease(channelId, 60_000)).toBe(false); // held
+    await ledger.releaseLease(channelId);
+    expect(await ledger.tryAcquireLease(channelId, 60_000)).toBe(true);  // free again
+  });
+
+  it('re-acquires after the lease TTL expires (crashed-holder safety)', async () => {
+    const ledger = new InMemoryChannelLedger();
+    expect(await ledger.tryAcquireLease(channelId, 5)).toBe(true); // 5ms TTL
+    await new Promise((r) => setTimeout(r, 15));
+    expect(await ledger.tryAcquireLease(channelId, 60_000)).toBe(true); // expired → free
+  });
+
+  it('preserves deliveredCumulative across lease acquire/release', async () => {
+    const ledger = new InMemoryChannelLedger();
+    await ledger.set(channelId, { lastVoucher: fakeVoucher(channelId, '100000'), deliveredCumulativeAtomic: '70000' });
+    await ledger.tryAcquireLease(channelId, 60_000);
+    await ledger.releaseLease(channelId);
+    expect((await ledger.get(channelId))?.deliveredCumulativeAtomic).toBe('70000');
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx vitest run src/tab/seller/__tests__/channel-ledger.test.ts`
+Expected: FAIL — `ledger.tryAcquireLease is not a function`.
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `src/tab/seller/channel-ledger.ts`:
+
+1. Add the lease field to `ChannelLedgerEntry` (after `onChain?`):
+```ts
+  /**
+   * Active-stream lease. Set while a meter is live on this channel; cleared on
+   * the meter's terminal path. `heldUntilUnixMs` is a TTL so a crashed holder's
+   * lease auto-expires (a stuck lease would otherwise block the buyer's own
+   * next request on this tab). Enforces one live stream per channel — the
+   * defense against the concurrent-same-channel over-delivery rug.
+   */
+  lease?: { heldUntilUnixMs: number };
+```
+
+2. Add to the `ChannelLedger` interface:
+```ts
+  /**
+   * Atomically acquire the channel's single-stream lease if free or expired.
+   * Returns true if acquired, false if another live stream holds it. The
+   * in-process/file impls serialize via the per-channel lock (correct for a
+   * single seller process). A multi-instance seller MUST back this with a store
+   * that makes acquire atomic across processes (Redis SETNX, Postgres, ...).
+   */
+  tryAcquireLease(channelId: string, ttlMs: number): Promise<boolean>;
+  /** Release the channel's lease (no-op if not held). */
+  releaseLease(channelId: string): Promise<void>;
+```
+
+3. Implement in `InMemoryChannelLedger` (uses `withChannelLock`; `Date.now()` is fine in SDK runtime code):
+```ts
+  async tryAcquireLease(channelId: string, ttlMs: number): Promise<boolean> {
+    return withChannelLock(channelId, async () => {
+      const cur = this.map.get(channelId);
+      const now = Date.now();
+      if (cur?.lease && cur.lease.heldUntilUnixMs > now) return false; // held & unexpired
+      const base: ChannelLedgerEntry =
+        cur ?? { lastVoucher: null as any, deliveredCumulativeAtomic: '0' };
+      this.map.set(channelId, { ...base, lease: { heldUntilUnixMs: now + ttlMs } });
+      return true;
+    });
+  }
+
+  async releaseLease(channelId: string): Promise<void> {
+    await withChannelLock(channelId, async () => {
+      const cur = this.map.get(channelId);
+      if (cur) this.map.set(channelId, { ...cur, lease: undefined });
+    });
+  }
+```
+> Note: a lease acquired on a channel with no prior entry stores a placeholder `lastVoucher: null`. The middleware always writes the real `lastVoucher` immediately after acquiring (step 6), so this placeholder never reaches the meter. Guard `get` consumers already null-check `lastVoucher` usage; if any reader dereferences it, treat null defensively. (In practice acquire happens AFTER the voucher is validated, so prefer acquiring in the same locked write as the voucher persist — see middleware step.)
+
+4. Implement in `FileChannelLedger` (reuse the file get/set; lease lives in the same JSON entry, so `SerializedEntry` must carry `lease`). Add `lease?: { heldUntilUnixMs: number }` to `SerializedEntry`, and pass it through in `serialize`/`deserialize`. Then:
+```ts
+  async tryAcquireLease(channelId: string, ttlMs: number): Promise<boolean> {
+    return withChannelLock(channelId, async () => {
+      const cur = await this.get(channelId);
+      const now = Date.now();
+      if (cur?.lease && cur.lease.heldUntilUnixMs > now) return false;
+      const base: ChannelLedgerEntry =
+        cur ?? { lastVoucher: null as any, deliveredCumulativeAtomic: '0' };
+      await this.set(channelId, { ...base, lease: { heldUntilUnixMs: now + ttlMs } });
+      return true;
+    });
+  }
+
+  async releaseLease(channelId: string): Promise<void> {
+    await withChannelLock(channelId, async () => {
+      const cur = await this.get(channelId);
+      if (cur) await this.set(channelId, { ...cur, lease: undefined });
+    });
+  }
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `npx vitest run src/tab/seller/__tests__/channel-ledger.test.ts`
+Expected: PASS (10 tests total in the file now).
+
+- [ ] **Step 5: Wire the lease into the middleware + meter**
+
+In `src/tab/seller/types.ts`:
+- Add to `SellerTab`: `releaseLease(): Promise<void>;` (doc: "Release the channel's single-stream lease; called by the meter on the terminal path.").
+- Add to `TabMiddlewareOptions`: `leaseTtlMs?: number;` (doc: "Max single-stream duration before a crashed holder's lease auto-expires. Default 300000 (5 min)."). 
+- Add `'channel_busy'` to the `InvalidVoucherError` reason union.
+
+In `src/tab/seller/middleware.ts`:
+- After the scope checks pass and BEFORE persisting the voucher (step 6), acquire the lease; reject if busy:
+```ts
+      // 5b. One live stream per channel: acquire the lease or reject. Closes the
+      //     concurrent-same-channel over-delivery rug.
+      const leaseTtlMs = config.leaseTtlMs ?? 300_000;
+      if (!(await ledger.tryAcquireLease(channelId, leaseTtlMs))) {
+        throw new InvalidVoucherError(
+          'channel_busy',
+          'another stream is live on this channel; tabs serve one stream at a time',
+        );
+      }
+```
+  Ensure `InvalidVoucherError` is imported (it already is) and that the catch block maps it to 402 (it already does for `InvalidVoucherError`).
+- Add `releaseLease` to the `SellerTabImpl` (see Step 6) and pass a closure `async () => { await ledger.releaseLease(channelId); }` into its constructor.
+
+In `src/tab/seller/meter.ts`, release the lease on every terminal path. Factor a small terminal helper and call it from `end()`, the cap-reject branch, and the `close` handler — each already guarded by `ended`. Replace `persistDelivered` usage at the three terminal points with a `finishRequest()` that persists then releases:
+```ts
+  async function finishRequest(): Promise<void> {
+    await persistDelivered();
+    await tab.releaseLease();
+  }
+```
+- `end()`: `await finishRequest();` then write the SSE end event + `res.end()`.
+- cap-reject: `ended = true; await finishRequest(); throw new ScopeViolationError(...)`.
+- `close` handler: `void finishRequest().catch((err) => console.error('[tab/seller] terminal persist/release failed on disconnect:', err));`
+
+- [ ] **Step 6: SellerTabImpl gains releaseLease + write the meter release test**
+
+In `src/tab/seller/middleware.ts`, add to `SellerTabImpl`:
+```ts
+  async releaseLease(): Promise<void> {
+    return this.releaseLeaseImpl();
+  }
+```
+and add `private readonly releaseLeaseImpl: () => Promise<void>` as a constructor param (place it AFTER `recordDeliveredImpl`, before `chargeImpl` — and update the single construction site in step 7 to pass the `async () => { await ledger.releaseLease(channelId); }` closure in that position).
+
+Append to `src/tab/seller/__tests__/meter.test.ts` (extend `makeStubTab` to record release calls, or add a release spy): a test asserting `releaseLease` is invoked exactly once on clean `end()`, on cap-reject, and on `close`:
+```ts
+describe('meter releases the channel lease on every terminal path', () => {
+  const channelId = 'a'.repeat(64);
+  function tabWithReleaseSpy(signed: string, ledger: InMemoryChannelLedger, released: { n: number }) {
+    return {
+      channelId, network: 'solana:mainnet', sessionPublicKey: new Uint8Array(32),
+      cumulative: () => signed,
+      deliveredCumulative: () => '0',
+      charge: async () => { throw new Error('stub'); },
+      recordDelivered: async () => { void ledger; },
+      releaseLease: async () => { released.n += 1; },
+    } as SellerTab;
+  }
+  it('clean end releases once', async () => {
+    const released = { n: 0 };
+    const m = openSse(fakeSseRes(), { tab: tabWithReleaseSpy('0.10', new InMemoryChannelLedger(), released), perUnit: '0.01' });
+    await m.charge(1); await m.end();
+    expect(released.n).toBe(1);
+  });
+  it('cap-reject releases once', async () => {
+    const released = { n: 0 };
+    const m = openSse(fakeSseRes(), { tab: tabWithReleaseSpy('0.01', new InMemoryChannelLedger(), released), perUnit: '0.01' });
+    await m.charge(1);
+    await expect(m.charge(1)).rejects.toThrow(/cumulative_exceeds_cap/);
+    expect(released.n).toBe(1);
+  });
+  it('disconnect releases once', async () => {
+    const released = { n: 0 };
+    const res = fakeSseRes();
+    const m = openSse(res, { tab: tabWithReleaseSpy('0.10', new InMemoryChannelLedger(), released), perUnit: '0.01' });
+    await m.charge(1);
+    res._emit('close');
+    await flushMicrotasks();
+    expect(released.n).toBe(1);
+  });
+});
+```
+
+- [ ] **Step 7: Full sweep + commit**
+
+Run: `npx vitest run src/tab/seller/` (all green), `npm run typecheck` (exit 0), `npm run build` (success).
+
+```bash
+git add src/tab/seller/channel-ledger.ts src/tab/seller/types.ts src/tab/seller/middleware.ts src/tab/seller/meter.ts src/tab/seller/__tests__/channel-ledger.test.ts src/tab/seller/__tests__/meter.test.ts
+git commit -m "fix(seller): durable channel lease — one live stream per tab (closes concurrent-same-channel rug)"
+```
+(Add the trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.)
+
+- [ ] **Step 8: Document the multi-instance boundary**
+
+In `src/tab/seller/index.ts` (or the `ChannelLedger` doc in `channel-ledger.ts`), add a note: the default in-memory/file ledger enforces the single-stream lease correctly within ONE seller process; sellers running multiple instances behind a load balancer must back `ChannelLedger` with a store providing atomic lease acquisition (Redis `SET NX PX`, Postgres advisory lock / `INSERT ON CONFLICT`), or route a channel's requests to a consistent instance. Commit:
+```bash
+git add src/tab/seller/index.ts src/tab/seller/channel-ledger.ts
+git commit -m "docs(seller): document multi-instance lease requirement for ChannelLedger"
+```
+
 ## Self-Review
 
 **1. Spec coverage (the 4 required elements from the greenlight):**
