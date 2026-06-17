@@ -28,13 +28,15 @@ export interface TabTerms {
   scheme: 'tab';
   /**
    * How a Dexter tab settles — properties of scheme 'tab' as shipped, not
-   * seller-configurable: openTab is fail-closed on freeze arming (the buyer
-   * cannot drain mid-tab), funds stay in the buyer's vault until settle
+   * seller-configurable: protection is 'lock' (the standard since Step-4) —
+   * accrued charges crystallize on-chain into a reservation the buyer cannot
+   * withdraw out from under, sized to the accrued amount only (not a
+   * whole-wallet freeze). Funds stay in the buyer's vault until settle
    * (non-custodial), and settlement happens at tab close.
    */
   settlement: {
     custody: 'non-custodial';
-    protection: 'freeze';
+    protection: 'lock';
     settleOn: 'close';
   };
   /** Credit terms (Product 2). Reserved; always null today. */
@@ -62,7 +64,7 @@ function offerToTerms(offer: TabOffer): TabTerms {
     asset: offer.asset,
     network: { caip2: offer.networkCaip2 },
     scheme: 'tab',
-    settlement: { custody: 'non-custodial', protection: 'freeze', settleOn: 'close' },
+    settlement: { custody: 'non-custodial', protection: 'lock', settleOn: 'close' },
     credit: null,
     ...(offer.resourceUrl !== undefined ? { resourceUrl: offer.resourceUrl } : {}),
   };

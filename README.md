@@ -59,7 +59,7 @@ const vault = createSolanaVaultAdapter({
 });
 ```
 
-Given only a URL, the buyer then reads the seller's terms from the URL's own `402` challenge, opens a freeze-protected tab, and pays. The seller's address comes off the wire, never from your code:
+Given only a URL, the buyer then reads the seller's terms from the URL's own `402` challenge, opens a lock-protected tab, and pays. The seller's address comes off the wire, never from your code:
 
 ```ts
 import { payUrlWithTab } from '@dexterai/x402/tab';
@@ -82,7 +82,7 @@ import { resolveTabTerms } from '@dexterai/x402/tab';
 const resolved = await resolveTabTerms('https://api.example.com/paid/tick');
 if (resolved.kind === 'terms') {
   console.log(resolved.terms.counterparty, resolved.terms.perRequest.human);
-  // settlement: { custody: 'non-custodial', protection: 'freeze', settleOn: 'close' }
+  // settlement: { custody: 'non-custodial', protection: 'lock', settleOn: 'close' }
 }
 ```
 
@@ -119,7 +119,7 @@ Three nouns and one actor.
 - **Passkey:** your key. You tap it to set up the vault and to open or approve a tab. Nothing else can authorize a withdrawal.
 - **Your agent:** who you open the tab for.
 
-A tab opens with one passkey tap, the agent spends against it with no further prompts, and one on-chain settle pays the seller and closes it. Everything between open and settle is off-chain, so a charge costs no gas and no signature.
+A tab opens with one passkey tap, the agent spends against it with no further prompts, and one on-chain settle pays the seller and closes it. Each charge the agent makes is off-chain, so it costs no gas and no signature. As charges accrue, the seller crystallizes them on-chain into the reservation that guarantees its payment — keyless and automatic, with no action and no signature from you.
 
 ---
 
@@ -130,7 +130,7 @@ The word "unruggable" has to be earned, so here is what actually backs it. The p
 - **Non-custodial.** Your USDC stays in your own wallet. The program holds no funds; it records bindings and gates a withdrawal. There is no escrow account and no custodian to fail.
 - **The cap is enforced on-chain.** The limit is checked by the Solana program at consensus, not by this library and not by Dexter. You can read the program and verify the cap yourself: [`Hg3wRaydFtJhYrdvYrKECacpJYDsC9Px7yKmpncj2fhc`](https://solscan.io/account/Hg3wRaydFtJhYrdvYrKECacpJYDsC9Px7yKmpncj2fhc) on Solana mainnet.
 - **Only your passkey moves funds.** Withdrawals require a WebAuthn assertion verified by Solana's secp256r1 precompile. The SDK and the facilitator never hold a key that can drain your wallet.
-- **The seller is protected.** While a tab is open the program blocks the buyer's withdrawal, so funds can't be pulled out from under accrued charges. If a seller ever goes silent, the buyer recovers an abandoned tab themselves after a fixed grace period; nobody's funds can be frozen indefinitely.
+- **The seller is protected, surgically.** As the agent spends, accrued charges crystallize on-chain into a reservation the buyer cannot withdraw out from under. The reservation is exactly the amount accrued — not the whole wallet — so the buyer keeps spending or withdrawing the rest of their balance freely while the tab stays open. The seller is guaranteed the accrued amount; the buyer is never locked out of funds they haven't committed. If a seller ever goes silent, the buyer recovers an abandoned reservation themselves after a fixed grace period; nobody's funds can be frozen indefinitely.
 - **Live on Solana mainnet.** Tabs settle on mainnet today. We can demonstrate the program rejecting a forged passkey from a clone: see the [`dexter-vault`](https://github.com/Dexter-DAO/dexter-vault) program repo.
 - **Pre-audit, and we say so.** Not yet externally audited; funding is in flight. The report and any findings publish in the program repo. Responsible disclosure: branch@dexter.cash.
 
@@ -251,7 +251,7 @@ import { toAtomicUnits, fromAtomicUnits } from '@dexterai/x402/utils';
 
 ### `payUrlWithTab(url, init, opts) → Promise<{ result, tab }>`
 
-Opens (or reuses) a freeze-protected tab to the seller discovered from the URL's `402` challenge, and pays. `opts`: `{ vault, perUnitCap, totalCap, tabs }`. Reuse one `tabs` map across calls to keep a single open tab per seller; `tab.close()` settles everything spent in one transaction.
+Opens (or reuses) a lock-protected tab to the seller discovered from the URL's `402` challenge, and pays. `opts`: `{ vault, perUnitCap, totalCap, tabs }`. Reuse one `tabs` map across calls to keep a single open tab per seller; `tab.close()` settles everything spent in one transaction.
 
 ### `resolveTabTerms(url) → Promise<TabResolution>`
 

@@ -30,7 +30,7 @@ describe('resolveTabTerms', () => {
     expect(t.asset).toBe(USDC);
     expect(t.network.caip2).toBe(CAIP2);
     expect(t.scheme).toBe('tab');
-    expect(t.settlement).toEqual({ custody: 'non-custodial', protection: 'freeze', settleOn: 'close' });
+    expect(t.settlement).toEqual({ custody: 'non-custodial', protection: 'lock', settleOn: 'close' });
     expect(t.credit).toBeNull();
   });
 
