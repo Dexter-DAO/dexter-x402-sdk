@@ -129,3 +129,27 @@ describe('openSse delivered-ledger budget — no channel-reuse leak', () => {
     expect((await ledger.get(channelId))?.deliveredCumulativeAtomic).toBe(humanToAtomic('0.01'));
   });
 });
+
+import { SellerTabImpl } from '../middleware';
+
+describe('SellerTabImpl delivered hooks', () => {
+  const channelId = 'd'.repeat(64);
+
+  it('exposes the injected delivered baseline and persists via the recordDelivered closure', async () => {
+    const ledger = new InMemoryChannelLedger();
+    const recorded: string[] = [];
+    const tab = new SellerTabImpl(
+      channelId,
+      'solana:mainnet',
+      BigInt(humanToAtomic('0.20')),         // signed cumulative
+      BigInt(humanToAtomic('0.05')),         // delivered baseline
+      async (cumAtomic: string) => { recorded.push(cumAtomic); },
+      async () => { throw new Error('tab.charge stub'); },
+    );
+    expect(tab.cumulative()).toBe(atomicToHuman(humanToAtomic('0.20')));
+    expect(tab.deliveredCumulative()).toBe(atomicToHuman(humanToAtomic('0.05')));
+    await tab.recordDelivered(humanToAtomic('0.12'));
+    expect(recorded).toEqual([humanToAtomic('0.12')]);
+    void ledger;
+  });
+});

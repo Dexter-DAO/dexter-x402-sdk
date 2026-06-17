@@ -93,25 +93,37 @@ class SessionCache {
 
 // ── SellerTab implementation ───────────────────────────────────────────
 
-class SellerTabImpl implements SellerTab {
+export class SellerTabImpl implements SellerTab {
   readonly channelId: string;
   readonly network: TabMiddlewareOptions['network'];
   sessionPublicKey: Uint8Array | null = null;
   private cumulativeAtomic: bigint;
+  private deliveredBaselineAtomic: bigint;
 
   constructor(
     channelId: string,
     network: TabMiddlewareOptions['network'],
     initialCumulative: bigint,
+    deliveredBaselineAtomic: bigint,
+    private readonly recordDeliveredImpl: (cumulativeAtomic: string) => Promise<void>,
     private readonly chargeImpl: (incrementHuman: HumanAmount) => Promise<void>,
   ) {
     this.channelId = channelId;
     this.network = network;
     this.cumulativeAtomic = initialCumulative;
+    this.deliveredBaselineAtomic = deliveredBaselineAtomic;
   }
 
   cumulative(): HumanAmount {
     return atomicToHuman(this.cumulativeAtomic.toString());
+  }
+
+  deliveredCumulative(): HumanAmount {
+    return atomicToHuman(this.deliveredBaselineAtomic.toString());
+  }
+
+  async recordDelivered(cumulativeAtomic: AtomicAmount): Promise<void> {
+    return this.recordDeliveredImpl(cumulativeAtomic);
   }
 
   bumpCumulative(toAtomic: bigint): void {
