@@ -17,6 +17,17 @@
  *
  * The same durable state is the substrate resumeTab / stranded-tab recovery
  * needs (last voucher + delivered baseline per channel).
+ *
+ * Single-stream lease (multi-instance boundary): the per-channel `lease`
+ * (tryAcquireLease/releaseLease) enforces ONE live stream per channel, the
+ * defense against the concurrent-same-channel over-delivery rug. The default
+ * InMemoryChannelLedger / FileChannelLedger acquire it atomically WITHIN one
+ * seller process (via the per-channel async lock). A seller running MULTIPLE
+ * instances behind a load balancer MUST either back ChannelLedger with a store
+ * that makes acquire atomic across processes (Redis `SET NX PX`, Postgres
+ * advisory lock / `INSERT ... ON CONFLICT`) or route a channel's requests to a
+ * consistent instance — otherwise two instances can each acquire the lease and
+ * the rug reopens.
  */
 
 import { promises as fs } from 'node:fs';

@@ -43,6 +43,14 @@ export type {
 export { InvalidVoucherError } from './types';
 
 // Durable per-channel ledger (off-chain deliveredCumulative + last voucher).
+//
+// Single-stream lease (multi-instance boundary): the default in-memory/file
+// ledger enforces the per-channel single-stream lease correctly WITHIN ONE
+// seller process. Sellers running multiple instances behind a load balancer
+// must back ChannelLedger with a store providing atomic lease acquisition
+// (Redis `SET NX PX`, Postgres advisory lock / `INSERT ON CONFLICT`), or route
+// a channel's requests to a consistent instance — otherwise concurrent
+// same-channel streams can over-deliver across instances.
 export type {
   ChannelLedger,
   ChannelLedgerEntry,
