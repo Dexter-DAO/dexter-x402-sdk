@@ -24,7 +24,6 @@ import type { SignedVoucher, HumanAmount, AtomicAmount } from '../types';
 import type {
   SellerTab,
   TabMiddlewareOptions,
-  VoucherStore,
 } from './types';
 import { InvalidVoucherError } from './types';
 
@@ -40,7 +39,7 @@ import {
   ScopeViolationError,
 } from './verify';
 
-import { InMemoryVoucherStore } from './voucher-store';
+import { InMemoryChannelLedger, type ChannelLedger } from './channel-ledger';
 import { atomicToHuman, humanToAtomic } from '../tab';
 
 // ── Augmented Express request type ─────────────────────────────────────
@@ -199,7 +198,7 @@ function channelIdHexToBytes(hex: string): Uint8Array {
 // ── The middleware ─────────────────────────────────────────────────────
 
 export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
-  const store: VoucherStore = config.store ?? new InMemoryVoucherStore();
+  const ledger: ChannelLedger = config.ledger ?? new InMemoryChannelLedger();
   const cache = new SessionCache();
   const sellerPubkey =
     typeof config.sellerPubkey === 'string'
@@ -254,21 +253,35 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
         );
       }
 
-      // 6. Persist the voucher (so a crash doesn't lose the latest claim).
-      await store.set(channelId, voucher);
+      // 6. Read the durable delivered baseline for this channel, then persist
+      //    the accepted voucher (delivered unchanged at acceptance time).
+      const prior = await ledger.get(channelId);
+      const deliveredBaselineAtomic = prior ? BigInt(prior.deliveredCumulativeAtomic) : 0n;
+      await ledger.set(channelId, {
+        lastVoucher: voucher,
+        deliveredCumulativeAtomic: deliveredBaselineAtomic.toString(),
+        onChain: prior?.onChain,
+      });
 
-      // 7. Update cache and attach the SellerTab to the request.
+      // 7. Update the hot-path registration cache and attach the SellerTab.
       cache.update(channelId, voucher.payload.cumulativeAmount);
       const tab = new SellerTabImpl(
         channelId,
         config.network,
         cumulative,
+        deliveredBaselineAtomic,
+        // recordDelivered: the meter calls this on terminal events to persist
+        // the new lifetime delivered cumulative; keep lastVoucher + onChain.
+        async (cumAtomic: string) => {
+          const cur = await ledger.get(channelId);
+          await ledger.set(channelId, {
+            lastVoucher: cur?.lastVoucher ?? voucher,
+            deliveredCumulativeAtomic: cumAtomic,
+            onChain: cur?.onChain,
+          });
+        },
+        // charge stub (unchanged): the route handler doesn't drive charging.
         async (_inc) => {
-          // The route handler can't `charge()` after-the-fact in this
-          // architecture — vouchers are presented by the buyer per chunk.
-          // We leave a stub so the SellerTab shape is satisfied; phase 4
-          // (SSE meter) implements a different surface that demands a
-          // voucher before delivering each chunk.
           throw new Error(
             'SellerTab.charge() is not driven by the route handler; the buyer ' +
             'presents a fresh voucher per chunk. Use openSse(res, tab) for the ' +

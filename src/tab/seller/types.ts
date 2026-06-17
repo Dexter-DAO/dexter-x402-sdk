@@ -13,6 +13,7 @@ import type {
   SignedVoucher,
   TabNetworkId,
 } from '../types';
+import type { ChannelLedger } from './channel-ledger';
 
 /**
  * Persistent store for the seller's per-tab voucher state. The middleware
@@ -20,6 +21,7 @@ import type {
  * loses at most the last in-flight voucher's worth of revenue. Pluggable to
  * match `batch-settlement/store`'s ChannelStore pattern.
  */
+/** @deprecated Superseded by ChannelLedger (channel-ledger.ts), which also persists deliveredCumulative. */
 export interface VoucherStore {
   get(channelId: string): Promise<SignedVoucher | null>;
   set(channelId: string, voucher: SignedVoucher): Promise<void>;
@@ -66,8 +68,12 @@ export interface TabMiddlewareOptions {
   settle: 'on-close' | 'periodic';
   /** Facilitator base URL. Default: https://facilitator.dexter.cash. */
   facilitatorUrl?: string;
-  /** Voucher persistence. Default: file-backed. */
-  store?: VoucherStore;
+  /**
+   * Durable per-channel state (latest voucher + delivered cumulative).
+   * Default: in-memory (loses state on restart). Pass a FileChannelLedger or
+   * your own ChannelLedger for restart-safe revenue + resumeTab support.
+   */
+  ledger?: ChannelLedger;
   /**
    * Hard cap on a single voucher's incremental amount. Protects the seller's
    * middleware from accepting a buyer trying to slip in a giant single
