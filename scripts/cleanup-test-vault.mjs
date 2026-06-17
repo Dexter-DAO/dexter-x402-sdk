@@ -18,7 +18,11 @@ import { fetchSessionAccount, fetchVaultSessionAccounts } from '@dexterai/vault/
 import { readVaultOnchain } from '@dexterai/vault/reader';
 import { passkeySignerFromP256Keypair } from '@dexterai/x402/tab/adapters/solana';
 
-const HELIUS = 'https://mainnet.helius-rpc.com/?api-key=8fd1a2cd-76e7-4462-b38b-1026960edd40';
+// Write-capable Solana RPC from the operator env (this script revokes sessions =
+// writes; the public rpc.dexter.cash proxy is read-only). The Helius key never
+// lives in this repo.
+const HELIUS = process.env.SOLANA_RPC_URL;
+if (!HELIUS) throw new Error('set SOLANA_RPC_URL to a write-capable Solana RPC (rpc.dexter.cash is read-only)');
 const VAULT = new PublicKey('EbMJhiKN2MuUXLZ2mMqGKwtV11FDWEmZGyvhrFScY54y');
 const CRED = '/home/branchmanager/websites/dexter-facilitator/scripts/ots-e2e/test-credentials/2026-06-05T23-11-28-918Z-e2e-test-1780701079880-c743910c.json';
 const FEE_PAYER_FILE = '/home/branchmanager/.config/solana/dexter-vault/upgrade-authority.json';
