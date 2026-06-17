@@ -22,3 +22,6 @@ test/model-eval/results/*
 
 # Proof-run receipts (mainnet tx evidence — never committed)
 scripts/receipts/
+
+# Internal agent-workflow docs (plans/specs/research) — private, not for the public SDK
+docs/superpowers/
