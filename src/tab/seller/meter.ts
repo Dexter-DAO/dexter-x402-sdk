@@ -26,6 +26,16 @@
  * left for Phase 4+; the v3 meter ships the simpler "one voucher bounds
  * the whole request" model, which is correct for any reasonable chunk
  * count under a single per-request increment.
+ *
+ * Concurrency note: delivered accounting is exact for requests that run
+ * sequentially per channel (the normal case — an agent streams one request at
+ * a time per tab). Two GENUINELY concurrent streams on the SAME channel each
+ * read the same delivered baseline, so they can over-deliver in-flight up to
+ * the sum of their budgets before either persists. The lifetime ledger stays
+ * correct (additive under a per-channel lock), so the over-delivery is bounded
+ * to the overlap and never compounds across future requests. Sellers needing
+ * exact metering under parallel same-channel streams should serialize requests
+ * per channel.
  */
 
 import type { Response } from 'express';
@@ -81,7 +91,7 @@ export function openSse(res: Response, options: OpenSseOptions): SseMeter {
   // you can always crash between chunk and write) at a write-per-token cost, so
   // we persist per terminal event instead.
   async function persistDelivered(): Promise<void> {
-    await tab.recordDelivered((deliveredBaselineAtomic + chargedAtomic).toString());
+    await tab.recordDelivered(chargedAtomic.toString());
   }
 
   // Buyer-controlled termination: if the client drops the connection mid-stream
@@ -92,7 +102,11 @@ export function openSse(res: Response, options: OpenSseOptions): SseMeter {
   res.on('close', () => {
     if (ended) return;
     ended = true;
-    void persistDelivered();
+    void persistDelivered().catch((err) => {
+      // Best-effort: a failed disconnect-persist must not crash the process.
+      // The residual unpersisted window is the documented hard-crash case.
+      console.error('[tab/seller] failed to persist delivered on disconnect:', err);
+    });
   });
 
   async function charge(units = 1): Promise<void> {
@@ -101,6 +115,7 @@ export function openSse(res: Response, options: OpenSseOptions): SseMeter {
     const inc = perUnitAtomic * BigInt(units);
     const next = chargedAtomic + inc;
     if (next > budgetAtomic) {
+      ended = true; // terminate: no further send()/charge() past the cap
       await persistDelivered(); // commit what we DID deliver before refusing
       throw new ScopeViolationError(
         'cumulative_exceeds_cap',

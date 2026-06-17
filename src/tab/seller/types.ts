@@ -52,10 +52,12 @@ export interface SellerTab {
    */
   deliveredCumulative(): HumanAmount;
   /**
-   * Persist a new delivered-cumulative checkpoint (atomic) to the ledger.
-   * Called by the meter on terminal events (stream end / cap hit).
+   * Add `incrementAtomic` (this request's delivered amount, atomic) to the
+   * channel's durable lifetime delivered total, under a per-channel lock.
+   * Monotonic — a non-positive increment is a no-op. Called by the meter once
+   * per request on the terminal path (end / cap-reject / disconnect).
    */
-  recordDelivered(cumulativeAtomic: AtomicAmount): Promise<void>;
+  recordDelivered(incrementAtomic: AtomicAmount): Promise<void>;
 }
 
 /** Options for `tabMiddleware`. */

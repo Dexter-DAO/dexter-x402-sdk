@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { InMemoryChannelLedger, type ChannelLedgerEntry } from '../channel-ledger';
+import { InMemoryChannelLedger, withChannelLock, type ChannelLedgerEntry } from '../channel-ledger';
 import type { SignedVoucher } from '../../types';
 
 function fakeVoucher(channelId: string, cumulativeAmount: string): SignedVoucher {
@@ -60,6 +60,23 @@ import { FileChannelLedger } from '../channel-ledger';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join as pathJoin } from 'node:path';
+
+describe('withChannelLock — serializes concurrent read-modify-write', () => {
+  it('10 concurrent +1 increments on one channel do not lose updates', async () => {
+    const ledger = new InMemoryChannelLedger();
+    const channelId = 'e'.repeat(64);
+    await ledger.set(channelId, { lastVoucher: fakeVoucher(channelId, '0'), deliveredCumulativeAtomic: '0' });
+    await Promise.all(Array.from({ length: 10 }, () =>
+      withChannelLock(channelId, async () => {
+        const cur = await ledger.get(channelId);
+        const base = BigInt(cur!.deliveredCumulativeAtomic);
+        await new Promise((r) => setTimeout(r, 1)); // async gap to expose races
+        await ledger.set(channelId, { ...cur!, deliveredCumulativeAtomic: (base + 1n).toString() });
+      }),
+    ));
+    expect((await ledger.get(channelId))?.deliveredCumulativeAtomic).toBe('10');
+  });
+});
 
 describe('FileChannelLedger', () => {
   const channelId = 'b'.repeat(64);

@@ -41,16 +41,17 @@ async function makeStubTab(
     cumulative: () => signedCumulativeHuman,
     deliveredCumulative: () => atomicToHuman(deliveredBaselineAtomic),
     charge: async () => { throw new Error('tab.charge stub'); },
-    recordDelivered: async (cumulativeAtomic: string) => {
+    recordDelivered: async (incrementAtomic: string) => {
+      const cur = await ledger.get(channelId);
+      const base = cur ? BigInt(cur.deliveredCumulativeAtomic) : 0n;
       await ledger.set(channelId, {
-        // lastVoucher is irrelevant to the budget math; reuse prior or a stub.
-        lastVoucher: prior?.lastVoucher ?? ({
+        lastVoucher: cur?.lastVoucher ?? ({
           payload: { channelId, cumulativeAmount: humanToAtomic(signedCumulativeHuman), sequenceNumber: 1 },
           sessionPublicKey: new Uint8Array(32),
           sessionRegistration: new Uint8Array(188),
           sessionSignature: new Uint8Array(64),
         } as any),
-        deliveredCumulativeAtomic: cumulativeAtomic,
+        deliveredCumulativeAtomic: (base + (BigInt(incrementAtomic) > 0n ? BigInt(incrementAtomic) : 0n)).toString(),
       });
     },
   };

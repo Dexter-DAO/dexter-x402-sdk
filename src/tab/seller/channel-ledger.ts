@@ -25,6 +25,19 @@ import { join, dirname } from 'node:path';
 import type { AtomicAmount, SignedVoucher } from '../types';
 
 /**
+ * Per-channel async mutex. Serializes read-modify-write on one channel's ledger
+ * entry so concurrent same-channel requests cannot lose a delivered update.
+ * Lightweight promise-chain per channelId; the map entry is a tail promise.
+ */
+const _channelLocks = new Map<string, Promise<unknown>>();
+export function withChannelLock<T>(channelId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = _channelLocks.get(channelId) ?? Promise.resolve();
+  const run = prev.then(() => fn(), () => fn()); // run fn after prev settles, success or fail
+  _channelLocks.set(channelId, run.then(() => undefined, () => undefined));
+  return run;
+}
+
+/**
  * Read-through cache of the on-chain SessionRegistration money ledger.
  * RESERVED for Step 4 (lock_voucher / LockedClaim). Not populated by the
  * off-chain meter today. All amounts are atomic (base units) strings.

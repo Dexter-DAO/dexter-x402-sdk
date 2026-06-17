@@ -39,7 +39,7 @@ import {
   ScopeViolationError,
 } from './verify';
 
-import { InMemoryChannelLedger, type ChannelLedger } from './channel-ledger';
+import { InMemoryChannelLedger, withChannelLock, type ChannelLedger } from './channel-ledger';
 import { atomicToHuman, humanToAtomic } from '../tab';
 
 // ── Augmented Express request type ─────────────────────────────────────
@@ -253,14 +253,19 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
         );
       }
 
-      // 6. Read the durable delivered baseline for this channel, then persist
-      //    the accepted voucher (delivered unchanged at acceptance time).
+      // 6. Read the durable delivered baseline for the budget, then persist the
+      //    accepted voucher WITHOUT touching delivered (delivered only advances
+      //    on the meter's terminal path). Locked so a concurrent request can't
+      //    interleave a stale write.
       const prior = await ledger.get(channelId);
       const deliveredBaselineAtomic = prior ? BigInt(prior.deliveredCumulativeAtomic) : 0n;
-      await ledger.set(channelId, {
-        lastVoucher: voucher,
-        deliveredCumulativeAtomic: deliveredBaselineAtomic.toString(),
-        onChain: prior?.onChain,
+      await withChannelLock(channelId, async () => {
+        const cur = await ledger.get(channelId);
+        await ledger.set(channelId, {
+          lastVoucher: voucher,
+          deliveredCumulativeAtomic: cur ? cur.deliveredCumulativeAtomic : '0',
+          onChain: cur?.onChain,
+        });
       });
 
       // 7. Update the hot-path registration cache and attach the SellerTab.
@@ -272,12 +277,17 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
         deliveredBaselineAtomic,
         // recordDelivered: the meter calls this on terminal events to persist
         // the new lifetime delivered cumulative; keep lastVoucher + onChain.
-        async (cumAtomic: string) => {
-          const cur = await ledger.get(channelId);
-          await ledger.set(channelId, {
-            lastVoucher: cur?.lastVoucher ?? voucher,
-            deliveredCumulativeAtomic: cumAtomic,
-            onChain: cur?.onChain,
+        async (incrementAtomic: string) => {
+          await withChannelLock(channelId, async () => {
+            const cur = await ledger.get(channelId);
+            const base = cur ? BigInt(cur.deliveredCumulativeAtomic) : 0n;
+            const inc = BigInt(incrementAtomic);
+            const nextDelivered = inc > 0n ? base + inc : base; // monotonic, never backward
+            await ledger.set(channelId, {
+              lastVoucher: cur?.lastVoucher ?? voucher,
+              deliveredCumulativeAtomic: nextDelivered.toString(),
+              onChain: cur?.onChain,
+            });
           });
         },
         // charge stub (unchanged): the route handler doesn't drive charging.
