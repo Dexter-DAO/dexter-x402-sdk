@@ -2,10 +2,11 @@
  * Solana VaultAdapter — production implementation against the deployed
  * dexter-vault v2 program on Solana mainnet.
  *
- * Two passkey signing paths are supported via the `passkeySigner` field:
+ * Two passkey signing paths are supported via the `passkeySigner` field,
+ * both conforming to vault's canonical `PasskeySignerWithPublicKey`:
  *   - CLI/Node: a noble-curves P-256 signer wrapping a local keypair
- *     (`./passkey-noble.ts`).
- *   - Browser: a WebAuthn-backed signer (lands in Phase 5 / React work).
+ *     (`passkeySignerFromP256Keypair` in `./passkey-noble.ts`).
+ *   - Browser: vault's `DexterApiBrowserPasskeySigner` drops in with no shim.
  *
  * The adapter's job is to (a) take the buyer's session scope, (b) get a
  * passkey signature endorsing it, (c) submit the on-chain
@@ -68,33 +69,20 @@ import {
 // @dexterai/vault to stay in lockstep with the on-chain register handler.
 import { fetchVaultSessionAccounts, sessionPdasOf, waitForSession } from '@dexterai/vault/session';
 
-import type { P256Keypair, SignedPasskeyPayload } from './passkey-noble';
-import { signOperationWithPasskey } from './passkey-noble';
+import { sha256 } from '@noble/hashes/sha256';
 
-// ── Passkey signer abstraction ─────────────────────────────────────────
+// ── Passkey signer abstraction (unified with @dexterai/vault) ───────────
 //
-// We don't bake "noble keypair" into VaultAdapter; instead we accept a
-// signer interface. That lets the browser path drop in a WebAuthn-backed
-// implementation later without changing the adapter or any caller.
+// The adapter consumes vault's canonical signer shape: a 33-byte SEC1
+// publicKey + sign(challenge). Both paths conform — node via
+// passkeySignerFromP256Keypair, browser via vault's
+// DexterApiBrowserPasskeySigner — with NO bridge shim. The adapter owns
+// the x402-protocol assembly (challenge = sha256(op); precompileMessage =
+// authenticatorData ‖ sha256(clientDataJSON)).
 
-export interface PasskeySigner {
-  /** 33-byte SEC1 compressed P-256 public key. The vault stores this on
-   *  init; the on-chain verifier compares against it on every passkey-
-   *  signed instruction. */
-  publicKey: Uint8Array;
-  /** Sign an arbitrary operation-message bundle in the WebAuthn shape the
-   *  on-chain verifier expects. The CLI path uses noble-curves; the
-   *  browser path will use navigator.credentials.get(). */
-  signOperation(operationMessage: Uint8Array): Promise<SignedPasskeyPayload>;
-}
-
-/** Build a PasskeySigner from a locally-held P-256 keypair (CLI path). */
-export function passkeySignerFromP256Keypair(kp: P256Keypair): PasskeySigner {
-  return {
-    publicKey: kp.publicKey,
-    signOperation: async (msg) => signOperationWithPasskey(kp, msg),
-  };
-}
+import type { PasskeySignerWithPublicKey as PasskeySigner } from '@dexterai/vault/signers';
+export type { PasskeySignerWithPublicKey as PasskeySigner } from '@dexterai/vault/signers';
+export { passkeySignerFromP256Keypair } from './passkey-noble';
 
 // ── Adapter options ────────────────────────────────────────────────────
 
@@ -243,16 +231,19 @@ class SolanaVaultAdapter implements VaultAdapter {
     });
 
     // 3. Have the passkey sign it. This is the only passkey prompt for
-    //    the entire tab lifecycle.
-    const signed = await this.passkey.signOperation(message);
+    //    the entire tab lifecycle. challenge = sha256(operationMessage);
+    //    the adapter owns the x402-protocol assembly.
+    const challenge = sha256(message);
+    const { signature, clientDataJSON, authenticatorData } = await this.passkey.sign(challenge);
+    const precompileMessage = concatBytes(authenticatorData, sha256(clientDataJSON));
 
     // 4. Build the two-instruction tx: precompile verifier + the vault
     //    instruction. The precompile MUST come first; the vault handler
     //    reads it from the instructions sysvar.
     const precompileIx = buildSecp256r1VerifyInstruction(
       this.passkey.publicKey,
-      signed.signature,
-      signed.precompileMessage,
+      signature,
+      precompileMessage,
     );
     // V6: the register ix needs the vault's existing session PDAs (the
     // overcommit aggregate gate sums their caps) + a rent payer for the
@@ -269,8 +260,8 @@ class SolanaVaultAdapter implements VaultAdapter {
       expiresAt: BigInt(scope.expiresAtUnix),
       allowedCounterparty: counterparty,
       nonce,
-      clientDataJSON: signed.clientDataJSON,
-      authenticatorData: signed.authenticatorData,
+      clientDataJSON,
+      authenticatorData,
       payer: this.feePayer.publicKey,
       siblingSessionPdas,
     });
@@ -368,20 +359,22 @@ class SolanaVaultAdapter implements VaultAdapter {
     });
 
     // 2. Passkey-sign the revocation. ONE more prompt at tab close.
-    const signed = await this.passkey.signOperation(message);
+    const challenge = sha256(message);
+    const { signature, clientDataJSON, authenticatorData } = await this.passkey.sign(challenge);
+    const precompileMessage = concatBytes(authenticatorData, sha256(clientDataJSON));
 
     // 3. Submit the two-instruction tx.
     const precompileIx = buildSecp256r1VerifyInstruction(
       this.passkey.publicKey,
-      signed.signature,
-      signed.precompileMessage,
+      signature,
+      precompileMessage,
     );
     const revokeIx = buildRevokeSessionKeyInstruction({
       vaultPda: this.vaultPdaKey,
       // V6: revoke names the per-counterparty session PDA (Borsh arg + seed).
       allowedCounterparty: new PublicKey(session.scope.allowedCounterparty),
-      clientDataJSON: signed.clientDataJSON,
-      authenticatorData: signed.authenticatorData,
+      clientDataJSON,
+      authenticatorData,
     });
 
     const tx = new Transaction().add(precompileIx, revokeIx);
@@ -413,6 +406,14 @@ export function createSolanaVaultAdapter(
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
+
+/** x402-protocol precompile assembly: authenticatorData ‖ sha256(clientDataJSON). */
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
 
 function deriveNonce(): number {
   // Process-local monotonic-ish nonce. The on-chain program doesn't

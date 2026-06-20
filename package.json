@@ -1,6 +1,6 @@
 {
   "name": "@dexterai/x402",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "description": "Full-stack x402 SDK - add paid API monetization to any endpoint. Express middleware, React hooks, Access Pass, dynamic pricing. Solana, Base, Polygon, Arbitrum, Optimism, Avalanche, SKALE.",
   "author": "Dexter",
   "license": "MIT",
@@ -76,7 +76,7 @@
     "release:major": "npm version major && npm publish --access public"
   },
   "dependencies": {
-    "@dexterai/vault": "^0.9.0",
+    "@dexterai/vault": "^0.13.0",
     "@dexterai/x402-ads-types": "^0.2.0",
     "@dexterai/x402-core": "^1.4.0",
     "@noble/curves": "^1.9.7",

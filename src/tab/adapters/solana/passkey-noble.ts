@@ -126,16 +126,36 @@ export function signOperationWithPasskey(
 ): SignedPasskeyPayload {
   // The challenge baked into clientDataJSON is sha256(operationMessage).
   // The on-chain handler recomputes this from its args and refuses the
-  // tx if it doesn't match.
+  // tx if it doesn't match. Delegates to signChallenge so the node and
+  // unified-signer paths share one byte-exact ceremony.
   const challenge = sha256(operationMessage);
+  const { signature, clientDataJSON, authenticatorData } = signChallenge(keypair, challenge);
+  const precompileMessage = new Uint8Array(authenticatorData.length + 32);
+  precompileMessage.set(authenticatorData, 0);
+  precompileMessage.set(sha256(clientDataJSON), authenticatorData.length);
+  return { clientDataJSON, authenticatorData, precompileMessage, signature };
+}
 
+/**
+ * The unified `PasskeySigner.sign(challenge)` ceremony for the node path.
+ * Builds clientDataJSON / authenticatorData from the GIVEN challenge (the
+ * caller has already computed challenge = sha256(operationMessage)) and
+ * returns the same three buffers the vault's browser `PasskeySigner.sign`
+ * returns. Crucially it does NOT assemble `precompileMessage` — that's
+ * x402-protocol assembly the adapter rebuilds itself, identical on both
+ * the node and browser paths.
+ */
+export function signChallenge(
+  keypair: P256Keypair,
+  challenge: Uint8Array,
+): { signature: Uint8Array; clientDataJSON: Uint8Array; authenticatorData: Uint8Array } {
   const clientDataJSON = buildClientDataJSON(challenge);
   const authenticatorData = buildAuthenticatorData(1);
 
-  // The precompile actually verifies authenticatorData || sha256(clientDataJSON).
-  const precompileMessage = new Uint8Array(
-    authenticatorData.length + 32,
-  );
+  // The precompile verifies authenticatorData || sha256(clientDataJSON);
+  // we sign over its sha256. (The adapter rebuilds the same precompile
+  // message to feed buildSecp256r1VerifyInstruction.)
+  const precompileMessage = new Uint8Array(authenticatorData.length + 32);
   precompileMessage.set(authenticatorData, 0);
   precompileMessage.set(sha256(clientDataJSON), authenticatorData.length);
 
@@ -145,10 +165,22 @@ export function signOperationWithPasskey(
   const sig = p256.sign(messageHash, keypair.privateKey, { lowS: true });
   const signature = sig.toCompactRawBytes();
 
+  return { signature, clientDataJSON, authenticatorData };
+}
+
+/**
+ * Build a unified `PasskeySignerWithPublicKey` (vault's canonical shape)
+ * from a locally-held P-256 keypair — the node/CLI path. Returns
+ * `{ publicKey, sign(challenge) }`; the adapter computes the challenge and
+ * rebuilds the precompile message. Drop-in equivalent to vault's
+ * DexterApiBrowserPasskeySigner.
+ */
+export function passkeySignerFromP256Keypair(kp: P256Keypair): {
+  publicKey: Uint8Array;
+  sign(challenge: Uint8Array): Promise<{ signature: Uint8Array; clientDataJSON: Uint8Array; authenticatorData: Uint8Array }>;
+} {
   return {
-    clientDataJSON,
-    authenticatorData,
-    precompileMessage,
-    signature,
+    publicKey: kp.publicKey,
+    sign: async (challenge) => signChallenge(kp, challenge),
   };
 }
