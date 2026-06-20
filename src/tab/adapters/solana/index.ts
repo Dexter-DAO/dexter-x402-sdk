@@ -73,12 +73,14 @@ import { sha256 } from '@noble/hashes/sha256';
 
 // ── Passkey signer abstraction (unified with @dexterai/vault) ───────────
 //
-// The adapter consumes vault's canonical signer shape: a 33-byte SEC1
-// publicKey + sign(challenge). Both paths conform — node via
+// The adapter consumes vault 0.19's canonical signer shape: a 33-byte SEC1
+// publicKey + signOperation(operationMessage). Both paths conform — node via
 // passkeySignerFromP256Keypair, browser via vault's
-// DexterApiBrowserPasskeySigner — with NO bridge shim. The adapter owns
-// the x402-protocol assembly (challenge = sha256(op); precompileMessage =
-// authenticatorData ‖ sha256(clientDataJSON)).
+// DexterApiBrowserPasskeySigner — with NO bridge shim, sharing ONE vault
+// (vault is a peerDependency, never bundled). The SIGNER owns the hashing
+// locus (challenge = sha256(op), internal); the adapter hands it the RAW
+// operation message and only owns the precompile assembly
+// (precompileMessage = authenticatorData ‖ sha256(clientDataJSON)).
 
 import type { PasskeySignerWithPublicKey as PasskeySigner } from '@dexterai/vault/signers';
 export type { PasskeySignerWithPublicKey as PasskeySigner } from '@dexterai/vault/signers';
@@ -231,10 +233,10 @@ class SolanaVaultAdapter implements VaultAdapter {
     });
 
     // 3. Have the passkey sign it. This is the only passkey prompt for
-    //    the entire tab lifecycle. challenge = sha256(operationMessage);
-    //    the adapter owns the x402-protocol assembly.
-    const challenge = sha256(message);
-    const { signature, clientDataJSON, authenticatorData } = await this.passkey.sign(challenge);
+    //    the entire tab lifecycle. The signer hashes internally
+    //    (challenge = sha256(operationMessage)); the adapter owns only the
+    //    precompile assembly below.
+    const { signature, clientDataJSON, authenticatorData } = await this.passkey.signOperation(message);
     const precompileMessage = concatBytes(authenticatorData, sha256(clientDataJSON));
 
     // 4. Build the two-instruction tx: precompile verifier + the vault
@@ -358,9 +360,9 @@ class SolanaVaultAdapter implements VaultAdapter {
       sessionPubkey: session.publicKey,
     });
 
-    // 2. Passkey-sign the revocation. ONE more prompt at tab close.
-    const challenge = sha256(message);
-    const { signature, clientDataJSON, authenticatorData } = await this.passkey.sign(challenge);
+    // 2. Passkey-sign the revocation. ONE more prompt at tab close. The
+    //    signer hashes the message internally (challenge = sha256(message)).
+    const { signature, clientDataJSON, authenticatorData } = await this.passkey.signOperation(message);
     const precompileMessage = concatBytes(authenticatorData, sha256(clientDataJSON));
 
     // 3. Submit the two-instruction tx.

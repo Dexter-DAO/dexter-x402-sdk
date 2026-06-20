@@ -38,8 +38,10 @@ The closest familiar shape is an auth-and-capture card hold, with the hold enfor
 ## Install
 
 ```bash
-npm install @dexterai/x402
+npm install @dexterai/x402 @dexterai/vault
 ```
+
+`@dexterai/vault` is a **peer dependency** (`>=0.19`): the tab adapter and your app share ONE vault instance — the passkey signer it consumes (`signOperation`) is the same type your app builds, with no bridge shim. Install it alongside.
 
 One install is both sides: the buyer surface at `@dexterai/x402/tab`, the seller surface at `@dexterai/x402/tab/seller`.
 
@@ -54,7 +56,7 @@ const vault = createSolanaVaultAdapter({
   connection,        // your Solana Connection (any RPC)
   swigAddress,       // the vault's Swig state account, from enrollment
   vaultPda,          // the vault's gate PDA, from enrollment
-  passkeySigner,     // browser: WebAuthnAssertion; server agent: passkeySignerFromP256Keypair(kp)
+  passkeySigner,     // signOperation signer — browser: vault's DexterApiBrowserPasskeySigner; server agent: passkeySignerFromP256Keypair(kp)
   feePayer,          // lamport fee payer (a Signer)
 });
 ```
@@ -144,7 +146,7 @@ The full threat model and trust assumptions live in the program's [`SECURITY.md`
 
 When a partner's app opens a tab for a user, the approval runs on one Dexter-hosted consent screen, deep-linked from the partner's app. The user sees the counterparty, the cap, and the expiry, taps their passkey once, and control returns to the app. The partner builds no approval UI and never handles a passkey.
 
-The screen is hosted by Dexter for a structural reason, not a stylistic one: the vault's passkey can only sign on Dexter's own origin, so a user cannot be phished into approving on a look-alike page. The safety is a property of where the key will sign. Flow and routing: [docs.dexter.cash/tabs](https://docs.dexter.cash). **[TODO: confirm final docs path once #5 lands.]**
+The screen is hosted by Dexter for a structural reason, not a stylistic one: the vault's passkey can only sign on Dexter's own origin, so a user cannot be phished into approving on a look-alike page. The safety is a property of where the key will sign. Flow and routing: [docs.dexter.cash](https://docs.dexter.cash).
 
 ---
 
@@ -310,6 +312,15 @@ State auto-persists and resumes with `resumeBatchChannel({ wallet, network, salt
 
 `bazaarExtension()` plus `declareDiscoveryExtension(config)` attach a spec-compliant `extensions.bazaar` block to a route's 402; extensions are opt-in and failure-isolated, so the payment path is never affected. `sponsoredAccess` injects `_x402_sponsored` into responses; read it with `getSponsoredRecommendations(response)`. Campaign creation is x402-gated at `x402ads.io`.
 
+### Migrating to 5.0.0 (breaking)
+
+Two changes, both about packaging and the passkey signer — the payment path itself is unchanged.
+
+1. **`@dexterai/vault` is now a peer dependency** (`>=0.19`), not bundled. The tab adapter and your app share ONE vault instance, so there are no duplicate copies and no `instanceof`/type mismatches across packages. Install it alongside: `npm install @dexterai/x402 @dexterai/vault`.
+2. **The passkey signer contract is `signOperation(operationMessage)`**, replacing the old `sign(challenge)`. The adapter now hands the signer the RAW operation message and the signer hashes it internally (`challenge = sha256(op)`, the on-chain `webauthn.rs` law). If you wrote a custom signer against `sign(challenge)`, rename the method to `signOperation` and delete your pre-hash — pass the message straight through. Vault's `DexterApiBrowserPasskeySigner` (browser) and this package's `passkeySignerFromP256Keypair` (node/agent) already conform.
+
+To pin the old surface, stay on `@dexterai/x402@^4`.
+
 ### Removed in v4.0.0 (migration)
 
 The v1-era helpers were removed in `4.0.0`. The payment engine is unchanged — the canonical entrypoints have done their jobs since 3.x:
@@ -334,7 +345,7 @@ The v1-era helpers were removed in `4.0.0`. The payment engine is unchanged — 
 npm run build      # ESM + CJS
 npm run dev        # Watch mode
 npm run typecheck
-npm test           # 359 vitest tests
+npm test           # 364 vitest tests
 ```
 
 ## License

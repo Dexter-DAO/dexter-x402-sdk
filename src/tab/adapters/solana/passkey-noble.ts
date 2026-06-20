@@ -21,6 +21,8 @@
 import { p256 } from '@noble/curves/p256';
 import { sha256 } from '@noble/hashes/sha256';
 
+import type { PasskeySignerWithPublicKey } from '@dexterai/vault/signers';
+
 // ── Constants ──────────────────────────────────────────────────────────
 
 /** Relying-party id baked into authenticatorData's rpIdHash. */
@@ -137,13 +139,15 @@ export function signOperationWithPasskey(
 }
 
 /**
- * The unified `PasskeySigner.sign(challenge)` ceremony for the node path.
- * Builds clientDataJSON / authenticatorData from the GIVEN challenge (the
- * caller has already computed challenge = sha256(operationMessage)) and
- * returns the same three buffers the vault's browser `PasskeySigner.sign`
- * returns. Crucially it does NOT assemble `precompileMessage` — that's
- * x402-protocol assembly the adapter rebuilds itself, identical on both
- * the node and browser paths.
+ * The low-level WebAuthn ceremony for the node path. Builds clientDataJSON /
+ * authenticatorData from the GIVEN challenge (the caller has already computed
+ * challenge = sha256(operationMessage)) and returns the same three buffers
+ * the vault's browser signer's assertion produces. Crucially it does NOT
+ * assemble `precompileMessage` — that's x402-protocol assembly the adapter
+ * rebuilds itself, identical on both the node and browser paths.
+ *
+ * `passkeySignerFromP256Keypair` wraps this with the sha256(op) hashing step
+ * so it conforms to vault 0.19's `signOperation(operationMessage)` contract.
  */
 export function signChallenge(
   keypair: P256Keypair,
@@ -169,18 +173,24 @@ export function signChallenge(
 }
 
 /**
- * Build a unified `PasskeySignerWithPublicKey` (vault's canonical shape)
+ * Build a unified `PasskeySignerWithPublicKey` (vault's canonical 0.19 shape)
  * from a locally-held P-256 keypair — the node/CLI path. Returns
- * `{ publicKey, sign(challenge) }`; the adapter computes the challenge and
- * rebuilds the precompile message. Drop-in equivalent to vault's
- * DexterApiBrowserPasskeySigner.
+ * `{ credentialId, publicKey, signOperation(operationMessage) }`. The signer
+ * owns the hashing locus: it computes `challenge = sha256(operationMessage)`
+ * internally (mirroring vault's `DexterApiBrowserPasskeySigner.signOperation`),
+ * so the adapter hands it the RAW operation message and never pre-hashes.
+ * The adapter still rebuilds the precompile message from the returned bytes.
+ *
+ * `credentialId` is empty for the node path — there is no platform
+ * authenticator credential; the on-chain verifier authenticates via the
+ * secp256r1 precompile over the clientDataJSON/authenticatorData, not the
+ * credentialId, so an empty value is correct here.
  */
-export function passkeySignerFromP256Keypair(kp: P256Keypair): {
-  publicKey: Uint8Array;
-  sign(challenge: Uint8Array): Promise<{ signature: Uint8Array; clientDataJSON: Uint8Array; authenticatorData: Uint8Array }>;
-} {
+export function passkeySignerFromP256Keypair(kp: P256Keypair): PasskeySignerWithPublicKey {
   return {
+    credentialId: new Uint8Array(0),
     publicKey: kp.publicKey,
-    sign: async (challenge) => signChallenge(kp, challenge),
+    signOperation: async (operationMessage) =>
+      signChallenge(kp, sha256(operationMessage)),
   };
 }
