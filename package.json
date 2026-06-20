@@ -60,6 +60,7 @@
   "files": [
     "dist",
     "README.md",
+    "REFERENCE.md",
     "LICENSE",
     "assets"
   ],
