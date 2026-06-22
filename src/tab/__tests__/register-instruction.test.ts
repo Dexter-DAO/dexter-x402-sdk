@@ -45,6 +45,15 @@ const buildIx = () =>
     authenticatorData: new Uint8Array(37).fill(0xbb),
     payer: PAYER,
     siblingSessionPdas: [],
+    // The adapter no longer derives the ATA — the caller resolves it (via
+    // @dexterai/vault's resolveVaultUsdcAta) and passes it. We pass the derived
+    // address so the keys[1] assertion below holds; null would exercise the
+    // credit-only sentinel path (covered in the vault SDK's byte-parity tests).
+    vaultUsdcAta: getAssociatedTokenAddressSync(
+      new PublicKey(USDC_MINT),
+      deriveSwigWalletAddress(SWIG),
+      true,
+    ),
   });
 
 describe('buildAdapterRegisterInstruction (real vault builder)', () => {

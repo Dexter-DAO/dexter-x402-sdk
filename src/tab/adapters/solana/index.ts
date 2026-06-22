@@ -30,10 +30,6 @@ import {
   type ConfirmOptions,
 } from '@solana/web3.js';
 
-import { getAssociatedTokenAddressSync } from '@solana/spl-token';
-
-import { USDC_MINT } from '../../../constants';
-
 import type {
   VaultAdapter,
   SessionScope,
@@ -48,7 +44,6 @@ import {
   buildRegisterSessionKeyInstruction,
   buildRevokeSessionKeyInstruction,
   buildSecp256r1VerifyInstruction,
-  deriveSwigWalletAddress,
   DEXTER_VAULT_PROGRAM_ID,
 } from '../../instructions';
 
@@ -67,7 +62,7 @@ import {
 
 // V6 session-discovery helpers (sibling PDAs for the overcommit gate). Owned by
 // @dexterai/vault to stay in lockstep with the on-chain register handler.
-import { fetchVaultSessionAccounts, sessionPdasOf, waitForSession } from '@dexterai/vault/session';
+import { fetchVaultSessionAccounts, sessionPdasOf, waitForSession, resolveVaultUsdcAta } from '@dexterai/vault/session';
 
 import { sha256 } from '@noble/hashes/sha256';
 
@@ -140,18 +135,14 @@ export interface AdapterRegisterIxParams {
   payer: PublicKey;
   /** V6: existing session PDAs for this vault — the overcommit aggregate gate. */
   siblingSessionPdas: PublicKey[];
+  /** The vault swig-wallet's USDC ATA, or `null` for a credit-only vault whose
+   *  ATA does not exist on-chain (own-USDC counted as 0). Resolve it through
+   *  `@dexterai/vault`'s `resolveVaultUsdcAta` — the SINGLE source of truth for
+   *  the derive-and-probe decision. The adapter no longer derives it locally. */
+  vaultUsdcAta: PublicKey | null;
 }
 
 export function buildAdapterRegisterInstruction(p: AdapterRegisterIxParams) {
-  // The USDC ATA's owner is the canonical swig WALLET address (a PDA under
-  // the Swig program, derived from the state account) — NOT the state
-  // account itself. allowOwnerOffCurve must be true for a PDA owner.
-  const swigWalletAddress = deriveSwigWalletAddress(p.swigAddress);
-  const vaultUsdcAta = getAssociatedTokenAddressSync(
-    new PublicKey(USDC_MINT),
-    swigWalletAddress,
-    true, // allowOwnerOffCurve — swig wallet address is a PDA
-  );
   return buildRegisterSessionKeyInstruction({
     vaultPda: p.vaultPda,
     sessionPubkey: p.sessionPubkey,
@@ -161,7 +152,7 @@ export function buildAdapterRegisterInstruction(p: AdapterRegisterIxParams) {
     allowedCounterparty: p.allowedCounterparty,
     nonce: p.nonce,
     swigAddress: p.swigAddress,
-    vaultUsdcAta,
+    vaultUsdcAta: p.vaultUsdcAta,
     clientDataJSON: p.clientDataJSON,
     authenticatorData: p.authenticatorData,
     payer: p.payer,
@@ -253,6 +244,14 @@ class SolanaVaultAdapter implements VaultAdapter {
     const siblingSessionPdas = sessionPdasOf(
       await fetchVaultSessionAccounts(this.connection, this.vaultPdaKey),
     );
+    // Resolve the vault's USDC ATA through the SINGLE shared helper: returns the
+    // ATA when it exists (funded vault), or null for a credit-only vault whose
+    // ATA was never created (own-USDC counts as 0 on-chain). One source of truth
+    // for the derive-and-probe decision — the adapter never derives it itself.
+    const vaultUsdcAta = await resolveVaultUsdcAta(
+      this.connection,
+      new PublicKey(this.swigAddress),
+    );
     const registerIx = buildAdapterRegisterInstruction({
       vaultPda: this.vaultPdaKey,
       swigAddress: new PublicKey(this.swigAddress),
@@ -266,6 +265,7 @@ class SolanaVaultAdapter implements VaultAdapter {
       authenticatorData,
       payer: this.feePayer.publicKey,
       siblingSessionPdas,
+      vaultUsdcAta,
     });
 
     const tx = new Transaction().add(precompileIx, registerIx);
