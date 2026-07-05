@@ -70,6 +70,20 @@ import { TabImpl, armTabOpen, DEFAULT_FACILITATOR_URL } from './tab';
 // @dexterai/vault directly.
 export type { ApprovedSpendGrantParams };
 
+/**
+ * Options for `tabFromGrant`.
+ *
+ * CONCURRENCY WARNING (TOCTOU) — read this before holding ONE session key
+ * across CONCURRENT spend paths: the resume frontier is read from the chain
+ * ONCE, at construction. Concurrent holders of the same session key — or a
+ * settle/lock racing that read — can make the frontier stale. The failure
+ * mode is SAFE REJECTION, never overspend: the seller rejects
+ * `non_monotonic` and the chain/facilitator reject `non_monotonic_cumulative`,
+ * so a stale tab's vouchers bounce instead of double-spending. But consumers
+ * that drive one session key from multiple concurrent spenders (the T4
+ * anon/MCP rail is the canonical case) MUST serialize per
+ * (vault, counterparty): one live tab per pair, one spend in flight at a time.
+ */
 export interface TabFromGrantOptions {
   /**
    * The granted session SECRET. Accepts the shapes the grant flow actually
@@ -193,8 +207,13 @@ export async function tabFromGrant(options: TabFromGrantOptions): Promise<Tab> {
     );
   }
   if (!isSessionLive(state)) {
+    // isSessionLive = version === 1 AND unexpired. version 0 was handled
+    // above; anything else here is either an expired v1 session or an
+    // unsupported/unknown version — name it truthfully, still fail-closed.
     throw new Error(
-      `tab_session_not_live: SessionAccount is present but expired (expiresAt=${state.session.expiresAt})`,
+      state.version !== 1
+        ? `tab_session_not_live: SessionAccount has unsupported version ${state.version} — not a live v1 session`
+        : `tab_session_not_live: SessionAccount is present but expired (expiresAt=${state.session.expiresAt})`,
     );
   }
   if (!bytesEqual(state.session.sessionPubkey, keypair.publicKey)) {

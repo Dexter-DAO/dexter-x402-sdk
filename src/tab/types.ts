@@ -86,7 +86,14 @@ export interface VaultAdapter {
 export interface TabState {
   /** Whether the tab is currently open (on chain) and accepting vouchers. */
   isOpen: boolean;
-  /** Cumulative amount spent against this tab so far. */
+  /** Cumulative amount spent against this tab so far — the SESSION-LIFETIME
+   *  odometer, matching the on-chain cumulative semantics. For a
+   *  grant-resumed tab (`tabFromGrant`) this INCLUDES the on-chain frontier
+   *  the tab resumed above, NOT just this process's spend — a receipt or
+   *  meter that displays this field as "what this run spent" would overstate
+   *  by the entire frontier. This-process spend = `spent` minus the frontier
+   *  the tab was constructed at. (openTab tabs start at 0, where the two
+   *  readings agree.) */
   spent: HumanAmount;
   /** Remaining headroom under the session's cap. */
   remaining: HumanAmount;
