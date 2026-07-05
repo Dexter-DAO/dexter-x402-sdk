@@ -60,6 +60,14 @@ export {
 // Phase 2 implementations.
 export { openTab, resumeTab, humanToAtomic, atomicToHuman, voucherToHeader, DEFAULT_FACILITATOR_URL } from './tab';
 
+// Grant lane: a Tab from a granted session key (the /tabs/connect ceremony's
+// custody modes) — openTab minus the passkey, resume = the on-chain frontier.
+export {
+  tabFromGrant,
+  type TabFromGrantOptions,
+  type ApprovedSpendGrantParams,
+} from './from-grant';
+
 // Step 3a: pay-a-URL — counterparty resolved from the wire, never the caller.
 export { resolveTabOffer, type TabOffer, type TabOfferResult } from './resolve';
 export {

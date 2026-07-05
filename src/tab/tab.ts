@@ -97,6 +97,24 @@ interface TabInternals {
   totalCapAtomic: bigint;
   expiresAtUnix: number;
   facilitatorUrl: string;
+  /**
+   * Starting value of the cumulative odometer. `openTab` opens fresh sessions
+   * and omits this (0n). `tabFromGrant` seeds the on-chain frontier
+   * `max(session.spent, session.crystallizedCumulative)` so the FIRST voucher
+   * strictly exceeds everything the chain has already terminally counted —
+   * the resume story: the chain is the durable counter, no local state.
+   */
+  initialCumulativeAtomic?: bigint;
+  /**
+   * What `close()` does after posting the final voucher to `/tab/settle`:
+   *  - 'revoke' (default, openTab): passkey-sign + submit the on-chain session
+   *    revocation via `vault.signCloseTab`.
+   *  - 'settle-only' (tabFromGrant): NO revocation — a grant-held tab has no
+   *    passkey, revoke belongs to the wallet owner's surfaces. The session PDA
+   *    stays live until owner-revoked or expiry-swept. Never a silent no-op:
+   *    `TabCloseResult.sessionRevoked` reports which path ran.
+   */
+  closeMode?: 'revoke' | 'settle-only';
 }
 
 class TabImpl implements Tab {
@@ -105,7 +123,12 @@ class TabImpl implements Tab {
   readonly counterparty: string;
 
   private readonly internals: TabInternals;
-  private cumulativeAtomic: bigint = 0n;
+  /** The odometer floor this tab was constructed at — 0n for openTab, the
+   *  on-chain frontier for tabFromGrant. Rollback of the first voucher
+   *  reverts HERE, never below (below would sign non-monotonic cumulatives
+   *  the seller and the chain both reject). */
+  private readonly initialCumulativeAtomic: bigint;
+  private cumulativeAtomic: bigint;
   private sequenceNumber: number = 0;
   private closed = false;
   /** Most recent voucher we signed. Held so `close()` can POST it to the
@@ -124,6 +147,8 @@ class TabImpl implements Tab {
     this.channelId = internals.channelIdHex;
     this.network = internals.network;
     this.counterparty = internals.counterparty;
+    this.initialCumulativeAtomic = internals.initialCumulativeAtomic ?? 0n;
+    this.cumulativeAtomic = this.initialCumulativeAtomic;
   }
 
   get state(): TabState {
@@ -231,9 +256,11 @@ class TabImpl implements Tab {
       this.cumulativeAtomic = BigInt(prev.payload.cumulativeAmount);
       this.lastSignedVoucher = prev;
     } else if (last.payload.sequenceNumber === 1) {
-      // The refused voucher was the tab's first — revert to the pristine state.
+      // The refused voucher was the tab's first — revert to the pristine
+      // state: the odometer FLOOR this tab was constructed at (0n for
+      // openTab; the on-chain frontier for a grant-resumed tab).
       this.sequenceNumber = 0;
-      this.cumulativeAtomic = 0n;
+      this.cumulativeAtomic = this.initialCumulativeAtomic;
       this.lastSignedVoucher = null;
     } else {
       // History exhausted (only one level retained) — refuse rather than guess.
@@ -319,17 +346,25 @@ class TabImpl implements Tab {
       );
     }
 
-    await this.internals.vault.signCloseTab(
-      this.internals.session,
-      this.channelId,
-      this.cumulativeAtomic.toString(),
-    );
+    // 'revoke' (openTab): passkey-sign + submit the on-chain revocation.
+    // 'settle-only' (tabFromGrant): a grant-held tab has NO passkey — the
+    // revoke belongs to the wallet owner's surfaces; skipping it here is a
+    // documented mode, reported honestly via `sessionRevoked` below.
+    const revoke = (this.internals.closeMode ?? 'revoke') === 'revoke';
+    if (revoke) {
+      await this.internals.vault.signCloseTab(
+        this.internals.session,
+        this.channelId,
+        this.cumulativeAtomic.toString(),
+      );
+    }
 
     this.closed = true;
     this.internals.session.privateKey.fill(0);
 
     return {
       settledAmount: atomicToHuman(this.cumulativeAtomic.toString()),
+      sessionRevoked: revoke,
       ...settled,
     };
   }

@@ -150,10 +150,18 @@ export interface Tab {
 
 /** Result of `Tab.close()`. */
 export interface TabCloseResult {
-  /** Cumulative human amount settled on chain. */
+  /** Cumulative human amount settled on chain. For a grant-resumed tab
+   *  (`tabFromGrant`) this is the session's lifetime odometer — frontier +
+   *  this process's spend — matching the on-chain cumulative semantics. */
   settledAmount: HumanAmount;
   /** Facilitator's on-chain settlement signature. */
   settleTx: string;
+  /** Whether close() revoked the session on chain. `openTab` tabs revoke
+   *  (passkey prompt); `tabFromGrant` tabs are settle-only — the grant
+   *  holder has no passkey, so the session PDA stays live until the wallet
+   *  owner revokes it or it expiry-sweeps. Absent on results predating this
+   *  field. */
+  sessionRevoked?: boolean;
   /** Atomic amount moved by the final settle, before any facilitator fee.
    *  Absent when the facilitator predates fee support. */
   grossAmount?: string;
