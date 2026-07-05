@@ -174,8 +174,20 @@ export class OnChainVerificationError extends Error {
   }
 }
 
+/** The session's on-chain terminal odometers, read as a by-product of the
+ *  first-voucher verification. `frontierAtomic` = max(spent, crystallized) —
+ *  the floor below which no voucher can ever settle or lock again. The
+ *  middleware seeds a FRESH channel's delivered baseline from it so a resumed
+ *  session can't re-consume budget that already settled/crystallized. */
+export interface OnChainSessionFrontier {
+  frontierAtomic: AtomicAmount;
+  spentAtomic: AtomicAmount;
+  crystallizedCumulativeAtomic: AtomicAmount;
+}
+
 /**
- * Verify a registration against on-chain state. Throws on any mismatch.
+ * Verify a registration against on-chain state. Throws on any mismatch;
+ * on success returns the session's terminal odometers (frontier).
  *
  * V6: a session is its own PDA ([b"session", vault, allowed_counterparty]),
  * NOT an inline field on the vault. We read that SessionAccount and confirm it
@@ -192,7 +204,7 @@ export class OnChainVerificationError extends Error {
 export async function verifyRegistrationOnChain(
   connection: Connection,
   registration: ParsedRegistration,
-): Promise<void> {
+): Promise<OnChainSessionFrontier> {
   const state = await fetchSessionAccount(
     connection,
     registration.vaultPda,
@@ -219,6 +231,19 @@ export async function verifyRegistrationOnChain(
       `on-chain ${bytesToHex(state.session.sessionPubkey)} != registration ${bytesToHex(registration.sessionPubkey)}`,
     );
   }
+
+  // Surface the terminal odometers we just paid an RPC read for. spent
+  // advances on settle, crystallizedCumulative on lock; a voucher at or below
+  // max(spent, crystallized) is dead on arrival at the facilitator, so the
+  // seller must never deliver under it as if it were fresh budget.
+  const spent = state.session.spent;
+  const crystallized = state.session.crystallizedCumulative;
+  const frontier = spent > crystallized ? spent : crystallized;
+  return {
+    frontierAtomic: frontier.toString(),
+    spentAtomic: spent.toString(),
+    crystallizedCumulativeAtomic: crystallized.toString(),
+  };
 }
 
 // ── Per-voucher signature verification (the per-chunk hot path) ────────

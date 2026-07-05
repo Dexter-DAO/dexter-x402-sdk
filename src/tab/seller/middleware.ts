@@ -228,10 +228,18 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
 
       // 2. Look up (or build) the session entry.
       let entry = cache.get(channelId);
+      // Chain frontier (max(spent, crystallized)) read as a by-product of the
+      // one-time on-chain verification. Non-null ONLY on the first voucher of
+      // a session in this process — used further down to seed a FRESH ledger
+      // entry's delivered baseline so a resumed session (or a restarted
+      // in-memory ledger) can't re-grant budget that already settled/locked.
+      let chainFrontierAtomic: string | null = null;
       if (!entry) {
         // First voucher for this channel — parse + verify the registration.
         const parsed = parseRegistration(voucher.sessionRegistration);
-        await verifyRegistrationOnChain(config.connection, parsed);
+        const onChain = await verifyRegistrationOnChain(config.connection, parsed);
+        // Defensive `?.`: custom/mocked verifiers may still return void.
+        chainFrontierAtomic = onChain?.frontierAtomic ?? null;
         entry = {
           registration: parsed,
           lastCumulativeAtomic: '0',
@@ -305,7 +313,16 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
                 lastCrystallizedCumulativeAtomic: entry.lastCrystallizedCumulativeAtomic,
               });
             }
-          }).catch(() => {});
+          }).catch((err) => {
+            // LOUD (no-silent-fallbacks): the lock LANDED but the watermark
+            // didn't persist — the next request will re-attempt the same span
+            // and draw a benign duplicate 409 from the facilitator.
+            console.error(
+              `[tab/seller] crystallize watermark persist FAILED channel=${channelId.slice(0, 16)}… ` +
+                `(lock landed; expect a duplicate-lock warn on the next request):`,
+              err,
+            );
+          });
         }
       };
 
@@ -346,7 +363,16 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
               }
             });
           }
-        })().catch(() => {});
+        })().catch((err) => {
+          // LOUD (no-silent-fallbacks): the close-path crystallize is the last
+          // chance to secure this request's final voucher — a crash here means
+          // the seller's exposure stays unsecured with no on-chain claim.
+          console.error(
+            `[tab/seller] close-path crystallize CRASHED channel=${channelId.slice(0, 16)}… ` +
+              `(final voucher NOT locked; exposure unsecured until the next request retries):`,
+            err,
+          );
+        });
       };
       res.on('close', crystallizeOnClose);
       res.on('finish', crystallizeOnClose);
@@ -358,13 +384,42 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
       //    onChain) we just acquired — omitting it would erase the lease one line
       //    after acquiring it, reopening the concurrent-same-channel rug.
       const prior = await ledger.get(channelId);
-      const deliveredBaselineAtomic = prior ? BigInt(prior.deliveredCumulativeAtomic) : 0n;
+      // A ledger entry is FRESH when it has never seen a voucher or delivery —
+      // tryAcquireLease auto-creates zeroed entries, so `prior != null` alone
+      // does not mean history exists. Only a fresh entry gets seeded from the
+      // chain frontier; real history is never overwritten (multi-instance
+      // reconciliation stays out of scope, as documented on the meter).
+      const priorIsFresh =
+        !prior?.lastVoucher && BigInt(prior?.deliveredCumulativeAtomic ?? '0') === 0n;
+      const seedAtomic =
+        chainFrontierAtomic !== null && priorIsFresh && BigInt(chainFrontierAtomic) > 0n
+          ? chainFrontierAtomic
+          : null;
+      if (seedAtomic !== null) {
+        console.info(
+          `[tab/seller] channel ${channelId.slice(0, 16)}… resumed: seeding delivered ` +
+            `baseline from chain frontier ${seedAtomic} (session already settled/locked ` +
+            `up to it — that span is not deliverable budget)`,
+        );
+      }
+      const deliveredBaselineAtomic =
+        seedAtomic !== null
+          ? BigInt(seedAtomic)
+          : prior
+            ? BigInt(prior.deliveredCumulativeAtomic)
+            : 0n;
       await withChannelLock(channelId, async () => {
         const cur = await ledger.get(channelId);
         await ledger.set(channelId, {
           ...cur,
           lastVoucher: voucher,
-          deliveredCumulativeAtomic: cur ? cur.deliveredCumulativeAtomic : '0',
+          deliveredCumulativeAtomic:
+            seedAtomic ?? (cur ? cur.deliveredCumulativeAtomic : '0'),
+          // Seed the crystallization watermark too: locks below the frontier
+          // are unlockable (facilitator 409s), so the un-crystallized span
+          // starts at zero on a resume.
+          lastCrystallizedCumulativeAtomic:
+            seedAtomic ?? cur?.lastCrystallizedCumulativeAtomic ?? '0',
         });
       });
 
@@ -403,7 +458,15 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
           // `lastCrystallizedCumulativeAtomic` in memory on success; persist
           // that advance back so the next request doesn't re-fire.
           if (updated) {
-            void crystallizeCadence(updated).catch(() => {});
+            void crystallizeCadence(updated).catch((err) => {
+              // LOUD (no-silent-fallbacks): the threshold cadence crashed
+              // before it could even attempt the lock POST.
+              console.error(
+                `[tab/seller] crystallize cadence CRASHED channel=${channelId.slice(0, 16)}… ` +
+                  `(threshold lock not attempted; retries at the next delivery):`,
+                err,
+              );
+            });
           }
         },
         // charge stub (unchanged): the route handler doesn't drive charging.

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import { maybeCrystallize, crystallizeNow } from '../crystallize';
 import type { ChannelLedgerEntry } from '../channel-ledger';
@@ -236,5 +236,120 @@ describe('maybeCrystallize', () => {
       maybeCrystallize(entry, CHANNEL_ID, FACILITATOR, NETWORK, cadence, { fetchImpl: fetchImpl as any }),
     ).resolves.toBeDefined();
     expect(entry.lastCrystallizedCumulativeAtomic).toBe('0');
+  });
+});
+
+// ── Loud logging (no-silent-fallbacks) ─────────────────────────────────
+//
+// The best-effort contract is unchanged (never throws, never blocks), but a
+// crystallize failure must NEVER be invisible: it is the seller-protection
+// path — silence here is how a dead /tab/lock went unnoticed in production.
+describe('crystallize loud logging', () => {
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let infoSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    errSpy.mockRestore();
+    warnSpy.mockRestore();
+    infoSpy.mockRestore();
+  });
+
+  const allCalls = (spy: ReturnType<typeof vi.spyOn>) =>
+    spy.mock.calls.map((c) => c.map(String).join(' ')).join('\n');
+
+  it('console.errors when the POST returns a non-2xx (real failure)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{"error":"tab_lock_failed"}', { status: 500 }));
+    const entry = entryFor('100000');
+
+    await crystallizeNow(entry, CHANNEL_ID, FACILITATOR, NETWORK, fetchImpl as any);
+
+    expect(errSpy).toHaveBeenCalled();
+    const logged = allCalls(errSpy);
+    expect(logged).toContain('crystallize');
+    expect(logged).toContain('500');
+    expect(logged).toContain(CHANNEL_ID.slice(0, 16)); // channel identifiable
+  });
+
+  it('console.errors when fetch rejects (facilitator unreachable)', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('ECONNREFUSED facilitator down');
+    });
+    const entry = entryFor('100000');
+
+    await crystallizeNow(entry, CHANNEL_ID, FACILITATOR, NETWORK, fetchImpl as any);
+
+    expect(errSpy).toHaveBeenCalled();
+    expect(allCalls(errSpy)).toContain('ECONNREFUSED');
+  });
+
+  it('console.errors on channel_id_mismatch (never silently drops a mis-keyed voucher)', async () => {
+    const { fetchImpl } = okFetch();
+    const entry = entryFor('100000');
+
+    await crystallizeNow(entry, 'b'.repeat(64), FACILITATOR, NETWORK, fetchImpl as any);
+
+    expect(errSpy).toHaveBeenCalled();
+    expect(allCalls(errSpy)).toContain('channel_id_mismatch');
+  });
+
+  it('console.warns (not errors) on a 409 duplicate — the voucher is already secured on-chain', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response('{"error":"claim_already_exists","claimPda":"X"}', { status: 409 }),
+    );
+    const entry = entryFor('100000');
+
+    await crystallizeNow(entry, CHANNEL_ID, FACILITATOR, NETWORK, fetchImpl as any);
+
+    expect(warnSpy).toHaveBeenCalled();
+    expect(allCalls(warnSpy)).toContain('claim_already_exists');
+    expect(errSpy).not.toHaveBeenCalled();
+  });
+
+  it('console.infos a success line carrying the claimPda (lock landed must be visible too)', async () => {
+    const { fetchImpl } = okFetch();
+    const entry = entryFor('100000');
+
+    const result = await crystallizeNow(entry, CHANNEL_ID, FACILITATOR, NETWORK, fetchImpl as any);
+
+    expect(result.crystallized).toBe(true);
+    expect(infoSpy).toHaveBeenCalled();
+    expect(allCalls(infoSpy)).toContain('ClaimPda1111');
+    expect(errSpy).not.toHaveBeenCalled();
+  });
+
+  it('stays silent on the normal no-op (lastVoucher null)', async () => {
+    const { fetchImpl } = okFetch();
+    const entry: ChannelLedgerEntry = {
+      lastVoucher: null,
+      deliveredCumulativeAtomic: '0',
+      lastCrystallizedCumulativeAtomic: '0',
+    };
+
+    await crystallizeNow(entry, CHANNEL_ID, FACILITATOR, NETWORK, fetchImpl as any);
+
+    expect(errSpy).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(infoSpy).not.toHaveBeenCalled();
+  });
+
+  it('below-threshold maybeCrystallize stays silent (hot path must not spam)', async () => {
+    const { fetchImpl } = okFetch();
+    const entry = entryFor('50000', '0');
+
+    await maybeCrystallize(
+      entry, CHANNEL_ID, FACILITATOR, NETWORK,
+      { thresholdAtomic: '100000', onClose: true },
+      { fetchImpl: fetchImpl as any },
+    );
+
+    expect(errSpy).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(infoSpy).not.toHaveBeenCalled();
   });
 });

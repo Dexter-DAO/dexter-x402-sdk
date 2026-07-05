@@ -14,6 +14,14 @@
  * failed POST does NOT advance `lastCrystallizedCumulativeAtomic` (it retries
  * on the next threshold crossing).
  *
+ * Best-effort is NOT silent. Every attempt outcome is logged loudly:
+ * failures via console.error (a dead /tab/lock is the seller-protection
+ * guarantee failing), known-benign 409 duplicates via console.warn, and
+ * successes via console.info (a landed LockVoucher should be visible in the
+ * seller's logs). The only silent path is the normal no-op (no voucher yet /
+ * below threshold). A production incident where crystallization never fired
+ * went unnoticed for exactly as long as these paths were `.catch(() => {})`.
+ *
  * Wire shape mirrors `postSettle` (tab.ts) exactly: the facilitator's
  * `/tab/lock` parses the body identically to `/tab/settle`. Field set:
  *   { channelId, cumulativeAmount, sequenceNumber,
@@ -58,6 +66,47 @@ export interface CrystallizeDeps {
  *  adapter; 15s is fine for this server-to-server lock POST. */
 const CRYSTALLIZE_TIMEOUT_MS = 15_000;
 
+/** Facilitator error markers that mean "this voucher is ALREADY secured on
+ *  chain" — a duplicate lock attempt (threshold + close race, or a watermark
+ *  that failed to persist). Degraded-but-benign: warn, don't error. */
+const BENIGN_DUPLICATE_MARKERS = ['claim_already_exists', 'non_monotonic_cumulative'];
+
+function shortChannel(channelId: string): string {
+  return `${channelId.slice(0, 16)}…`;
+}
+
+/** Loud outcome logging (no-silent-fallbacks). Failures must never be
+ *  invisible: crystallization is the seller's ONLY recourse against an
+ *  abandoned buyer, and its call sites are all detached/best-effort. */
+function logOutcome(
+  channelId: string,
+  cumulativeAmount: string,
+  sequenceNumber: number,
+  result: CrystallizeResult,
+): void {
+  const chan = shortChannel(channelId);
+  if (result.crystallized) {
+    console.info(
+      `[tab/seller] crystallize OK channel=${chan} cumulative=${cumulativeAmount} ` +
+        `seq=${sequenceNumber}${result.claimPda ? ` claimPda=${result.claimPda}` : ''} — LockVoucher landed`,
+    );
+    return;
+  }
+  if (!result.error) return; // normal no-op (no voucher yet) — the only quiet path
+  if (BENIGN_DUPLICATE_MARKERS.some((m) => result.error!.includes(m))) {
+    console.warn(
+      `[tab/seller] crystallize duplicate channel=${chan} cumulative=${cumulativeAmount} ` +
+        `seq=${sequenceNumber}: ${result.error} — voucher already secured on-chain (benign, no action)`,
+    );
+    return;
+  }
+  console.error(
+    `[tab/seller] crystallize FAILED channel=${chan} cumulative=${cumulativeAmount} ` +
+      `seq=${sequenceNumber}: ${result.error} — lock NOT secured (degraded: best-effort path, ` +
+      `no watermark advance, retries at next threshold/close; seller exposure stays unsecured until it lands)`,
+  );
+}
+
 /**
  * POST the stored signed voucher (`entry.lastVoucher`) to
  * `${facilitatorUrl}/tab/lock` using the same wire-body shape as `postSettle`.
@@ -82,8 +131,15 @@ export async function crystallizeNow(
   // Guard: never crystallize a voucher whose signed channelId disagrees with the
   // ledger key we were asked to lock. Surfaced as a result, never thrown.
   if (voucher.payload.channelId !== channelId) {
-    return { crystallized: false, error: 'channel_id_mismatch' };
+    const result: CrystallizeResult = { crystallized: false, error: 'channel_id_mismatch' };
+    logOutcome(channelId, voucher.payload.cumulativeAmount, voucher.payload.sequenceNumber, result);
+    return result;
   }
+
+  const finish = (result: CrystallizeResult): CrystallizeResult => {
+    logOutcome(channelId, voucher.payload.cumulativeAmount, voucher.payload.sequenceNumber, result);
+    return result;
+  };
 
   try {
     const url = `${facilitatorUrl.replace(/\/$/, '')}/tab/lock`;
@@ -106,7 +162,7 @@ export async function crystallizeNow(
     });
     const text = await res.text();
     if (!res.ok) {
-      return { crystallized: false, error: `tab lock ${res.status}: ${text.slice(0, 200)}` };
+      return finish({ crystallized: false, error: `tab lock ${res.status}: ${text.slice(0, 200)}` });
     }
     let claimPda: string | undefined;
     try {
@@ -116,9 +172,9 @@ export async function crystallizeNow(
       // A 2xx with a non-JSON body still counts as crystallized; the lock
       // landed even if we couldn't read the claim PDA back.
     }
-    return { crystallized: true, claimPda };
+    return finish({ crystallized: true, claimPda });
   } catch (err: any) {
-    return { crystallized: false, error: String(err?.message ?? err) };
+    return finish({ crystallized: false, error: String(err?.message ?? err) });
   }
 }
 
