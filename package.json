@@ -62,7 +62,7 @@
     "README.md",
     "REFERENCE.md",
     "LICENSE",
-    "assets"
+    "assets/*.svg"
   ],
   "scripts": {
     "build": "tsup",

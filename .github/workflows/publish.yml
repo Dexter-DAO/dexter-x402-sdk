@@ -47,7 +47,24 @@ jobs:
       - name: Build
         run: npm run build
 
+      # The repo's release motion publishes from the maintainer's machine first
+      # (verify gate + npm publish + tag push). This job is the backstop: publish
+      # only if the version is NOT already on the registry, so the normal motion
+      # doesn't end in a red run (E403 publish-over-existing) on every release.
+      - name: Check if version already published
+        id: check
+        run: |
+          PKG=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "${PKG}@${VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG}@${VERSION} already on the registry — skipping npm publish."
+            echo "already=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish to npm
+        if: steps.check.outputs.already != 'true'
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -60,6 +77,10 @@ jobs:
           if [ -z "$BODY" ]; then
             BODY="Release ${VERSION}"
           fi
-          gh release create "$VERSION" --title "$VERSION" --notes "$BODY"
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release ${VERSION} already exists — skipping."
+          else
+            gh release create "$VERSION" --title "$VERSION" --notes "$BODY"
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
