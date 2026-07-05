@@ -28,6 +28,7 @@ import type { X402Request } from '../../server/middleware';
 import { SOLANA_MAINNET_NETWORK } from '../../constants';
 import { encodeBase64Json } from '../../utils';
 import { tabMiddleware, TAB_VOUCHER_HEADER } from './middleware';
+import type { TabMiddlewareOptions } from './types';
 import { humanToAtomic } from '../tab';
 import type { HumanAmount, TabNetworkId } from '../types';
 
@@ -41,6 +42,15 @@ export interface TabOrExactConfig {
   perUnit: HumanAmount;
   facilitatorUrl?: string;
   description?: string;
+  /**
+   * Keyless crystallization cadence for the tab rail — forwarded verbatim to
+   * `tabMiddleware` (see `TabMiddlewareOptions.lockCadence`). This is the
+   * seller's on-chain LockVoucher dial (mid-stream protection). Omitted → armed
+   * by default (`thresholdAtomic: humanToAtomic('0.10'), onClose: true`). Pass
+   * `{ onClose: false }` to disarm the close-time lock, or `{ thresholdAtomic }`
+   * to change the threshold cadence.
+   */
+  lockCadence?: TabMiddlewareOptions['lockCadence'];
 }
 
 const NETWORK_TO_CAIP2: Partial<Record<TabNetworkId, string>> = {
@@ -82,6 +92,7 @@ export function tabOrExactMiddleware(config: TabOrExactConfig): RequestHandler {
     perUnit: config.perUnit,
     settle: 'on-close',
     facilitatorUrl: config.facilitatorUrl,
+    lockCadence: config.lockCadence,
   });
 
   return async (req, res, next) => {

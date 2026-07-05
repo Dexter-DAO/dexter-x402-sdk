@@ -1,7 +1,37 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { Connection } from '@solana/web3.js';
 import { tabOrExactMiddleware } from '../dual';
 import { parseV2Challenge } from '../../../payment/v2-challenge';
+import { requireTab } from '../middleware';
+import { openSse } from '../meter';
+import { humanToAtomic } from '../../tab';
+
+// ── Bypass crypto/on-chain voucher verification (same approach as
+// middleware-crystallize.test.ts) so the lockCadence-forwarding tests below can
+// drive a synthetic voucher all the way to the tab rail's crystallize paths.
+// SAFE for the dual wrapper's own tests above: they only ever send GARBAGE
+// vouchers, which decodeVoucherHeader rejects BEFORE any of these functions run,
+// and the exact rail never touches this module.
+vi.mock('../verify', async () => {
+  const actual = await vi.importActual<typeof import('../verify')>('../verify');
+  return {
+    ...actual,
+    parseRegistration: vi.fn(() => ({
+      programId: { toBase58: () => 'prog' },
+      vaultPda: { toBase58: () => 'vault' },
+      sessionPubkey: new Uint8Array(32),
+      maxAmount: 1_000_000_000n,
+      expiresAt: BigInt(Math.floor(Date.now() / 1000) + 3600),
+      allowedCounterparty: { toBase58: () => 'cp', equals: () => true },
+      nonce: 1,
+      maxRevolvingCapacity: 0n,
+    })),
+    verifyRegistrationOnChain: vi.fn(async () => undefined),
+    verifyVoucherSignature: vi.fn(() => {}),
+    enforceScope: vi.fn(() => {}),
+  };
+});
 
 const CAIP2 = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 const SELLER = '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin';
@@ -68,6 +98,61 @@ function mw() {
     network: 'solana:mainnet',
     perUnit: '0.01',
     facilitatorUrl: 'http://fake-facilitator',
+  });
+}
+
+// ── Harness for the lockCadence-forwarding tests ───────────────────────────
+const CHANNEL = 'a'.repeat(64);
+
+/** base64-JSON voucher header the tab rail can decode (crypto verify is mocked). */
+function voucherHeader(channelId: string, cumulativeAmount: string, sequenceNumber = 1): string {
+  const voucher = {
+    payload: { channelId, cumulativeAmount, sequenceNumber },
+    sessionPublicKey: '00'.repeat(32),
+    sessionRegistration: '00'.repeat(188),
+    sessionSignature: '00'.repeat(64),
+  };
+  return Buffer.from(JSON.stringify(voucher), 'utf8').toString('base64');
+}
+
+/** Real EventEmitter res so res.on('close'|'finish') fire the crystallize handlers. */
+function fakeReqResEmitter(header: string) {
+  const req: any = { headers: { 'x-tab-voucher': header } };
+  const res: any = new EventEmitter();
+  res.statusCode = 0;
+  res.body = undefined;
+  res.headers = {};
+  res.status = function (c: number) { this.statusCode = c; return this; };
+  res.json = function (b: unknown) { this.body = b; return this; };
+  res.setHeader = function (n: string, v: string) { this.headers[n] = v; return this; };
+  res.write = function () { return true; };
+  res.end = function () { return this; };
+  res.flushHeaders = function () {};
+  res.headersSent = false;
+  return { req, res };
+}
+
+const flushMicrotasks = () => new Promise((r) => setTimeout(r, 0));
+
+/** Captures every /tab/lock POST the tab rail fires (best-effort crystallize). */
+function lockFetch() {
+  const calls: Array<{ url: string; body: any }> = [];
+  const fetchImpl = vi.fn(async (url: any, init: any) => {
+    calls.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    return new Response(JSON.stringify({ claimPda: 'ClaimPda1111' }), { status: 200 });
+  });
+  return { fetchImpl, calls };
+}
+
+/** Construct the dual middleware through the PUBLIC API, optionally with lockCadence. */
+function dualMw(lockCadence?: { thresholdAtomic?: string; onClose?: boolean }) {
+  return tabOrExactMiddleware({
+    connection: new Connection('http://127.0.0.1:8899'),
+    sellerPubkey: SELLER,
+    network: 'solana:mainnet',
+    perUnit: '0.01',
+    facilitatorUrl: 'http://fake-facilitator',
+    ...(lockCadence !== undefined ? { lockCadence } : {}),
   });
 }
 
@@ -269,5 +354,101 @@ describe('tabOrExactMiddleware', () => {
       perUnit: '0.01',
       facilitatorUrl: 'http://fake-facilitator',
     })).toThrow();
+  });
+});
+
+describe('tabOrExactMiddleware — lockCadence forwarding (seller crystallization dial)', () => {
+  it('DISARM PIN: lockCadence { onClose: false } through the PUBLIC dual API → ZERO /tab/lock POSTs on close', async () => {
+    const { fetchImpl, calls } = lockFetch();
+    vi.stubGlobal('fetch', fetchImpl);
+
+    // The disarm: turn OFF the close-time crystallize on the tab rail via the
+    // dual wrapper's public config. This is a RUNTIME assertion on compiled
+    // behavior — it pins the exact "TS2353 at compile + emitted JS silently
+    // ignores the option, ships armed" failure the deploy was blocked on.
+    const middleware = dualMw({ onClose: false });
+
+    const signedAtomic = humanToAtomic('0.05');
+    const { req, res } = fakeReqResEmitter(voucherHeader(CHANNEL, signedAtomic));
+    const next = vi.fn();
+    await middleware(req, res, next);
+    expect(next).toHaveBeenCalledTimes(1); // tab rail accepted the voucher
+
+    // Deliver 0.03 — BELOW the default $0.10 threshold, so the threshold cadence
+    // stays silent and the CLOSE path is the only thing that could fire a lock.
+    const tab = requireTab(req);
+    const meter = openSse(res, { tab, perUnit: '0.01' });
+    await meter.charge(); meter.send('a');
+    await meter.charge(); meter.send('b');
+    await meter.charge(); meter.send('c');
+    await meter.end();
+    await flushMicrotasks();
+    res.emit('close');
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    const lockCalls = calls.filter((c) => c.url.includes('/tab/lock'));
+    expect(lockCalls).toHaveLength(0); // disarmed: no on-chain crystallize fired
+  });
+
+  it('DEFAULT PRESERVED: lockCadence omitted → close-path crystallize DOES fire (armed by default)', async () => {
+    const { fetchImpl, calls } = lockFetch();
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const middleware = dualMw(); // no lockCadence → defaults: threshold $0.10, onClose true
+
+    const signedAtomic = humanToAtomic('0.05');
+    const { req, res } = fakeReqResEmitter(voucherHeader(CHANNEL, signedAtomic));
+    const next = vi.fn();
+    await middleware(req, res, next);
+    expect(next).toHaveBeenCalledTimes(1);
+
+    // Deliver 0.03 (< $0.10 threshold) so ONLY the close path fires → exactly one lock.
+    const tab = requireTab(req);
+    const meter = openSse(res, { tab, perUnit: '0.01' });
+    await meter.charge(); meter.send('a');
+    await meter.charge(); meter.send('b');
+    await meter.charge(); meter.send('c');
+    await meter.end();
+    await flushMicrotasks();
+    res.emit('close');
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    const lockCalls = calls.filter((c) => c.url.includes('/tab/lock'));
+    expect(lockCalls).toHaveLength(1); // armed default preserved: exactly one close-path lock
+    expect(lockCalls[0].url).toBe('http://fake-facilitator/tab/lock');
+    expect(lockCalls[0].body.channelId).toBe(CHANNEL);
+    expect(lockCalls[0].body.cumulativeAmount).toBe(signedAtomic);
+  });
+
+  it('THRESHOLD FORWARD: a custom thresholdAtomic fires the cadence at the custom value, not $0.10', async () => {
+    const { fetchImpl, calls } = lockFetch();
+    vi.stubGlobal('fetch', fetchImpl);
+
+    // Custom threshold 0.02 + onClose false: the ONLY lock that can fire is the
+    // THRESHOLD cadence at 0.02. If thresholdAtomic were NOT forwarded, the rail
+    // would default to $0.10 and delivering 0.02 (with close disarmed) fires
+    // nothing — so this pins the threshold half of the forward.
+    const middleware = dualMw({ thresholdAtomic: humanToAtomic('0.02'), onClose: false });
+
+    const signedAtomic = humanToAtomic('0.05');
+    const { req, res } = fakeReqResEmitter(voucherHeader(CHANNEL, signedAtomic));
+    const next = vi.fn();
+    await middleware(req, res, next);
+    expect(next).toHaveBeenCalledTimes(1);
+
+    const tab = requireTab(req);
+    const meter = openSse(res, { tab, perUnit: '0.01' });
+    await meter.charge(); meter.send('a'); // 0.01
+    await meter.charge(); meter.send('b'); // 0.02 — crosses the custom 0.02 threshold
+    await meter.end();                     // recordDelivered → threshold cadence fires
+    await flushMicrotasks();
+    await flushMicrotasks();
+    // NO res.emit('close') — onClose:false, so any lock here is purely the threshold path.
+
+    const lockCalls = calls.filter((c) => c.url.includes('/tab/lock'));
+    expect(lockCalls).toHaveLength(1);
+    expect(lockCalls[0].body.cumulativeAmount).toBe(signedAtomic); // POSTs the stored signed voucher
   });
 });
