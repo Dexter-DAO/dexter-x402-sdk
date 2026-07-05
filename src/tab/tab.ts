@@ -400,6 +400,58 @@ interface SettleResult {
 }
 
 /**
+ * Parse a facilitator-reported atomic amount to BigInt, STRICTLY. Atomic
+ * amounts are non-negative integer strings; anything else (decimal, negative,
+ * non-numeric, a number, or missing) yields `null` so the caller falls through
+ * to the throw path. Never parseFloat — atomic amounts compare as BigInt only.
+ */
+function atomicFieldToBigInt(v: unknown): bigint | null {
+  if (typeof v !== 'string' || !/^\d+$/.test(v)) return null;
+  return BigInt(v);
+}
+
+/**
+ * Deploy-skew tolerance test: is this 409 body a genuinely-COVERED final settle
+ * (seller-side locks already crystallized the closing span) rather than a
+ * stale/replayed or still-uncovered one?
+ *
+ * Tolerate IFF the body parses as JSON, its `error`/`reason` is
+ * `non_monotonic_cumulative`, and its SNAKE_CASE amounts (the 409 error body
+ * keeps the legacy convention while success bodies are camelCase) prove
+ * coverage as BigInt:
+ *   attempted_cumulative > on_chain_spent   (NOT a stale replay), AND
+ *   attempted_cumulative <= frontier        (inside the locked watermark).
+ *
+ * Any missing or malformed field → `false` → the caller throws (fail closed).
+ * A 409 with attempted_cumulative <= on_chain_spent is genuinely stale and a
+ * 409 with attempted_cumulative > frontier is genuinely uncovered — both throw.
+ */
+function isCoveredByFrontier409(text: string): boolean {
+  let body: {
+    error?: unknown;
+    reason?: unknown;
+    on_chain_spent?: unknown;
+    frontier?: unknown;
+    attempted_cumulative?: unknown;
+  };
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return false;
+  }
+
+  const marker = 'non_monotonic_cumulative';
+  if (body.error !== marker && body.reason !== marker) return false;
+
+  const attempted = atomicFieldToBigInt(body.attempted_cumulative);
+  const onChainSpent = atomicFieldToBigInt(body.on_chain_spent);
+  const frontier = atomicFieldToBigInt(body.frontier);
+  if (attempted === null || onChainSpent === null || frontier === null) return false;
+
+  return attempted > onChainSpent && attempted <= frontier;
+}
+
+/**
  * POST the buyer's final voucher to the facilitator's `/tab/settle` endpoint
  * and return the on-chain settlement signature plus, when the facilitator
  * sends them, the gross/fee/net atomic amounts of the final settle. Throws
@@ -433,9 +485,19 @@ async function postSettle(
   });
   const text = await res.text();
   if (!res.ok) {
+    // Covered-by-frontier deploy skew: an OLD facilitator (pre-C-2 frontier
+    // fix) 409s a final settle that seller-side locks already crystallized.
+    // Tolerate ONLY when the 409 body PROVES coverage; every other 409 — and
+    // every other non-2xx — keeps throwing so the session stays alive and the
+    // buyer can retry the settle. See isCoveredByFrontier409 for the exact bar.
+    if (res.status === 409 && isCoveredByFrontier409(text)) {
+      return { settleTx: '' };
+    }
     throw new Error(`tab settle ${res.status}: ${text.slice(0, 500)}`);
   }
   let parsed: {
+    settled?: unknown;
+    reason?: unknown;
     settleTx?: string;
     grossAmount?: unknown;
     feeAmount?: unknown;
@@ -445,6 +507,15 @@ async function postSettle(
     parsed = JSON.parse(text);
   } catch {
     throw new Error(`tab settle returned non-JSON: ${text.slice(0, 200)}`);
+  }
+  // New-facilitator covered no-op: HTTP 200 { settled: false,
+  // reason: 'covered_by_frontier', settleTx: '' }. The final span was locked
+  // (crystallized) before this settle arrived — a NORMAL post-crystallization
+  // outcome, only reachable when crystallized > spent. Return the empty settle
+  // (legitimate per SettleResult) so close() proceeds to revoke rather than
+  // throwing on the falsy settleTx below.
+  if (parsed.reason === 'covered_by_frontier') {
+    return { settleTx: '' };
   }
   if (!parsed.settleTx) {
     throw new Error(`tab settle returned no settleTx: ${text.slice(0, 200)}`);

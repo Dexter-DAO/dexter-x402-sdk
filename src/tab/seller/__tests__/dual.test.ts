@@ -451,4 +451,39 @@ describe('tabOrExactMiddleware — lockCadence forwarding (seller crystallizatio
     expect(lockCalls).toHaveLength(1);
     expect(lockCalls[0].body.cumulativeAmount).toBe(signedAtomic); // POSTs the stored signed voucher
   });
+
+  it('PER-FIELD DEFAULT: lockCadence { thresholdAtomic } with onClose OMITTED stays ARMED on close (?? true)', async () => {
+    const { fetchImpl, calls } = lockFetch();
+    vi.stubGlobal('fetch', fetchImpl);
+
+    // Partial cadence: supply ONLY thresholdAtomic. onClose is omitted, so the
+    // per-field default `?? true` (middleware.ts:219) must keep close-crystallize
+    // ARMED — a partial config must NOT silently disarm the close path. Threshold
+    // is set above the delivered amount so the ONLY lock that can fire is close.
+    const middleware = dualMw({ thresholdAtomic: humanToAtomic('0.20') });
+
+    const signedAtomic = humanToAtomic('0.05');
+    const { req, res } = fakeReqResEmitter(voucherHeader(CHANNEL, signedAtomic));
+    const next = vi.fn();
+    await middleware(req, res, next);
+    expect(next).toHaveBeenCalledTimes(1);
+
+    // Deliver 0.03 — below the custom 0.20 threshold, so the threshold cadence
+    // stays silent; close is the only path that can fire a lock.
+    const tab = requireTab(req);
+    const meter = openSse(res, { tab, perUnit: '0.01' });
+    await meter.charge(); meter.send('a');
+    await meter.charge(); meter.send('b');
+    await meter.charge(); meter.send('c');
+    await meter.end();
+    await flushMicrotasks();
+    res.emit('close');
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    const lockCalls = calls.filter((c) => c.url.includes('/tab/lock'));
+    expect(lockCalls).toHaveLength(1); // onClose defaulted true → exactly one close-path lock
+    expect(lockCalls[0].body.channelId).toBe(CHANNEL);
+    expect(lockCalls[0].body.cumulativeAmount).toBe(signedAtomic);
+  });
 });
