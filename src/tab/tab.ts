@@ -439,6 +439,10 @@ function isCoveredByFrontier409(text: string): boolean {
   } catch {
     return false;
   }
+  // JSON.parse succeeds on literal `null` and bare primitives ('null', '5',
+  // '"x"') — property access on null would throw a TypeError OUT of this
+  // fail-closed check. Non-object bodies can never prove coverage.
+  if (typeof body !== 'object' || body === null) return false;
 
   const marker = 'non_monotonic_cumulative';
   if (body.error !== marker && body.reason !== marker) return false;
@@ -502,6 +506,9 @@ async function postSettle(
     grossAmount?: unknown;
     feeAmount?: unknown;
     netAmount?: unknown;
+    onChainSpent?: unknown;
+    frontier?: unknown;
+    attemptedCumulative?: unknown;
   };
   try {
     parsed = JSON.parse(text);
@@ -509,13 +516,34 @@ async function postSettle(
     throw new Error(`tab settle returned non-JSON: ${text.slice(0, 200)}`);
   }
   // New-facilitator covered no-op: HTTP 200 { settled: false,
-  // reason: 'covered_by_frontier', settleTx: '' }. The final span was locked
-  // (crystallized) before this settle arrived — a NORMAL post-crystallization
-  // outcome, only reachable when crystallized > spent. Return the empty settle
-  // (legitimate per SettleResult) so close() proceeds to revoke rather than
-  // throwing on the falsy settleTx below.
+  // reason: 'covered_by_frontier', settleTx: '', ...camelCase amounts }. The
+  // final span was locked (crystallized) before this settle arrived — a NORMAL
+  // post-crystallization outcome, only reachable when crystallized > spent.
+  //
+  // The marker alone is NEVER sufficient: a false no-op would make the buyer
+  // revoke, clearing the session and stranding the seller's tail
+  // unrecoverably. Re-derive coverage from the body's own CAMELCASE amounts
+  // (success bodies are camelCase; the 409 error body keeps snake_case),
+  // BigInt-strict, before tolerating:
+  //   attemptedCumulative > onChainSpent   (NOT a stale replay), AND
+  //   attemptedCumulative <= frontier      (inside the locked watermark).
+  // Missing/malformed/inequality-failing → fall through to the existing
+  // no-settleTx throw below (fail closed: close() throws before the revoke,
+  // the session stays alive, and the settle stays retryable).
   if (parsed.reason === 'covered_by_frontier') {
-    return { settleTx: '' };
+    const attempted = atomicFieldToBigInt(parsed.attemptedCumulative);
+    const onChainSpent = atomicFieldToBigInt(parsed.onChainSpent);
+    const frontier = atomicFieldToBigInt(parsed.frontier);
+    if (
+      attempted !== null &&
+      onChainSpent !== null &&
+      frontier !== null &&
+      attempted > onChainSpent &&
+      attempted <= frontier
+    ) {
+      return { settleTx: '' };
+    }
+    // Not provably covered — fall through to the existing throw path.
   }
   if (!parsed.settleTx) {
     throw new Error(`tab settle returned no settleTx: ${text.slice(0, 200)}`);

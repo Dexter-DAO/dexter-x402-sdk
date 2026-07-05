@@ -139,6 +139,65 @@ describe('Tab.close() — covered-by-frontier tolerance (new-facilitator 200)', 
     expect(result.feeAmount).toBeUndefined();
     expect(result.netAmount).toBeUndefined();
   });
+
+  it('tolerates a minimal 200 body whose camelCase amounts prove coverage (marker + inequality only)', async () => {
+    // attemptedCumulative(10000) > onChainSpent(8000) AND <= frontier(10000):
+    // provably covered even without the optional settled/crystallizedCumulative
+    // extras — the tolerance depends on the marker + the re-derived inequality,
+    // nothing else.
+    const mockFetch = makeRoutingFetch(() =>
+      jsonResponse({
+        reason: 'covered_by_frontier',
+        onChainSpent: '8000',
+        frontier: '10000',
+        attemptedCumulative: '10000',
+      }),
+    );
+
+    const { tab, signCloseTab } = await makeTabWithVoucher(mockFetch);
+    const result = await tab.close();
+
+    expect(result.settleTx).toBe('');
+    expect(signCloseTab).toHaveBeenCalledTimes(1);
+    expect(result.sessionRevoked).toBe(true);
+  });
+
+  it('a 200 marker whose body shows attemptedCumulative <= onChainSpent throws and never revokes', async () => {
+    // The marker CLAIMS covered, but the body's own amounts say stale replay
+    // (attempted == onChainSpent). The marker alone is never sufficient — a
+    // false no-op would revoke the session and strand the seller's tail.
+    const mockFetch = makeRoutingFetch(() =>
+      jsonResponse({
+        settled: false,
+        reason: 'covered_by_frontier',
+        settleTx: '',
+        onChainSpent: '10000',
+        crystallizedCumulative: '10000',
+        frontier: '10000',
+        attemptedCumulative: '10000', // == onChainSpent → NOT a covered span
+      }),
+    );
+
+    const { tab, signCloseTab } = await makeTabWithVoucher(mockFetch);
+    await expect(tab.close()).rejects.toThrow('tab settle returned no settleTx:');
+    expect(signCloseTab).not.toHaveBeenCalled();
+  });
+
+  it('a 200 marker with a missing frontier field throws and never revokes (fail closed)', async () => {
+    const mockFetch = makeRoutingFetch(() =>
+      jsonResponse({
+        settled: false,
+        reason: 'covered_by_frontier',
+        settleTx: '',
+        onChainSpent: '8000',
+        attemptedCumulative: '10000', // no `frontier` — cannot prove coverage
+      }),
+    );
+
+    const { tab, signCloseTab } = await makeTabWithVoucher(mockFetch);
+    await expect(tab.close()).rejects.toThrow('tab settle returned no settleTx:');
+    expect(signCloseTab).not.toHaveBeenCalled();
+  });
 });
 
 describe('Tab.close() — deploy-skew tolerance (old-facilitator 409)', () => {
@@ -272,6 +331,19 @@ describe('Tab.close() — genuine failures keep throwing BEFORE revoke', () => {
         },
         409,
       ),
+    );
+
+    const { tab, signCloseTab } = await makeTabWithVoucher(mockFetch);
+    await expect(tab.close()).rejects.toThrow('tab settle 409:');
+    expect(signCloseTab).not.toHaveBeenCalled();
+  });
+
+  it('a 409 whose body is literal JSON null throws cleanly (no TypeError escape), never revokes', async () => {
+    // JSON.parse('null') SUCCEEDS — the parsed body is null, not an object.
+    // The tolerance check must return false (fail closed), not blow up on
+    // property access and leak a TypeError instead of the settle error.
+    const mockFetch = makeRoutingFetch(() =>
+      jsonResponse(null, 409),
     );
 
     const { tab, signCloseTab } = await makeTabWithVoucher(mockFetch);
