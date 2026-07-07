@@ -46,8 +46,9 @@ export interface TabOrExactConfig {
    * Keyless crystallization cadence for the tab rail — forwarded verbatim to
    * `tabMiddleware` (see `TabMiddlewareOptions.lockCadence`). This is the
    * seller's own on-chain LockVoucher dial (mid-stream protection); ADVISORY
-   * as of 5.3.1 — the facilitator's engine guarantees the protection cadence
-   * server-side regardless of this setting. Omitted → armed by default
+   * as of 5.3.1 — it defers to the facilitator-owned cadence engine as that
+   * engine rolls out server-side, and stays your mid-stream protection until
+   * it is live on your facilitator. Omitted → armed by default
    * (`thresholdAtomic: humanToAtomic('0.10'), onClose: true`). Pass
    * `{ onClose: false }` to disarm the close-time lock, or `{ thresholdAtomic }`
    * to change the threshold cadence.

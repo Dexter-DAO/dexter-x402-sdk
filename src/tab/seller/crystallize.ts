@@ -1,10 +1,12 @@
 /**
  * Keyless crystallization cadence for the seller meter (Step-4 lock-mode).
  *
- * ADVISORY as of 5.3.1 (cadence spec §5): the facilitator GUARANTEES the
- * protection cadence server-side — its engine fires locks at the operator's
+ * ADVISORY as of 5.3.1 (cadence spec §5): the protection cadence is becoming
+ * FACILITATOR-owned — a server-side engine that fires locks at the operator's
  * on-chain intent knob for every seller, whatever this client-side cadence
- * says. The SDK cadence remains the seller's own lock-more-aggressively
+ * says. The SDK cadence defers to that engine as it rolls out (until it is
+ * live on your facilitator, this cadence is still your mid-stream protection)
+ * and remains the seller's own lock-more-aggressively
  * dial; a cadence-gated facilitator may refuse sub-threshold locks with
  * `below_lock_cadence` (benign — handled via the gate-refused watermark,
  * [A12], so the same refused span is never retry-stormed).
@@ -60,12 +62,13 @@ export interface CrystallizeResult {
 /**
  * Cadence config (resolved — thresholdAtomic + onClose are concrete here).
  *
- * ADVISORY as of 5.3.1 (cadence spec §5): the facilitator GUARANTEES the
- * protection cadence server-side — its engine fires locks at the operator's
+ * ADVISORY as of 5.3.1 (cadence spec §5): the protection cadence is becoming
+ * FACILITATOR-owned — a server-side engine that fires locks at the operator's
  * on-chain intent knob (a penny) for every seller, whatever this client-side
- * threshold says. This cadence remains useful as the seller's own
- * lock-more-aggressively dial, but it is no longer the seller's only
- * protection, and a facilitator may refuse sub-threshold locks with
+ * threshold says. This cadence defers to that engine as it rolls out (until
+ * it is live on your facilitator, it is still your mid-stream protection) and
+ * remains useful as the seller's own lock-more-aggressively dial either way;
+ * a facilitator may refuse sub-threshold locks with
  * `below_lock_cadence` (benign — see the gate-refused watermark).
  */
 export interface LockCadence {
@@ -90,10 +93,11 @@ const CRYSTALLIZE_TIMEOUT_MS = 15_000;
 const BENIGN_DUPLICATE_MARKERS = ['claim_already_exists', 'non_monotonic_cumulative'];
 
 /** Facilitator router-gate refusal marker (cadence spec §4/§5): the
- *  un-hardened tail is below the SERVER-SIDE threshold, and the facilitator's
- *  engine already guarantees the protection cadence — the seller loses
- *  nothing. Benign (warn, don't error), and it advances the gate-refused
- *  watermark so the same span is never re-attempted (A12 storm guard). */
+ *  un-hardened tail is below the SERVER-SIDE threshold — a facilitator only
+ *  refuses this way when its own cadence engine owns the protection cadence
+ *  for the span, so the seller loses nothing. Benign (warn, don't error),
+ *  and it advances the gate-refused watermark so the same span is never
+ *  re-attempted (A12 storm guard). */
 const GATE_REFUSED_MARKER = 'below_lock_cadence';
 
 /** True iff a CrystallizeResult error is the facilitator's below-cadence
@@ -128,8 +132,8 @@ function logOutcome(
   if (isGateRefused(result.error)) {
     console.warn(
       `[tab/seller] crystallize refused below the facilitator's cadence gate channel=${chan} ` +
-        `cumulative=${cumulativeAmount} seq=${sequenceNumber}: ${result.error} — benign: the ` +
-        `facilitator's engine guarantees the protection cadence server-side; gate-refused ` +
+        `cumulative=${cumulativeAmount} seq=${sequenceNumber}: ${result.error} — benign: this ` +
+        `facilitator's cadence engine owns the protection cadence for the span; gate-refused ` +
         `watermark advanced, re-attempts after the next signed voucher`,
     );
     return;
@@ -239,9 +243,10 @@ export async function crystallizeNow(
  * cumulative is recorded in `entry.gateRefusedCumulativeAtomic` and any span
  * at or below it is silently skipped on subsequent deliveries — WITHOUT this,
  * every delivery re-fires the identical refused span at the gate (a retry
- * storm). The refusal is benign: the facilitator's engine already guarantees
- * the protection cadence server-side. A NEW signed voucher (higher
- * cumulative) always re-attempts; a successful lock clears the watermark.
+ * storm). The refusal is benign: a facilitator only gates this way when its
+ * own cadence engine owns the protection cadence for the span. A NEW signed
+ * voucher (higher cumulative) always re-attempts; a successful lock clears
+ * the watermark.
  */
 export async function maybeCrystallize(
   entry: ChannelLedgerEntry,

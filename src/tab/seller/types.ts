@@ -95,11 +95,13 @@ export interface TabMiddlewareOptions {
    * crystallize never blocks or errors the seller's response; a missed lock
    * just widens the seller's unsecured window (their risk dial).
    *
-   * ADVISORY as of 5.3.1: the FACILITATOR guarantees the protection cadence
-   * server-side — its engine fires locks at the operator's on-chain intent
-   * knob (a penny) for every seller, whatever this client-side setting says.
-   * This cadence remains the seller's own lock-more-aggressively dial, but
-   * it is no longer the seller's only protection. A cadence-gated
+   * ADVISORY as of 5.3.1: the protection cadence is becoming
+   * FACILITATOR-owned — a server-side engine that fires locks at the
+   * operator's on-chain intent knob (a penny) for every seller, whatever
+   * this client-side setting says. This cadence defers to that engine as it
+   * rolls out; until it is live on your facilitator, this setting is still
+   * your mid-stream protection, and it remains the seller's own
+   * lock-more-aggressively dial either way. A cadence-gated
    * facilitator may refuse sub-threshold seller-initiated locks with
    * `below_lock_cadence` — benign (the engine already protected you); the
    * SDK records a gate-refused watermark so the same span is never
