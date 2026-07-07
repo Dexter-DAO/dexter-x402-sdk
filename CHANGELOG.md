@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (buyer, K-T4e)
+- **`openTab` / `authorizeSession` are now live-session-aware.** The session PDA is keyed by (vault, counterparty), so re-opening a tab against a seller you already hold a LIVE session with resolves to the same PDA. The on-chain program is gaining a `SessionAlreadyActive` guard that rejects the bare register which previously overwrote it silently. The adapter now reads the target PDA first: an absent/cleared/expired target registers exactly as before (legacy tx, unchanged bytes); a LIVE target either throws the new typed `LiveSessionExistsError` (default — carries the live session's on-chain evidence: spent, crystallized, outstanding, frontier) or, with the new `onLiveSession: 'replace'` option, composes ONE atomic transaction `[secp(revoke), revoke, secp(register), register]` so the buyer is never left sessionless mid-flow. The atomic path costs a second passkey ceremony and rides a v0 + address-lookup-table transaction (it does not fit a legacy transaction), sent via the new `createSelfPayingComposeSend` transport (priority-fee'd, expiry-rebroadcast, ALT lifecycle managed + deactivated).
+- **BEHAVIOR CHANGE:** pre-5.3.1, `openTab` against a live same-seller session silently overwrote it on-chain — stranding any of the old session's signed-but-unsettled vouchers. That silent path is gone: you get the typed error (settle the old tab first, or acknowledge with `onLiveSession: 'replace'`).
+- `@dexterai/vault` peer/dev dependency raised `>=0.20.0` → `>=0.34.0` (the atomic compose primitive lives there).
+
+### Changed (seller, K-T3)
+- **`lockCadence` demotes to advisory.** The Dexter facilitator now guarantees the crystallization cadence server-side — its engine fires locks at the operator's on-chain intent knob for every seller, whatever the client-side threshold says. `lockCadence` remains the seller's own lock-more-aggressively dial.
+- **`below_lock_cadence` gate refusals are handled first-class.** A cadence-gated facilitator may refuse sub-threshold seller-initiated `/tab/lock` posts with `below_lock_cadence`. The SDK classifies this as benign (console.warn, never console.error — the engine already protected you) and records a **gate-refused watermark** (`ChannelLedgerEntry.gateRefusedCumulativeAtomic`, persisted) so the identical refused span is never re-attempted on subsequent deliveries or response closes — previously each would have retry-stormed the gate. A new signed voucher (higher cumulative) always re-attempts; a landed lock clears the watermark.
+
 ## [4.0.0] - 2026-06-17
 
 ### Removed (BREAKING)
