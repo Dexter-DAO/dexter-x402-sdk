@@ -53,10 +53,17 @@ export interface VaultAdapter {
 
   /**
    * Use the ROOT signer (passkey) to authorize a fresh session key. This is
-   * the only call that prompts the user. Returns a session that can be passed
-   * to `signWithSession` freely until the scope's cap or expiry is reached.
+   * the only call that prompts the user (twice when atomically replacing a
+   * live session — one revoke ceremony + one register ceremony). Returns a
+   * session that can be passed to `signWithSession` freely until the scope's
+   * cap or expiry is reached.
+   *
+   * The session PDA is keyed by (vault, counterparty) — re-authorizing
+   * against a counterparty you already hold a LIVE session with resolves to
+   * the same PDA. The adapter reads it first and applies
+   * `opts.onLiveSession` (default `'error'`): see {@link AuthorizeSessionOptions}.
    */
-  authorizeSession(scope: SessionScope): Promise<SessionKey>;
+  authorizeSession(scope: SessionScope, opts?: AuthorizeSessionOptions): Promise<SessionKey>;
 
   /**
    * Use the session key to sign a voucher. Cheap. Never prompts. The seller
@@ -76,6 +83,29 @@ export interface VaultAdapter {
    * facilitator settles via `settle_voucher(amount, increment: false)`.
    */
   signCloseTab(session: SessionKey, channelId: string, cumulativeAmount: AtomicAmount): Promise<Uint8Array>;
+}
+
+/**
+ * Live-session policy for `authorizeSession` / `openTab` (K-T4e).
+ *
+ * The on-chain program rejects registering over a LIVE session
+ * (`SessionAlreadyActive`); the pre-guard program silently overwrote it —
+ * stranding any of the old session's signed-but-unsettled vouchers beyond
+ * the on-chain frontier (`max(spent, crystallized_cumulative)`). Neither is
+ * what a buyer wants by accident, so the adapter decides UP FRONT:
+ *
+ *  - `'error'` (default): throw {@link LiveSessionExistsError} carrying the
+ *    live session's on-chain evidence. The caller settles the old tab first
+ *    (`tab.close()` — or POST its last signed voucher to `/tab/settle`) and
+ *    retries, or acknowledges the replace explicitly.
+ *  - `'replace'`: compose the ATOMIC same-transaction
+ *    [secp(revoke), revoke, secp(register), register] so the buyer is never
+ *    left sessionless mid-flow. Costs a second passkey ceremony. Value
+ *    already settled or crystallized into LockedClaims survives the replace;
+ *    anything signed beyond the frontier is voided.
+ */
+export interface AuthorizeSessionOptions {
+  onLiveSession?: 'error' | 'replace';
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -209,6 +239,15 @@ export interface OpenTabOptions {
   sessionDuration?: number;
   /** Facilitator base URL. Default: DEFAULT_FACILITATOR_URL (https://x402.dexter.cash), overridable. */
   facilitatorUrl?: string;
+  /**
+   * What to do when a LIVE session already exists for this (vault, seller)
+   * pair — the session PDA is per-counterparty, so re-opening against the
+   * same seller collides with it. Default `'error'` (throw
+   * {@link LiveSessionExistsError} — never silently strand the old session's
+   * unsettled tail); `'replace'` composes the atomic revoke-then-register.
+   * See {@link AuthorizeSessionOptions}.
+   */
+  onLiveSession?: 'error' | 'replace';
 }
 
 /**
@@ -259,5 +298,56 @@ export class TabClosedError extends Error {
   constructor(public readonly channelId: string) {
     super(`Tab ${channelId} is already closed`);
     this.name = 'TabClosedError';
+  }
+}
+
+/** The on-chain evidence a stranding-guard refusal carries. All amounts are
+ *  atomic strings read from the live SessionAccount PDA. */
+export interface LiveSessionDetails {
+  /** The seller (counterparty) whose session PDA is live. */
+  allowedCounterparty: string;
+  /** The LIVE session's ed25519 pubkey (hex) — NOT the one being requested. */
+  sessionPubkeyHex: string;
+  /** Unix-seconds expiry of the live session (it self-heals here). */
+  expiresAtUnix: number;
+  /** Cumulative already SETTLED on-chain (USDC moved to the seller). */
+  spentAtomic: string;
+  /** Cumulative already CRYSTALLIZED into LockedClaims (survives a revoke —
+   *  claims are separate PDAs and settle independently). */
+  crystallizedCumulativeAtomic: string;
+  /** The live revolving meter (armed exposure not yet settled/released). */
+  currentOutstandingAtomic: string;
+  /** max(spent, crystallized) — everything the chain has terminally counted.
+   *  A replace strands ONLY vouchers signed beyond this frontier. */
+  frontierAtomic: string;
+}
+
+/**
+ * Thrown by `authorizeSession` / `openTab` when a LIVE session already
+ * exists for the target (vault, counterparty) PDA and the caller did not
+ * pass `onLiveSession: 'replace'` (K-T4e stranding guard).
+ *
+ * WHY THIS IS LOUD: revoking (or atomically replacing) a live session zeroes
+ * its entire on-chain registration — any voucher the OLD session key signed
+ * beyond the frontier (`max(spent, crystallized)`) becomes permanently
+ * unsettleable, stranding the seller's unsecured tail. The chain cannot see
+ * that tail (signed vouchers live off-chain), so the SDK refuses to replace
+ * silently. Remediate by settling the old tab first (`tab.close()`, or POST
+ * its last signed voucher to the facilitator's `/tab/settle`), then retry —
+ * or acknowledge the replace explicitly if the tail is known-settled or
+ * intentionally abandoned.
+ */
+export class LiveSessionExistsError extends Error {
+  constructor(public readonly details: LiveSessionDetails) {
+    super(
+      `a LIVE session already exists for counterparty ${details.allowedCounterparty} ` +
+        `(session ${details.sessionPubkeyHex.slice(0, 16)}…, expires ${details.expiresAtUnix}; ` +
+        `on-chain spent=${details.spentAtomic}, crystallized=${details.crystallizedCumulativeAtomic}, ` +
+        `frontier=${details.frontierAtomic}). Replacing it voids any signed-but-unsettled ` +
+        `vouchers beyond the frontier. Settle the old tab first (tab.close() or POST its last ` +
+        `voucher to /tab/settle), or pass onLiveSession: 'replace' to atomically ` +
+        `revoke-then-register over it.`,
+    );
+    this.name = 'LiveSessionExistsError';
   }
 }

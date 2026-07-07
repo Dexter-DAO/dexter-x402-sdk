@@ -49,12 +49,15 @@ export type {
   VaultAdapter,
   OpenTabOptions,
   ResumeTabOptions,
+  AuthorizeSessionOptions,
+  LiveSessionDetails,
 } from './types';
 
 export {
   UnsupportedNetworkError,
   SessionScopeExceededError,
   TabClosedError,
+  LiveSessionExistsError,
 } from './types';
 
 // Phase 2 implementations.

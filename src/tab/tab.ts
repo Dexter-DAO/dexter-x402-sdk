@@ -650,7 +650,14 @@ export async function openTab(options: OpenTabOptions): Promise<Tab> {
     allowedCounterparty: counterparty,
   };
 
-  const session = await options.vault.authorizeSession(scope);
+  // K-T4e: the session PDA is per (vault, counterparty) — re-opening against
+  // a seller with a LIVE session collides with it. Default policy throws the
+  // typed LiveSessionExistsError (never silently strand the old session's
+  // unsettled tail); `onLiveSession: 'replace'` composes the atomic same-tx
+  // revoke-then-register.
+  const session = await options.vault.authorizeSession(scope, {
+    onLiveSession: options.onLiveSession,
+  });
 
   // Arm drain-protection on the facilitator. Fail closed: if the facilitator
   // cannot confirm protection, we throw rather than return an unprotected tab.
