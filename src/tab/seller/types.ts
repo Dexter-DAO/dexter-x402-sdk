@@ -95,6 +95,16 @@ export interface TabMiddlewareOptions {
    * crystallize never blocks or errors the seller's response; a missed lock
    * just widens the seller's unsecured window (their risk dial).
    *
+   * ADVISORY as of 5.3.1: the FACILITATOR guarantees the protection cadence
+   * server-side — its engine fires locks at the operator's on-chain intent
+   * knob (a penny) for every seller, whatever this client-side setting says.
+   * This cadence remains the seller's own lock-more-aggressively dial, but
+   * it is no longer the seller's only protection. A cadence-gated
+   * facilitator may refuse sub-threshold seller-initiated locks with
+   * `below_lock_cadence` — benign (the engine already protected you); the
+   * SDK records a gate-refused watermark so the same span is never
+   * re-attempted (see `ChannelLedgerEntry.gateRefusedCumulativeAtomic`).
+   *
    * Defaults when omitted: `{ thresholdAtomic: humanToAtomic('0.10'),
    * onClose: true }`. Set `thresholdAtomic` higher to crystallize less often
    * (cheaper, wider window) or lower to lock more aggressively. Set

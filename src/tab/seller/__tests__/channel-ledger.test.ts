@@ -112,6 +112,32 @@ describe('FileChannelLedger', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  // K-T3 (cadence §5 A12): the gate-refused watermark must survive a restart,
+  // or a rebooted seller re-storms the facilitator gate with the same span.
+  it('round-trips gateRefusedCumulativeAtomic (and omits it when absent)', async () => {
+    const dir = await mkdtemp(pathJoin(tmpdir(), 'chanledger-'));
+    try {
+      const writer = new FileChannelLedger(dir);
+      await writer.set(channelId, {
+        lastVoucher: fakeVoucher(channelId, '200000'),
+        deliveredCumulativeAtomic: '150000',
+        gateRefusedCumulativeAtomic: '200000',
+      });
+      const reader = new FileChannelLedger(dir);
+      const got = await reader.get(channelId);
+      expect(got?.gateRefusedCumulativeAtomic).toBe('200000');
+
+      await writer.set(channelId, {
+        lastVoucher: fakeVoucher(channelId, '200000'),
+        deliveredCumulativeAtomic: '150000',
+      });
+      const got2 = await reader.get(channelId);
+      expect(got2?.gateRefusedCumulativeAtomic).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('channel lease — reject concurrent same-channel metering', () => {

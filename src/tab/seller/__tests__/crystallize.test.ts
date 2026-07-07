@@ -352,4 +352,124 @@ describe('crystallize loud logging', () => {
     expect(warnSpy).not.toHaveBeenCalled();
     expect(infoSpy).not.toHaveBeenCalled();
   });
+
+  it('console.warns (not errors) on a below_lock_cadence gate refusal — benign, engine-protected', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response('{"error":"below_lock_cadence","threshold_atomic":"10000"}', { status: 409 }),
+    );
+    const entry = entryFor('100000');
+
+    await crystallizeNow(entry, CHANNEL_ID, FACILITATOR, NETWORK, fetchImpl as any);
+
+    expect(warnSpy).toHaveBeenCalled();
+    expect(allCalls(warnSpy)).toContain('below_lock_cadence');
+    expect(errSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ── K-T3 / cadence spec §5 [A12] — the gate-refused watermark ───────────
+//
+// The facilitator's router gate rejects seller-initiated /tab/lock with
+// `below_lock_cadence` when the un-hardened tail is under the server-side
+// threshold (the facilitator's ENGINE already guarantees the protection
+// cadence — the seller loses nothing). The SDK must NOT re-attempt the SAME
+// refused span on every subsequent delivery — that's a retry storm against
+// the gate. A NEW signed voucher (higher cumulative) always re-attempts.
+describe('maybeCrystallize — gate-refused watermark (below_lock_cadence)', () => {
+  const cadence = { thresholdAtomic: '100000', onClose: true };
+
+  function refusingFetch() {
+    const calls: Array<{ body: any }> = [];
+    const fetchImpl = vi.fn(async (_url: any, init: any) => {
+      calls.push({ body: JSON.parse(init.body) });
+      return new Response('{"error":"below_lock_cadence","threshold_atomic":"250000"}', { status: 409 });
+    });
+    return { fetchImpl, calls };
+  }
+
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('a refusal advances the gate-refused watermark to the POSTed voucher cumulative (no lastCrystallized advance)', async () => {
+    const { fetchImpl } = refusingFetch();
+    const entry = entryFor('100000', '0', '130000');
+
+    const result = await maybeCrystallize(entry, CHANNEL_ID, FACILITATOR, NETWORK, cadence, {
+      fetchImpl: fetchImpl as any,
+    });
+
+    expect(result.crystallized).toBe(false);
+    expect(entry.gateRefusedCumulativeAtomic).toBe('130000'); // the POSTed voucher
+    expect(entry.lastCrystallizedCumulativeAtomic).toBe('0'); // nothing locked
+  });
+
+  it('does NOT re-attempt the same refused span on subsequent deliveries (storm guard)', async () => {
+    const { fetchImpl } = refusingFetch();
+    const entry = entryFor('100000', '0');
+
+    await maybeCrystallize(entry, CHANNEL_ID, FACILITATOR, NETWORK, cadence, { fetchImpl: fetchImpl as any });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    // More deliveries arrive but the SIGNED voucher hasn't advanced — the
+    // refused span is unchanged. Every re-check must be a silent no-op.
+    entry.deliveredCumulativeAtomic = '100000';
+    warnSpy.mockClear();
+    await maybeCrystallize(entry, CHANNEL_ID, FACILITATOR, NETWORK, cadence, { fetchImpl: fetchImpl as any });
+    await maybeCrystallize(entry, CHANNEL_ID, FACILITATOR, NETWORK, cadence, { fetchImpl: fetchImpl as any });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1); // no re-fire
+    expect(warnSpy).not.toHaveBeenCalled(); // suppression is quiet (hot path)
+    expect(errSpy).not.toHaveBeenCalled();
+  });
+
+  it('re-attempts once a HIGHER voucher cumulative arrives (the span grew)', async () => {
+    const { fetchImpl, calls } = refusingFetch();
+    const entry = entryFor('100000', '0');
+
+    await maybeCrystallize(entry, CHANNEL_ID, FACILITATOR, NETWORK, cadence, { fetchImpl: fetchImpl as any });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    entry.deliveredCumulativeAtomic = '200000';
+    entry.lastVoucher = fakeVoucher(CHANNEL_ID, '200000', 2);
+    await maybeCrystallize(entry, CHANNEL_ID, FACILITATOR, NETWORK, cadence, { fetchImpl: fetchImpl as any });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(calls[1].body.cumulativeAmount).toBe('200000');
+    expect(entry.gateRefusedCumulativeAtomic).toBe('200000'); // watermark tracks the latest refusal
+  });
+
+  it('a success clears the gate-refused watermark and advances lastCrystallized', async () => {
+    const refusing = refusingFetch();
+    const entry = entryFor('100000', '0');
+    await maybeCrystallize(entry, CHANNEL_ID, FACILITATOR, NETWORK, cadence, {
+      fetchImpl: refusing.fetchImpl as any,
+    });
+    expect(entry.gateRefusedCumulativeAtomic).toBe('100000');
+
+    entry.deliveredCumulativeAtomic = '300000';
+    entry.lastVoucher = fakeVoucher(CHANNEL_ID, '300000', 3);
+    const { fetchImpl: okImpl } = okFetch();
+    await maybeCrystallize(entry, CHANNEL_ID, FACILITATOR, NETWORK, cadence, { fetchImpl: okImpl as any });
+
+    expect(entry.lastCrystallizedCumulativeAtomic).toBe('300000');
+    expect(entry.gateRefusedCumulativeAtomic).toBeUndefined();
+  });
+
+  it('a real (non-gate) failure does NOT advance the gate-refused watermark — it retries', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{"error":"tab_lock_failed"}', { status: 500 }));
+    const entry = entryFor('100000', '0');
+
+    await maybeCrystallize(entry, CHANNEL_ID, FACILITATOR, NETWORK, cadence, { fetchImpl: fetchImpl as any });
+    expect(entry.gateRefusedCumulativeAtomic).toBeUndefined();
+
+    // Same span retries on the next check (best-effort contract unchanged).
+    await maybeCrystallize(entry, CHANNEL_ID, FACILITATOR, NETWORK, cadence, { fetchImpl: fetchImpl as any });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
 });

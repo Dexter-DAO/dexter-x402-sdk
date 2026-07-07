@@ -86,6 +86,17 @@ export interface ChannelLedgerEntry {
    * pre-Step-4 ledger constructors remain valid without a breaking change.
    */
   lastCrystallizedCumulativeAtomic?: AtomicAmount;
+  /**
+   * Gate-refused watermark (cadence spec §5 [A12]): the highest voucher
+   * cumulative (atomic) the facilitator's router gate REFUSED with
+   * `below_lock_cadence`. The crystallization cadence skips re-attempting
+   * any span at or below it — the facilitator's server-side engine already
+   * guarantees the protection cadence, so re-asking about the identical
+   * refused span on every delivery/close is a retry storm, not protection.
+   * A NEW signed voucher (higher cumulative) always re-attempts; a
+   * successful lock clears it. Absent on entries that were never refused.
+   */
+  gateRefusedCumulativeAtomic?: AtomicAmount;
   /** RESERVED (Step 4): on-chain money ledger snapshot. Unset today. */
   onChain?: OnChainLedgerSnapshot;
   /**
@@ -162,6 +173,7 @@ interface SerializedEntry {
   } | null;
   deliveredCumulativeAtomic: AtomicAmount;
   lastCrystallizedCumulativeAtomic?: AtomicAmount;
+  gateRefusedCumulativeAtomic?: AtomicAmount;
   onChain?: OnChainLedgerSnapshot;
   lease?: { heldUntilUnixMs: number };
 }
@@ -191,6 +203,7 @@ function serialize(entry: ChannelLedgerEntry): SerializedEntry {
       : null,
     deliveredCumulativeAtomic: entry.deliveredCumulativeAtomic,
     lastCrystallizedCumulativeAtomic: entry.lastCrystallizedCumulativeAtomic,
+    gateRefusedCumulativeAtomic: entry.gateRefusedCumulativeAtomic,
     onChain: entry.onChain,
     lease: entry.lease,
   };
@@ -208,6 +221,7 @@ function deserialize(s: SerializedEntry): ChannelLedgerEntry {
       : null,
     deliveredCumulativeAtomic: s.deliveredCumulativeAtomic,
     lastCrystallizedCumulativeAtomic: s.lastCrystallizedCumulativeAtomic ?? '0',
+    gateRefusedCumulativeAtomic: s.gateRefusedCumulativeAtomic,
     onChain: s.onChain,
     lease: s.lease,
   };

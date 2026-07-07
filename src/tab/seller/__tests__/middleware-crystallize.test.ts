@@ -171,6 +171,89 @@ describe('tabMiddleware close-path crystallize (FIX C2)', () => {
     expect(calls).toHaveLength(1); // closeCrystallized idempotency flag holds
   });
 
+  // ── K-T3 (cadence §5 A12): below_lock_cadence storm suppression ────────
+
+  /** A facilitator whose router gate refuses every lock as below-cadence. */
+  function refusingLockFetch() {
+    const calls: Array<{ url: string; body: any }> = [];
+    const fetchImpl = vi.fn(async (url: any, init: any) => {
+      calls.push({ url: String(url), body: JSON.parse(init.body) });
+      return new Response(
+        JSON.stringify({ error: 'below_lock_cadence', threshold_atomic: '250000' }),
+        { status: 409 },
+      );
+    });
+    return { fetchImpl, calls };
+  }
+
+  async function driveRequest(
+    middleware: ReturnType<typeof mw>,
+    signedAtomic: string,
+    seq: number,
+    units: number,
+  ) {
+    const { req, res } = fakeReqRes(voucherHeader(CHANNEL, signedAtomic, seq));
+    const next = vi.fn();
+    await middleware(req, res, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    const tab = requireTab(req);
+    const meter = openSse(res, { tab, perUnit: '0.01' });
+    for (let i = 0; i < units; i += 1) { await meter.charge(); meter.send('x'); }
+    await meter.end();
+    await flushMicrotasks();
+    res.emit('close');
+    await flushMicrotasks();
+    await flushMicrotasks();
+  }
+
+  it('threshold path: a below_lock_cadence refusal is persisted and the SAME span is not re-POSTed by later requests', async () => {
+    const { fetchImpl, calls } = refusingLockFetch();
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const ledger = new InMemoryChannelLedger();
+    // Tiny threshold so the delivery path fires; onClose OFF to isolate it.
+    const middleware = mw(ledger, { thresholdAtomic: humanToAtomic('0.01'), onClose: false });
+
+    // Request 1: deliver past the threshold → ONE refused POST, watermark persisted.
+    await driveRequest(middleware, humanToAtomic('0.05'), 1, 2);
+    expect(calls).toHaveLength(1);
+    expect((await ledger.get(CHANNEL))?.gateRefusedCumulativeAtomic).toBe(humanToAtomic('0.05'));
+
+    // Request 2: SAME signed voucher (the refused span is unchanged) — more
+    // deliveries cross the threshold again, but the gate already refused this
+    // exact span. No re-POST (the storm guard).
+    await driveRequest(middleware, humanToAtomic('0.05'), 2, 2);
+    expect(calls).toHaveLength(1);
+
+    // Request 3: a HIGHER signed voucher — the span grew, re-attempt fires.
+    await driveRequest(middleware, humanToAtomic('0.10'), 3, 2);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].body.cumulativeAmount).toBe(humanToAtomic('0.10'));
+  });
+
+  it('close path: a refused final span is not re-POSTed by the next request-close with the same voucher', async () => {
+    const { fetchImpl, calls } = refusingLockFetch();
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const ledger = new InMemoryChannelLedger();
+    // Huge threshold isolates the CLOSE path (matching the FIX C2 tests).
+    const middleware = mw(ledger, { thresholdAtomic: humanToAtomic('1000000'), onClose: true });
+
+    await driveRequest(middleware, humanToAtomic('0.05'), 1, 1);
+    expect(calls).toHaveLength(1); // close fired, gate refused
+    expect((await ledger.get(CHANNEL))?.gateRefusedCumulativeAtomic).toBe(humanToAtomic('0.05'));
+
+    // Second request, same signed voucher → its close must NOT re-ask the
+    // gate about the identical refused span.
+    await driveRequest(middleware, humanToAtomic('0.05'), 2, 1);
+    expect(calls).toHaveLength(1);
+
+    // A higher final voucher re-attempts at close.
+    await driveRequest(middleware, humanToAtomic('0.12'), 3, 1);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].body.cumulativeAmount).toBe(humanToAtomic('0.12'));
+  });
+
   it('still releases the lease on close independently of the close-crystallize', async () => {
     const { fetchImpl } = lockFetch();
     vi.stubGlobal('fetch', fetchImpl);

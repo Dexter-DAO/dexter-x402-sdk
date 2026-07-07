@@ -1,6 +1,14 @@
 /**
  * Keyless crystallization cadence for the seller meter (Step-4 lock-mode).
  *
+ * ADVISORY as of 5.3.1 (cadence spec §5): the facilitator GUARANTEES the
+ * protection cadence server-side — its engine fires locks at the operator's
+ * on-chain intent knob for every seller, whatever this client-side cadence
+ * says. The SDK cadence remains the seller's own lock-more-aggressively
+ * dial; a cadence-gated facilitator may refuse sub-threshold locks with
+ * `below_lock_cadence` (benign — handled via the gate-refused watermark,
+ * [A12], so the same refused span is never retry-stormed).
+ *
  * The buyer is OFFLINE: their latest voucher is already signed and durably
  * stored in the ChannelLedger (`entry.lastVoucher`). On a configurable
  * delivered-amount threshold — and at tab close — the seller's meter POSTs
@@ -49,7 +57,17 @@ export interface CrystallizeResult {
   error?: string;
 }
 
-/** Cadence config (resolved — thresholdAtomic + onClose are concrete here). */
+/**
+ * Cadence config (resolved — thresholdAtomic + onClose are concrete here).
+ *
+ * ADVISORY as of 5.3.1 (cadence spec §5): the facilitator GUARANTEES the
+ * protection cadence server-side — its engine fires locks at the operator's
+ * on-chain intent knob (a penny) for every seller, whatever this client-side
+ * threshold says. This cadence remains useful as the seller's own
+ * lock-more-aggressively dial, but it is no longer the seller's only
+ * protection, and a facilitator may refuse sub-threshold locks with
+ * `below_lock_cadence` (benign — see the gate-refused watermark).
+ */
 export interface LockCadence {
   thresholdAtomic: string;
   onClose: boolean;
@@ -70,6 +88,20 @@ const CRYSTALLIZE_TIMEOUT_MS = 15_000;
  *  chain" — a duplicate lock attempt (threshold + close race, or a watermark
  *  that failed to persist). Degraded-but-benign: warn, don't error. */
 const BENIGN_DUPLICATE_MARKERS = ['claim_already_exists', 'non_monotonic_cumulative'];
+
+/** Facilitator router-gate refusal marker (cadence spec §4/§5): the
+ *  un-hardened tail is below the SERVER-SIDE threshold, and the facilitator's
+ *  engine already guarantees the protection cadence — the seller loses
+ *  nothing. Benign (warn, don't error), and it advances the gate-refused
+ *  watermark so the same span is never re-attempted (A12 storm guard). */
+const GATE_REFUSED_MARKER = 'below_lock_cadence';
+
+/** True iff a CrystallizeResult error is the facilitator's below-cadence
+ *  gate refusal. Marker-based (status-agnostic) — the exact HTTP status is
+ *  the facilitator's business. */
+export function isGateRefused(error: string | undefined): boolean {
+  return typeof error === 'string' && error.includes(GATE_REFUSED_MARKER);
+}
 
 function shortChannel(channelId: string): string {
   return `${channelId.slice(0, 16)}…`;
@@ -93,6 +125,15 @@ function logOutcome(
     return;
   }
   if (!result.error) return; // normal no-op (no voucher yet) — the only quiet path
+  if (isGateRefused(result.error)) {
+    console.warn(
+      `[tab/seller] crystallize refused below the facilitator's cadence gate channel=${chan} ` +
+        `cumulative=${cumulativeAmount} seq=${sequenceNumber}: ${result.error} — benign: the ` +
+        `facilitator's engine guarantees the protection cadence server-side; gate-refused ` +
+        `watermark advanced, re-attempts after the next signed voucher`,
+    );
+    return;
+  }
   if (BENIGN_DUPLICATE_MARKERS.some((m) => result.error!.includes(m))) {
     console.warn(
       `[tab/seller] crystallize duplicate channel=${chan} cumulative=${cumulativeAmount} ` +
@@ -192,6 +233,15 @@ export async function crystallizeNow(
  * at the signed voucher, so the voucher cumulative >= delivered: crystallizing
  * it secures at least what's delivered — conservative and correct. On a FAILED
  * POST it does NOT advance (so the next threshold check retries). Never throws.
+ *
+ * GATE-REFUSED WATERMARK (K-T3, cadence spec §5 [A12]): when the facilitator's
+ * router gate refuses the POST with `below_lock_cadence`, the refused voucher
+ * cumulative is recorded in `entry.gateRefusedCumulativeAtomic` and any span
+ * at or below it is silently skipped on subsequent deliveries — WITHOUT this,
+ * every delivery re-fires the identical refused span at the gate (a retry
+ * storm). The refusal is benign: the facilitator's engine already guarantees
+ * the protection cadence server-side. A NEW signed voucher (higher
+ * cumulative) always re-attempts; a successful lock clears the watermark.
  */
 export async function maybeCrystallize(
   entry: ChannelLedgerEntry,
@@ -213,9 +263,27 @@ export async function maybeCrystallize(
   // capture ITS cumulative as the watermark target (FIX C1). Read before the
   // POST so an in-flight voucher swap can't let us advance past what we locked.
   const target = entry.lastVoucher?.payload.cumulativeAmount;
+
+  // [A12] Gate-refused suppression: the facilitator already refused this
+  // exact span (same signed voucher cumulative) as below its server-side
+  // cadence — do NOT re-ask on every delivery. Quiet by design (hot path);
+  // the refusal itself was logged once when it happened.
+  const gateRefused = entry.gateRefusedCumulativeAtomic;
+  if (
+    target !== undefined &&
+    gateRefused !== undefined &&
+    BigInt(target) <= BigInt(gateRefused)
+  ) {
+    return { crystallized: false };
+  }
+
   const result = await crystallizeNow(entry, channelId, facilitatorUrl, network, deps.fetchImpl);
   if (result.crystallized && target !== undefined) {
     entry.lastCrystallizedCumulativeAtomic = target;
+    // A landed lock supersedes any stale refusal record.
+    entry.gateRefusedCumulativeAtomic = undefined;
+  } else if (isGateRefused(result.error) && target !== undefined) {
+    entry.gateRefusedCumulativeAtomic = target;
   }
   return result;
 }

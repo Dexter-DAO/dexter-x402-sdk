@@ -41,7 +41,7 @@ import {
 
 import { InMemoryChannelLedger, withChannelLock, type ChannelLedger, type ChannelLedgerEntry } from './channel-ledger';
 import { atomicToHuman, humanToAtomic, DEFAULT_FACILITATOR_URL } from '../tab';
-import { maybeCrystallize, crystallizeNow, type LockCadence } from './crystallize';
+import { maybeCrystallize, crystallizeNow, isGateRefused, type LockCadence } from './crystallize';
 
 // ── Augmented Express request type ─────────────────────────────────────
 
@@ -301,25 +301,32 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
       // ledger. BEST-EFFORT throughout — never throws, never gates the response.
       const crystallizeCadence = async (entry: ChannelLedgerEntry): Promise<void> => {
         const before = entry.lastCrystallizedCumulativeAtomic ?? '0';
+        const refusedBefore = entry.gateRefusedCumulativeAtomic;
         await maybeCrystallize(entry, channelId, facilitatorUrl, config.network, lockCadence);
-        if (entry.lastCrystallizedCumulativeAtomic !== before) {
-          // A lock landed — persist the advanced watermark under the lock so the
-          // next request reads it and doesn't re-fire on the same delivered span.
+        if (
+          entry.lastCrystallizedCumulativeAtomic !== before ||
+          entry.gateRefusedCumulativeAtomic !== refusedBefore
+        ) {
+          // A lock landed (crystallized watermark advanced) OR the gate
+          // refused it below-cadence (gate-refused watermark advanced, §5
+          // A12) — persist BOTH under the lock so the next request reads
+          // them and doesn't re-fire on the same span.
           await withChannelLock(channelId, async () => {
             const cur = await ledger.get(channelId);
             if (cur) {
               await ledger.set(channelId, {
                 ...cur,
                 lastCrystallizedCumulativeAtomic: entry.lastCrystallizedCumulativeAtomic,
+                gateRefusedCumulativeAtomic: entry.gateRefusedCumulativeAtomic,
               });
             }
           }).catch((err) => {
-            // LOUD (no-silent-fallbacks): the lock LANDED but the watermark
-            // didn't persist — the next request will re-attempt the same span
-            // and draw a benign duplicate 409 from the facilitator.
+            // LOUD (no-silent-fallbacks): the outcome watermark didn't
+            // persist — the next request will re-attempt the same span and
+            // draw a benign duplicate/below-cadence response.
             console.error(
               `[tab/seller] crystallize watermark persist FAILED channel=${channelId.slice(0, 16)}… ` +
-                `(lock landed; expect a duplicate-lock warn on the next request):`,
+                `(expect a benign duplicate/below-cadence warn on the next request):`,
               err,
             );
           });
@@ -351,6 +358,16 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
           // The cumulative we will lock is the FINAL signed voucher's — captured
           // before the POST so a later mutation can't shift the watermark.
           const lockedCumulative = cur.lastVoucher.payload.cumulativeAmount;
+          // [A12] The gate already refused this exact span below-cadence —
+          // re-asking on every response close is the same retry storm the
+          // gate-refused watermark exists to stop. A HIGHER final voucher
+          // always re-attempts; the engine guarantees the cadence meanwhile.
+          if (
+            cur.gateRefusedCumulativeAtomic !== undefined &&
+            BigInt(lockedCumulative) <= BigInt(cur.gateRefusedCumulativeAtomic)
+          ) {
+            return;
+          }
           const result = await crystallizeNow(cur, channelId, facilitatorUrl, config.network);
           if (result.crystallized) {
             await withChannelLock(channelId, async () => {
@@ -359,6 +376,21 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
                 await ledger.set(channelId, {
                   ...latest,
                   lastCrystallizedCumulativeAtomic: lockedCumulative,
+                  // A landed lock supersedes any stale refusal record.
+                  gateRefusedCumulativeAtomic: undefined,
+                });
+              }
+            });
+          } else if (isGateRefused(result.error)) {
+            // Record the below-cadence refusal so later closes/deliveries of
+            // the SAME span stay quiet (§5 A12). Benign — logged once by
+            // crystallizeNow's outcome table.
+            await withChannelLock(channelId, async () => {
+              const latest = await ledger.get(channelId);
+              if (latest) {
+                await ledger.set(channelId, {
+                  ...latest,
+                  gateRefusedCumulativeAtomic: lockedCumulative,
                 });
               }
             });
