@@ -146,8 +146,11 @@ function makeAdapter(
 function scopeFor(): SessionScope {
   return {
     channelId: 'c'.repeat(64),
+    // maxAmount and revolvingCapacity MUST differ: with identical values a
+    // maxAmount↔maxRevolvingCapacity transposition in the adapter's builder
+    // call would serialize to the same bytes and pass every byte-compare.
     maxAmountAtomic: '1000000',
-    revolvingCapacityAtomic: '1000000',
+    revolvingCapacityAtomic: '900000',
     expiresAtUnix: NOW + 1800,
     allowedCounterparty: SELLER.toBase58(),
   };
@@ -197,7 +200,7 @@ describe('authorizeSession — target NOT live (absent / cleared / expired)', ()
       vaultPda: VAULT,
       sessionPubkey: session.publicKey,
       maxAmount: 1000000n,
-      maxRevolvingCapacity: 1000000n,
+      maxRevolvingCapacity: 900000n,
       expiresAt: BigInt(NOW + 1800),
       allowedCounterparty: SELLER,
       nonce: EXPECTED_NONCE,
@@ -207,7 +210,7 @@ describe('authorizeSession — target NOT live (absent / cleared / expired)', ()
       vaultPda: VAULT,
       sessionPubkey: session.publicKey,
       maxAmount: 1000000n,
-      maxRevolvingCapacity: 1000000n,
+      maxRevolvingCapacity: 900000n,
       expiresAt: BigInt(NOW + 1800),
       allowedCounterparty: SELLER,
       nonce: EXPECTED_NONCE,
@@ -335,7 +338,7 @@ describe('authorizeSession — LIVE target, onLiveSession: replace (atomic)', ()
       vaultPda: VAULT,
       sessionPubkey: session.publicKey,
       maxAmount: 1000000n,
-      maxRevolvingCapacity: 1000000n,
+      maxRevolvingCapacity: 900000n,
       expiresAt: BigInt(NOW + 1800),
       allowedCounterparty: SELLER,
       nonce: EXPECTED_NONCE,
@@ -345,7 +348,7 @@ describe('authorizeSession — LIVE target, onLiveSession: replace (atomic)', ()
       vaultPda: VAULT,
       sessionPubkey: session.publicKey,
       maxAmount: 1000000n,
-      maxRevolvingCapacity: 1000000n,
+      maxRevolvingCapacity: 900000n,
       expiresAt: BigInt(NOW + 1800),
       allowedCounterparty: SELLER,
       nonce: EXPECTED_NONCE,
