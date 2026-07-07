@@ -28,6 +28,14 @@ export interface PayUrlWithTabOptions {
   sessionDuration?: number;
   facilitatorUrl?: string;
   /**
+   * Forwarded verbatim to `openTab` — what to do when a LIVE session already
+   * exists for this (vault, seller) pair. Default `'error'` (openTab throws
+   * `LiveSessionExistsError`, which propagates out of this call); `'replace'`
+   * acknowledges the atomic revoke-then-register. See
+   * `OpenTabOptions.onLiveSession` (K-T4e).
+   */
+  onLiveSession?: 'error' | 'replace';
+  /**
    * Open-tab registry keyed by counterparty base58. Pass the SAME Map across
    * calls to reuse one open tab per seller instead of re-registering
    * (one tab per (vault, counterparty)). Newly opened tabs are added to it.
@@ -92,6 +100,7 @@ export async function payUrlWithTab(
       totalCap: opts.totalCap,
       sessionDuration: opts.sessionDuration,
       facilitatorUrl: opts.facilitatorUrl,
+      onLiveSession: opts.onLiveSession,
     });
     opts.tabs?.set(offer.payTo, tab);
   }

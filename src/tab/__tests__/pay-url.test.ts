@@ -1,8 +1,8 @@
 // src/tab/__tests__/pay-url.test.ts
 /**
  * payUrlWithTab — pay a URL through a tab with zero seller knowledge.
- * Five tests: happy path, free URL, budget_exceeded (pre-chain), tab reuse,
- * and no tab offered.
+ * Covers: happy path, free URL, budget_exceeded (pre-chain), tab reuse,
+ * post-open payment failure, onLiveSession passthrough, and no tab offered.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { payUrlWithTab } from '../pay-url';
@@ -317,6 +317,53 @@ describe('payUrlWithTab', () => {
     expect(tab).not.toBeNull();
     expect(tab!.counterparty).toBe(SELLER);
     expect(tab!.state.isOpen).toBe(true);
+  });
+
+  it('7. onLiveSession passes through openTab to the adapter (K-T4e replace acknowledgement)', async () => {
+    // MINOR-1 regression guard: payUrlWithTab used to have NO passthrough,
+    // so this call site could never acknowledge a live-session replace.
+    const authorizeOpts: unknown[] = [];
+    const capturingAdapter: VaultAdapter = {
+      ...fakeAdapter,
+      authorizeSession: async (scope, opts) => {
+        authorizeOpts.push(opts);
+        return fakeAdapter.authorizeSession(scope, opts);
+      },
+    };
+
+    // Same script as the happy path: probe → 402, /tab/open → armed,
+    // probe → 402, voucher request → 200.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = inputToUrl(input);
+        const headers = new Headers(init?.headers ?? undefined);
+        if (url.includes('/tab/open')) {
+          return new Response(
+            JSON.stringify({ success: true, armed: true, signature: 'x' }),
+            { status: 200 },
+          );
+        }
+        if (headers.get('X-Tab-Voucher') ?? headers.get('x-tab-voucher')) {
+          return new Response('paid!', { status: 200 });
+        }
+        return makeChallenge402([tabAccept]);
+      }),
+    );
+
+    const { result } = await payUrlWithTab(
+      URL,
+      { method: 'GET' },
+      {
+        vault: capturingAdapter,
+        perUnitCap: '0.02',
+        totalCap: '0.02',
+        onLiveSession: 'replace',
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(authorizeOpts).toEqual([{ onLiveSession: 'replace' }]);
   });
 
   it('5. no tab offered — only exact scheme → reason no_payment_options, tab null', async () => {
