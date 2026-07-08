@@ -23,7 +23,12 @@
  *      against the buyer's signed-voucher budget.
  *   2. At stream end, read the provider's authoritative output-token count
  *      (Anthropic usage.output_tokens / OpenAI usage.completion_tokens) and
- *      charge the difference, so settled == output_tokens x price exactly.
+ *      charge the difference (clamped at 0), so settled == output_tokens x
+ *      price — except when the estimator overshot (long-token text), where
+ *      the overshoot is kept: the meter cannot refund.
+ *
+ * SSE framing: every frame is base64-wrapped (`b64:<base64(JSON)>`) because
+ * the 5.3.1 SSE meter corrupts raw JSON containing "\n" — see sse-frame.ts.
  *
  * Crystallization cadence: lockCadence is deliberately NOT set anywhere —
  * as of 5.3.1 the facilitator owns it server-side. Leave it unset.
@@ -40,6 +45,7 @@ import OpenAI from 'openai';
 import { Connection } from '@solana/web3.js';
 import { tabOrExactMiddleware, requireTab, openSse } from '@dexterai/x402/tab/seller';
 import type { X402Request } from '@dexterai/x402/server';
+import { encodeFrame } from './sse-frame.js';
 
 // ── Pricing — integer USDC microunits (USDC has 6 decimals) ─────────────────
 //
@@ -268,17 +274,23 @@ app.post('/v1/complete', express.json(), validateBody, paywall, async (req, res)
     let unitsCharged = 0;
     try {
       const usage = await streamCompletion(prompt, maxTokens, async (text) => {
-        // Deliberate UNDER-estimate: floor(chars/5) is below the real token
-        // count for any natural text (~4 chars/token English, ~1 char/token
-        // CJK). charge() has no refund path, so mid-stream we only ever
-        // charge what we are certain of; the true-up below settles exact.
+        // Deliberate UNDER-estimate: floor(chars/5) undercounts typical
+        // natural text (~4 chars/token English, ~1 char/token CJK); content
+        // that averages >5 chars/token (whitespace runs, indented code, long
+        // words) can make it overshoot — see the true-up clamp below.
+        // charge() has no refund path, so mid-stream we only charge the
+        // conservative floor; the true-up settles against provider truth.
         const estimate = Math.floor(text.length / 5);
         if (estimate > 0) {
           await meter.charge(estimate); // fails closed on voucher-budget exceed
           unitsCharged += estimate;
         }
+        // encodeFrame, NOT raw JSON.stringify: the 5.3.1 SSE meter corrupts
+        // frames whose string values contain "\n" (asymmetric newline
+        // escaping across the hop — see sse-frame.ts), and model text goes
+        // multi-line constantly. Base64 crosses the meter byte-identical.
         meter.send(
-          JSON.stringify({
+          encodeFrame({
             text,
             tokensCharged: unitsCharged,
             usdcAccrued: microsToHuman(BigInt(unitsCharged) * PRICE_MICROS_PER_TOKEN),
@@ -293,16 +305,19 @@ app.post('/v1/complete', express.json(), validateBody, paywall, async (req, res)
       const outputTokens = usage.outputTokens;
       const trueUp = outputTokens - unitsCharged;
       if (trueUp > 0) {
+        // The > 0 guard IS the clamp: a negative true-up is never charged.
         await meter.charge(trueUp);
         unitsCharged += trueUp;
       }
-      // trueUp < 0 is unreachable with the /5 floor; if it ever happened we
-      // keep the (over)charge — the meter cannot refund — which is exactly why
-      // the mid-stream estimate MUST under-count.
+      // trueUp < 0 IS reachable: floor(chars/5) overshoots whenever the
+      // stream averages more than 5 chars per token (whitespace runs, long
+      // words, indented code). The clamp above keeps the overshoot — the
+      // meter cannot refund — which is why the mid-stream estimate must stay
+      // conservative: it bounds the overshoot, it does not eliminate it.
 
       const settledMicros = BigInt(unitsCharged) * PRICE_MICROS_PER_TOKEN;
       meter.send(
-        JSON.stringify({
+        encodeFrame({
           done: true,
           paidVia: 'tab',
           channelId: tab.channelId,

@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["server.ts", "buyer-snippet.ts"]
+  "include": ["server.ts", "buyer-snippet.ts", "sse-frame.ts", "frame-roundtrip-check.ts"]
 }

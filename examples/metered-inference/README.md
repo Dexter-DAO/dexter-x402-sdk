@@ -103,17 +103,31 @@ const meter = openSse(res, { tab, perUnit: '0.000010' });  // per OUTPUT token
 Provider stream chunks are multi-token text fragments, not 1:1 tokens, and the
 meter has **no refund path** (`charge()` is monotonic). So the handler:
 
-1. **Under-estimates per chunk** — `floor(chars / 5)` is below the true token
-   count for any natural text (English averages ~4 chars/token; CJK ~1
-   char/token). `meter.charge(estimate)` runs BEFORE `meter.send(chunk)` and
-   fails closed against the buyer's signed-voucher budget.
+1. **Under-estimates per chunk** — `floor(chars / 5)` undercounts typical
+   natural text (English averages ~4 chars/token; CJK ~1 char/token).
+   `meter.charge(estimate)` runs BEFORE `meter.send(chunk)` and fails closed
+   against the buyer's signed-voucher budget.
 2. **Trues up at stream end** — the provider's final usage carries the
-   authoritative output-token count; the handler charges the difference, so
-   `settled == output_tokens × price` exactly.
+   authoritative output-token count; the handler charges the difference,
+   clamped at zero, so `settled == output_tokens × price`. Content averaging
+   more than 5 chars/token (whitespace runs, long words, indented code) can
+   make the estimator overshoot — the clamp keeps the overshoot, because the
+   meter has no refund path. That's the deal: the conservative floor bounds
+   the overshoot, it doesn't eliminate it.
 
 Each SSE event carries the running meter (`tokensCharged`, `usdcAccrued`) so
 the buyer watches the bill tick per token; the final event reports the
 provider's token count next to what the meter settled — they match.
+
+**Frames are base64-wrapped (`b64:<base64(JSON)>`), not raw JSON.** The 5.3.1
+SSE meter transforms payloads asymmetrically across the hop: `meter.send()`
+escapes only RAW newlines (a no-op for `JSON.stringify` output), while the
+buyer-side `tab.stream()` unwrapper rewrites every literal `\n` back into a
+raw newline. Raw-JSON frames whose text contains a newline — most multi-line
+completions — arrive as invalid JSON and get silently dropped by any
+parse-guarded buyer. Base64's alphabet has no backslash and no newline, so
+frames cross the meter byte-identical. The codec lives in `sse-frame.ts`;
+`npm run check:frames` proves both the corruption and the fix mechanically.
 
 If the buyer's voucher budget runs out mid-stream, `charge()` throws, the SDK
 has already persisted what WAS delivered (`recordDelivered` fires on every
@@ -153,4 +167,6 @@ your payout address's USDC token account — the demo seller is
 |---|---|
 | `server.ts` | The seller: Express + `tabOrExactMiddleware` + per-token SSE meter + real provider streaming (Anthropic or OpenAI). `--selftest` proves the inference backing with one provider call. |
 | `buyer-snippet.ts` | The buyer: `discover` (parse the 402), `oneshot` (`payAndFetch`, exact rail), `tab` (`openTab` → `tab.stream()` → `tab.close()`). |
-| `.env.example` | Every knob, documented. Only `ANTHROPIC_API_KEY` is required. |
+| `sse-frame.ts` | The `b64:` frame codec both sides share — the 5.3.1 meter corrupts raw-JSON frames containing `\n`; base64 crosses byte-identical. |
+| `frame-roundtrip-check.ts` | Mechanical proof (`npm run check:frames`): a multi-line frame through the REAL `openSse` meter + the 5.3.1 client unescape — raw JSON corrupts, `b64:` round-trips deep-equal. |
+| `.env.example` | Every knob, documented. One provider key is required — `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` both work (OpenAI is the backing currently proven live). |

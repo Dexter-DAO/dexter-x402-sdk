@@ -8,6 +8,7 @@
     "start": "tsx server.ts",
     "selftest": "tsx server.ts --selftest",
     "typecheck": "tsc --noEmit",
+    "check:frames": "tsx frame-roundtrip-check.ts",
     "buyer:discover": "tsx buyer-snippet.ts discover",
     "buyer:oneshot": "tsx buyer-snippet.ts oneshot",
     "buyer:tab": "tsx buyer-snippet.ts tab"

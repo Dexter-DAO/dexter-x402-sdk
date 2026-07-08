@@ -29,6 +29,7 @@ import {
   createSolanaVaultAdapter,
   passkeySignerFromP256Keypair,
 } from '@dexterai/x402/tab/adapters/solana';
+import { decodeFrame } from './sse-frame.js';
 
 const SERVER_URL = process.env.SERVER_URL ?? 'http://localhost:4021';
 const COMPLETE_URL = `${SERVER_URL}/v1/complete`;
@@ -180,20 +181,19 @@ async function tabStream(): Promise<void> {
     const decoder = new TextDecoder();
     let lastTicker = '';
     for await (const chunk of stream) {
-      // SDK already unwrapped SSE framing; each chunk is one data: payload.
-      let parsed: {
+      // SDK already unwrapped SSE framing; each chunk is one data: payload —
+      // base64-wrapped JSON (`b64:...`), NOT raw JSON: the 5.3.1 SSE meter
+      // corrupts raw JSON whose text contains "\n" (see sse-frame.ts), and
+      // multi-line completions would be silently dropped here otherwise.
+      const parsed = decodeFrame<{
         text?: string;
         tokensCharged?: number;
         usdcAccrued?: string;
         done?: boolean;
         outputTokens?: number;
         settledUsdc?: string;
-      };
-      try {
-        parsed = JSON.parse(decoder.decode(chunk));
-      } catch {
-        continue; // SDK end-event frame
-      }
+      }>(decoder.decode(chunk));
+      if (!parsed) continue; // not one of our frames
       if (parsed.done) {
         console.log('\n');
         console.log(`provider says ${parsed.outputTokens} output tokens; meter settled ${parsed.settledUsdc} USDC`);
