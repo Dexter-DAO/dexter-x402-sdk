@@ -1,0 +1,24 @@
+{
+  "name": "@dexterai/example-push-per-send",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Example seller: your agent can page you over Telegram or email. A penny a send, hard-capped, behind a dual-rail x402 tab paywall.",
+  "type": "module",
+  "scripts": {
+    "start": "tsx server.ts",
+    "buyer": "tsx buyer-snippet.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@dexterai/x402": "^5.3.1",
+    "@solana/web3.js": "^1.98.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.13.4",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.3"
+  }
+}
