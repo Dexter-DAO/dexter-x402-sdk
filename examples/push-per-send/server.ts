@@ -261,21 +261,44 @@ app.post('/send', validateSendBody, paywall, async (req: Request, res: Response)
       return;
     }
 
-    // ── Rail 2: tab. Work first, charge after (same order as the production
-    // tab-demo route): a failed delivery costs the buyer nothing, and the
-    // seller's exposure is bounded at one un-charged send per tab.
+    // ── Rail 2: tab. Charge FIRST, deliver after — the money order for a paid
+    // side-effect (and the SseMeter contract: charge() before each delivery).
+    // charge() fails closed: on cap/expiry/non-monotonic it throws before
+    // deliver() is ever reached, so the seller never gives out a free send.
+    // The trade is stated plainly below: a delivery fault AFTER a successful
+    // charge cannot be refunded on a tab, so the buyer wears exactly one
+    // charged-but-failed send — and the stream says so with a failure event,
+    // never a fabricated success.
     const tab = requireTab(req);
-    const outcome = await deliver(body);
-    if (!outcome.delivered) {
-      res.status(502).json({ error: 'delivery_failed', detail: outcome.detail });
-      return;
-    }
     // Per-request price goes on the METER (the bill), not the middleware (the
-    // sticker). charge() fails closed: on cap/expiry/non-monotonic it throws
-    // before anything is sent.
+    // sticker).
     const meter = openSse(res, { tab, perUnit: atomicToHuman(priceMicro.toString()) });
     sseOpen = true;
-    await meter.charge(1);
+    await meter.charge(1); // throws → catch below ends the stream; nothing was sent
+    const outcome = await deliver(body);
+    if (!outcome.delivered) {
+      // Charged, then delivery faulted. No refund primitive exists on a tab:
+      // report the failure honestly on the stream (never a success event) and
+      // log it so the seller can make it right out of band.
+      console.error(
+        `[push-per-send] delivery failed AFTER tab charge (channel ${tab.channelId}): ` +
+          `${outcome.detail ?? 'unknown'}`,
+      );
+      meter.send(
+        JSON.stringify({
+          ok: false,
+          sent: false,
+          error: 'delivery_failed',
+          detail: outcome.detail,
+          paidVia: 'tab',
+          priceMicroUsdc: priceMicro.toString(),
+          channelId: tab.channelId,
+          tabCumulativeUsdc: tab.cumulative(),
+        }),
+      );
+      await meter.end();
+      return;
+    }
     meter.send(
       JSON.stringify({
         ok: true,

@@ -107,8 +107,15 @@ sticker honest for one-shot buyers.
 - A malformed body with payment attached gets `400` **before** any charge.
 - A malformed body with no payment gets the standard `402` (so catalog crawlers and
   `resolveTabOffer` always see the challenge).
-- Tab rail delivers first and charges after: a failed page costs the buyer
-  nothing; the seller's exposure is one un-charged send.
+- Tab rail charges first and delivers after: the money order for a paid
+  side-effect. `charge()` fails closed (cap, expiry, non-monotonic), so a
+  failed charge means the page is never attempted and the seller never gives
+  out a free send.
+- A delivery fault AFTER a successful tab charge cannot be refunded (a tab has
+  no refund primitive): the buyer wears exactly one charged-but-failed send,
+  and the stream reports it as an `ok: false` / `delivery_failed` event instead
+  of a success event. The server logs it so the seller can make it right out of
+  band.
 - Exact rail settles up front, so a delivery fault answers `502` with the
   payment transaction included for reconciliation.
 
