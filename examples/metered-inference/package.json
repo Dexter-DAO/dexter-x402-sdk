@@ -1,0 +1,31 @@
+{
+  "name": "@dexterai/metered-inference-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pay per output token, capped. Real Claude inference behind an x402 tab seller — meter ticks per token, buyer settles only what was served.",
+  "type": "module",
+  "scripts": {
+    "start": "tsx server.ts",
+    "selftest": "tsx server.ts --selftest",
+    "typecheck": "tsc --noEmit",
+    "check:frames": "tsx frame-roundtrip-check.ts",
+    "buyer:discover": "tsx buyer-snippet.ts discover",
+    "buyer:oneshot": "tsx buyer-snippet.ts oneshot",
+    "buyer:tab": "tsx buyer-snippet.ts tab"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.92.0",
+    "@dexterai/x402": "^5.3.1",
+    "@solana/web3.js": "^1.98.0",
+    "bs58": "^6.0.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.1.0",
+    "openai": "^5.19.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.13.4",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.3"
+  }
+}
