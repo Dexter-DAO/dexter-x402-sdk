@@ -756,8 +756,12 @@ async function* decodeSseChunks(body: ReadableStream<Uint8Array>): AsyncIterable
         const parsed = parseSseEvent(eventText);
         if (parsed.eventName === 'end') return;
         if (parsed.data !== null) {
-          // Unescape the SSE-encoded newlines the meter applied.
-          const text = parsed.data.replace(/\\n/g, '\n');
+          // True inverse of the meter's escape (backslashes first, then
+          // newlines): a single left-to-right pass so `\\n` decodes to a
+          // literal backslash+n (JSON escape preserved) and `\n` decodes to
+          // a real newline. The old newline-only unescape corrupted JSON
+          // payloads containing their own `\n` escapes.
+          const text = parsed.data.replace(/\\(\\|n)/g, (_, c: string) => (c === 'n' ? '\n' : '\\'));
           yield new TextEncoder().encode(text);
         }
       }

@@ -135,7 +135,11 @@ export function openSse(res: Response, options: OpenSseOptions): SseMeter {
   function send(chunk: string | Uint8Array): void {
     if (ended) throw new Error('meter ended');
     const data = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
-    const escaped = data.replace(/\n/g, '\\n');
+    // Escape backslashes BEFORE newlines so the client's unescape is a true
+    // inverse. The old newline-only escape corrupted payloads that already
+    // contained literal `\n` sequences (e.g. JSON.stringify output): the
+    // client turned the JSON's own escapes into real newlines, breaking parse.
+    const escaped = data.replace(/\\/g, '\\\\').replace(/\n/g, '\\n');
     res.write(`data: ${escaped}\n\n`);
   }
 
