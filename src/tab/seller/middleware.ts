@@ -240,9 +240,15 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
         const onChain = await verifyRegistrationOnChain(config.connection, parsed);
         // Defensive `?.`: custom/mocked verifiers may still return void.
         chainFrontierAtomic = onChain?.frontierAtomic ?? null;
+        // Seed the monotonicity/increment baseline from the durable ledger's
+        // last accepted voucher. Without this, a restarted process treats a
+        // long-lived tab's full lifetime cumulative as a single voucher
+        // increment (false cumulative_exceeds_cap) and would accept replays
+        // of pre-restart vouchers.
+        const persisted = await ledger.get(channelId);
         entry = {
           registration: parsed,
-          lastCumulativeAtomic: '0',
+          lastCumulativeAtomic: persisted?.lastVoucher?.payload.cumulativeAmount ?? '0',
         };
         cache.set(channelId, entry);
       }
