@@ -59,7 +59,12 @@ export type {
 export {
   InMemoryChannelLedger,
   FileChannelLedger,
+  serializeChannelLedgerEntry,
+  deserializeChannelLedgerEntry,
 } from './channel-ledger';
+export type { SerializedEntry } from './channel-ledger';
+export { RedisChannelLedger } from './redis-channel-ledger';
+export type { RedisLikeClient } from './redis-channel-ledger';
 
 // Middleware + helpers.
 export {

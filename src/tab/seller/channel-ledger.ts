@@ -163,8 +163,10 @@ export class InMemoryChannelLedger implements ChannelLedger {
 }
 
 // ── Serialization helpers (Uint8Array voucher fields → hex) ─────────────
+// Exported for out-of-process ChannelLedger impls (Redis, Postgres) so they
+// share one wire shape with FileChannelLedger instead of forking their own.
 
-interface SerializedEntry {
+export interface SerializedEntry {
   lastVoucher: {
     payload: SignedVoucher['payload'];
     sessionPublicKey: string;
@@ -189,6 +191,14 @@ function hexToBytes(hex: string): Uint8Array {
   const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
   return out;
+}
+
+export function serializeChannelLedgerEntry(entry: ChannelLedgerEntry): SerializedEntry {
+  return serialize(entry);
+}
+
+export function deserializeChannelLedgerEntry(s: SerializedEntry): ChannelLedgerEntry {
+  return deserialize(s);
 }
 
 function serialize(entry: ChannelLedgerEntry): SerializedEntry {
