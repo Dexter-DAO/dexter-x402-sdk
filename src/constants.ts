@@ -35,6 +35,9 @@ export const POLYGON_NETWORK = 'eip155:137';
 export const OPTIMISM_NETWORK = 'eip155:10';
 export const AVALANCHE_NETWORK = 'eip155:43114';
 export const BSC_MAINNET_NETWORK = 'eip155:56';
+export const WORLD_MAINNET_NETWORK = 'eip155:480';
+export const MONAD_MAINNET_NETWORK = 'eip155:143';
+export const ROBINHOOD_MAINNET_NETWORK = 'eip155:4663';
 export const SKALE_BASE_NETWORK = 'eip155:1187947933';
 export const SKALE_BASE_SEPOLIA_NETWORK = 'eip155:324705682';
 
@@ -49,6 +52,9 @@ export const POLYGON = POLYGON_NETWORK;
 export const OPTIMISM = OPTIMISM_NETWORK;
 export const AVALANCHE = AVALANCHE_NETWORK;
 export const BSC_MAINNET = BSC_MAINNET_NETWORK;
+export const WORLD_MAINNET = WORLD_MAINNET_NETWORK;
+export const MONAD_MAINNET = MONAD_MAINNET_NETWORK;
+export const ROBINHOOD_MAINNET = ROBINHOOD_MAINNET_NETWORK;
 export const SKALE_BASE = SKALE_BASE_NETWORK;
 export const SKALE_BASE_SEPOLIA = SKALE_BASE_SEPOLIA_NETWORK;
 export const ETHEREUM_MAINNET = ETHEREUM_MAINNET_NETWORK;
@@ -70,7 +76,18 @@ export const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 export const BSC_USDT = '0x55d398326f99059fF775485246999027B3197955';
 export const BSC_USDC = '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d';
 
-/** USDC contract addresses indexed by CAIP-2 network */
+/**
+ * Paxos USDG (Global Dollar) on Robinhood Chain — the chain's canonical
+ * settlement stablecoin. There is NO native Circle USDC on Robinhood Chain,
+ * so USDG fills the USDC slot in every per-chain table below (6 decimals,
+ * EIP-3009 supported — verified on-chain 2026-07-19).
+ */
+export const ROBINHOOD_USDG = '0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168';
+
+/**
+ * Canonical settlement stablecoin addresses indexed by CAIP-2 network.
+ * Circle native USDC where it exists; Paxos USDG on Robinhood Chain.
+ */
 export const USDC_ADDRESSES: Record<string, string> = {
   [BSC_MAINNET_NETWORK]: BSC_USDC,
   [BASE_MAINNET_NETWORK]: USDC_BASE,
@@ -79,6 +96,9 @@ export const USDC_ADDRESSES: Record<string, string> = {
   [POLYGON_NETWORK]: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
   [OPTIMISM_NETWORK]: '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85',
   [AVALANCHE_NETWORK]: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E',
+  [WORLD_MAINNET_NETWORK]: '0x79A02482A880bCE3F13e09Da970dC34db4CD24d1',
+  [MONAD_MAINNET_NETWORK]: '0x754704Bc059F8C67012fEd69BC8A327a5aafb603',
+  [ROBINHOOD_MAINNET_NETWORK]: ROBINHOOD_USDG,
   [SKALE_BASE_NETWORK]: '0x85889c8c714505E0c94b30fcfcF64fE3Ac8FCb20',
   [SKALE_BASE_SEPOLIA_NETWORK]: '0x2e08028E3C4c2356572E096d8EF835cD5C6030bD',
   [ETHEREUM_MAINNET_NETWORK]: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
@@ -95,6 +115,31 @@ export const BSC_STABLECOIN_ADDRESSES: Record<string, { symbol: string; decimals
 
 /** Default USDC decimals across every chain except BSC */
 export const USDC_DECIMALS = 6;
+
+// ============================================================================
+// EIP-712 domains of the settlement asset (mirrors facilitator `eip712` field)
+// ============================================================================
+
+/**
+ * EIP-712 domain (name/version) the settlement asset signs with, indexed by
+ * CAIP-2 network. Only chains whose token does NOT use the Circle FiatToken
+ * default ("USD Coin" / "2") are listed — validated against each token's
+ * on-chain DOMAIN_SEPARATOR (2026-07-19):
+ * - World & Monad: native USDC (FiatTokenV2_2) signs as "USDC", not "USD Coin"
+ * - Robinhood: Paxos USDG signs as "Global Dollar" / "1"
+ * - SKALE: bridged USDC signs as "Bridged USDC (SKALE Bridge)"
+ *
+ * The facilitator advertises these via the requirements `extra.name` /
+ * `extra.version`, which always wins; this map is the SDK-side fallback so a
+ * missing extra never silently produces an unspendable "USD Coin" signature.
+ */
+export const EIP712_DOMAINS: Record<string, { name: string; version: string }> = {
+  [WORLD_MAINNET_NETWORK]: { name: 'USDC', version: '2' },
+  [MONAD_MAINNET_NETWORK]: { name: 'USDC', version: '2' },
+  [ROBINHOOD_MAINNET_NETWORK]: { name: 'Global Dollar', version: '1' },
+  [SKALE_BASE_NETWORK]: { name: 'Bridged USDC (SKALE Bridge)', version: '2' },
+  [SKALE_BASE_SEPOLIA_NETWORK]: { name: 'Bridged USDC (SKALE Bridge)', version: '2' },
+};
 
 // ============================================================================
 // Permit2 (Uniswap canonical deployment, same address on every EVM chain)
@@ -115,6 +160,9 @@ export const CHAIN_IDS: Record<string, number> = {
   [POLYGON_NETWORK]: 137,
   [OPTIMISM_NETWORK]: 10,
   [AVALANCHE_NETWORK]: 43114,
+  [WORLD_MAINNET_NETWORK]: 480,
+  [MONAD_MAINNET_NETWORK]: 143,
+  [ROBINHOOD_MAINNET_NETWORK]: 4663,
   [SKALE_BASE_NETWORK]: 1187947933,
   [SKALE_BASE_SEPOLIA_NETWORK]: 324705682,
   [ETHEREUM_MAINNET_NETWORK]: 1,
@@ -148,6 +196,9 @@ export const EVM_RPC_URLS: Record<string, string> = {
   [POLYGON_NETWORK]: 'https://api.dexter.cash/api/evm/polygon/rpc',
   [OPTIMISM_NETWORK]: 'https://api.dexter.cash/api/evm/optimism/rpc',
   [AVALANCHE_NETWORK]: 'https://api.dexter.cash/api/evm/avalanche/rpc',
+  [WORLD_MAINNET_NETWORK]: 'https://worldchain-mainnet.g.alchemy.com/public',
+  [MONAD_MAINNET_NETWORK]: 'https://rpc.monad.xyz',
+  [ROBINHOOD_MAINNET_NETWORK]: 'https://rpc.mainnet.chain.robinhood.com',
   [SKALE_BASE_NETWORK]: 'https://skale-base.skalenodes.com/v1/base',
   [SKALE_BASE_SEPOLIA_NETWORK]: 'https://base-sepolia-testnet.skalenodes.com/v1/jubilant-horrible-ancha',
   [ETHEREUM_MAINNET_NETWORK]: 'https://eth.llamarpc.com',

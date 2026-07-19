@@ -44,6 +44,16 @@ describe('Network Detection', () => {
     expect(getChainFamily('base')).toBe('evm');
   });
 
+  it('identifies every bare EVM alias the SDK accepts', () => {
+    for (const bare of [
+      'base', 'base-sepolia', 'ethereum', 'arbitrum', 'polygon', 'optimism',
+      'avalanche', 'bsc', 'world', 'monad', 'robinhood',
+      'skale-base', 'skale-base-sepolia',
+    ]) {
+      expect(getChainFamily(bare)).toBe('evm');
+    }
+  });
+
   it('returns unknown for unrecognized networks', () => {
     expect(getChainFamily('aptos:mainnet')).toBe('unknown');
     expect(getChainFamily('garbage')).toBe('unknown');
@@ -67,6 +77,9 @@ describe('Chain Names', () => {
     expect(getChainName('eip155:10')).toBe('Optimism');
     expect(getChainName('eip155:43114')).toBe('Avalanche');
     expect(getChainName('eip155:56')).toBe('BSC');
+    expect(getChainName('eip155:480')).toBe('World Chain');
+    expect(getChainName('eip155:143')).toBe('Monad');
+    expect(getChainName('eip155:4663')).toBe('Robinhood Chain');
     expect(getChainName('eip155:1187947933')).toBe('SKALE Base');
     expect(getChainName('eip155:324705682')).toBe('SKALE Base Sepolia');
   });
@@ -76,6 +89,9 @@ describe('Chain Names', () => {
     expect(getChainName('polygon')).toBe('Polygon');
     expect(getChainName('avalanche')).toBe('Avalanche');
     expect(getChainName('bsc')).toBe('BSC');
+    expect(getChainName('world')).toBe('World Chain');
+    expect(getChainName('monad')).toBe('Monad');
+    expect(getChainName('robinhood')).toBe('Robinhood Chain');
     expect(getChainName('skale-base')).toBe('SKALE Base');
   });
 
@@ -100,8 +116,17 @@ describe('Explorer URLs', () => {
     expect(getExplorerUrl('0xT', 'eip155:10')).toBe('https://optimistic.etherscan.io/tx/0xT');
     expect(getExplorerUrl('0xT', 'eip155:43114')).toBe('https://snowtrace.io/tx/0xT');
     expect(getExplorerUrl('0xT', 'eip155:56')).toBe('https://bscscan.com/tx/0xT');
+    expect(getExplorerUrl('0xT', 'eip155:480')).toBe('https://worldscan.org/tx/0xT');
+    expect(getExplorerUrl('0xT', 'eip155:143')).toBe('https://monadvision.com/tx/0xT');
+    expect(getExplorerUrl('0xT', 'eip155:4663')).toBe('https://robinhoodchain.blockscout.com/tx/0xT');
     expect(getExplorerUrl('0xT', 'eip155:1187947933')).toContain('skalenodes.com');
     expect(getExplorerUrl('0xT', 'eip155:324705682')).toContain('base-sepolia-testnet');
+  });
+
+  it('resolves bare aliases for the newest chains', () => {
+    expect(getExplorerUrl('0xT', 'world')).toBe('https://worldscan.org/tx/0xT');
+    expect(getExplorerUrl('0xT', 'monad')).toBe('https://monadvision.com/tx/0xT');
+    expect(getExplorerUrl('0xT', 'robinhood')).toBe('https://robinhoodchain.blockscout.com/tx/0xT');
   });
 });
 

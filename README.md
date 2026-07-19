@@ -139,7 +139,7 @@ Tabs are the headline. The same install carries the rest of the x402 surface —
 
 ## Supported networks
 
-Tabs are Solana. One-shot and batch settlement span Solana and the major EVM chains; USDC on every chain. Full live list: [Dexter facilitator](https://x402.dexter.cash/supported).
+Tabs are Solana. One-shot and batch settlement span Solana and the major EVM chains; USDC on every chain (Paxos USDG on Robinhood Chain, which has no native USDC). Full live list: [Dexter facilitator](https://x402.dexter.cash/supported).
 
 | Network | CAIP-2 | Status |
 |---------|--------|--------|
@@ -150,6 +150,9 @@ Tabs are Solana. One-shot and batch settlement span Solana and the major EVM cha
 | Optimism | `eip155:10` | Production |
 | Avalanche | `eip155:43114` | Production |
 | BSC | `eip155:56` | Production |
+| World Chain | `eip155:480` | Production |
+| Monad | `eip155:143` | Production |
+| Robinhood Chain | `eip155:4663` | Production (USDG) |
 | SKALE Base | `eip155:1187947933` | Production (zero gas) |
 
 ---

@@ -24,9 +24,13 @@ import {
   POLYGON,
   OPTIMISM,
   AVALANCHE,
+  WORLD_MAINNET,
+  MONAD_MAINNET,
+  ROBINHOOD_MAINNET,
   SKALE_BASE,
   SKALE_BASE_SEPOLIA,
   CHAIN_IDS,
+  EIP712_DOMAINS,
   EVM_RPC_URLS as DEFAULT_RPC_URLS,
 } from '../constants';
 
@@ -41,13 +45,18 @@ export {
   OPTIMISM,
   AVALANCHE,
   BSC_MAINNET,
+  WORLD_MAINNET,
+  MONAD_MAINNET,
+  ROBINHOOD_MAINNET,
   SKALE_BASE,
   SKALE_BASE_SEPOLIA,
   ETHEREUM_MAINNET,
   BSC_USDT,
   BSC_USDC,
+  ROBINHOOD_USDG,
   USDC_ADDRESSES,
   BSC_STABLECOIN_ADDRESSES,
+  EIP712_DOMAINS,
 } from '../constants';
 
 /**
@@ -163,6 +172,9 @@ export class EvmAdapter implements ChainAdapter {
     POLYGON,
     OPTIMISM,
     AVALANCHE,
+    WORLD_MAINNET,
+    MONAD_MAINNET,
+    ROBINHOOD_MAINNET,
     SKALE_BASE,
     SKALE_BASE_SEPOLIA,
   ];
@@ -188,6 +200,9 @@ export class EvmAdapter implements ChainAdapter {
     if (network === 'polygon') return true;
     if (network === 'optimism') return true;
     if (network === 'avalanche') return true;
+    if (network === 'world') return true;
+    if (network === 'monad') return true;
+    if (network === 'robinhood') return true;
     if (network === 'skale-base') return true;
     if (network === 'skale-base-sepolia') return true;
     // Any other CAIP-2 EVM identifier we haven't enumerated
@@ -210,6 +225,9 @@ export class EvmAdapter implements ChainAdapter {
     if (network === 'polygon') return DEFAULT_RPC_URLS[POLYGON];
     if (network === 'optimism') return DEFAULT_RPC_URLS[OPTIMISM];
     if (network === 'avalanche') return DEFAULT_RPC_URLS[AVALANCHE];
+    if (network === 'world') return DEFAULT_RPC_URLS[WORLD_MAINNET];
+    if (network === 'monad') return DEFAULT_RPC_URLS[MONAD_MAINNET];
+    if (network === 'robinhood') return DEFAULT_RPC_URLS[ROBINHOOD_MAINNET];
     if (network === 'skale-base') return DEFAULT_RPC_URLS[SKALE_BASE];
     if (network === 'skale-base-sepolia') return DEFAULT_RPC_URLS[SKALE_BASE_SEPOLIA];
     return DEFAULT_RPC_URLS[BASE_MAINNET];
@@ -237,6 +255,14 @@ export class EvmAdapter implements ChainAdapter {
     if (network === 'bsc') return 56;
     if (network === 'ethereum') return 1;
     if (network === 'arbitrum') return 42161;
+    if (network === 'polygon') return 137;
+    if (network === 'optimism') return 10;
+    if (network === 'avalanche') return 43114;
+    if (network === 'world') return 480;
+    if (network === 'monad') return 143;
+    if (network === 'robinhood') return 4663;
+    if (network === 'skale-base') return 1187947933;
+    if (network === 'skale-base-sepolia') return 324705682;
     return 8453; // Default to Base
   }
 
@@ -424,10 +450,19 @@ export class EvmAdapter implements ChainAdapter {
     const chainId = this.getChainId(accept.network);
 
     // Build the EIP-712 typed data
-    // This matches what Dexter's facilitator expects
+    // This matches what Dexter's facilitator expects.
+    //
+    // Domain resolution order: the requirements `extra.name`/`extra.version`
+    // (what the facilitator advertises — always wins) → the SDK's per-chain
+    // EIP712_DOMAINS registry → the Circle FiatToken default "USD Coin"/"2".
+    // The registry tier matters on chains whose token signs with a different
+    // domain (World/Monad USDC = "USDC", Robinhood USDG = "Global Dollar"/"1",
+    // SKALE bridged USDC): without it, a missing extra would silently produce
+    // an unspendable signature.
+    const chainDomain = EIP712_DOMAINS[`eip155:${chainId}`];
     const domain = {
-      name: extra?.name ?? 'USD Coin',
-      version: extra?.version ?? '2',
+      name: extra?.name ?? chainDomain?.name ?? 'USD Coin',
+      version: extra?.version ?? chainDomain?.version ?? '2',
       chainId: BigInt(chainId),
       verifyingContract: asset as `0x${string}`,
     };

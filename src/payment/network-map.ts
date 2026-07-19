@@ -22,6 +22,11 @@ const ENTRIES: Entry[] = [
   { caip2: 'eip155:10',    bare: 'optimism',  family: 'evm' },
   { caip2: 'eip155:43114', bare: 'avalanche', family: 'evm' },
   { caip2: 'eip155:56',    bare: 'bsc',       family: 'evm' },
+  { caip2: 'eip155:480',   bare: 'world',     family: 'evm' },
+  { caip2: 'eip155:143',   bare: 'monad',     family: 'evm' },
+  { caip2: 'eip155:4663',  bare: 'robinhood', family: 'evm' },
+  { caip2: 'eip155:1187947933', bare: 'skale-base',         family: 'evm' },
+  { caip2: 'eip155:324705682',  bare: 'skale-base-sepolia', family: 'evm' },
   {
     caip2: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
     bare: 'solana',

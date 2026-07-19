@@ -15,9 +15,13 @@ import {
   OPTIMISM_NETWORK,
   AVALANCHE_NETWORK,
   BSC_MAINNET_NETWORK,
+  WORLD_MAINNET_NETWORK,
+  MONAD_MAINNET_NETWORK,
+  ROBINHOOD_MAINNET_NETWORK,
   SKALE_BASE_NETWORK,
   SKALE_BASE_SEPOLIA_NETWORK,
   ETHEREUM_MAINNET_NETWORK,
+  EVM_RPC_URLS,
 } from './constants';
 
 // ============================================================================
@@ -136,9 +140,26 @@ export function isSolanaNetwork(network: string): boolean {
   return network.startsWith('solana:') || network === 'solana';
 }
 
+/** Legacy short-form (bare) names of every EVM chain the SDK knows. */
+const EVM_BARE_NAMES = [
+  'base',
+  'base-sepolia',
+  'ethereum',
+  'arbitrum',
+  'polygon',
+  'optimism',
+  'avalanche',
+  'bsc',
+  'world',
+  'monad',
+  'robinhood',
+  'skale-base',
+  'skale-base-sepolia',
+];
+
 /** Check if a CAIP-2 network identifier is an EVM network */
 export function isEvmNetwork(network: string): boolean {
-  return network.startsWith('eip155:') || ['base', 'ethereum', 'arbitrum'].includes(network);
+  return network.startsWith('eip155:') || EVM_BARE_NAMES.includes(network);
 }
 
 /**
@@ -180,21 +201,28 @@ export function getDefaultRpcUrl(network: string): string {
   }
 
   if (family === 'evm') {
-    // Extract chain ID from CAIP-2
-    if (network.startsWith('eip155:')) {
-      const chainId = network.split(':')[1];
-      switch (chainId) {
-        case '8453': return 'https://api.dexter.cash/api/base/rpc'; // Dexter proxy
-        case '84532': return 'https://sepolia.base.org';
-        case '1': return 'https://eth.llamarpc.com';
-        case '42161': return 'https://arb1.arbitrum.io/rpc';
-        default: return 'https://api.dexter.cash/api/base/rpc';
-      }
-    }
-    // Legacy names
-    if (network === 'base') return 'https://api.dexter.cash/api/base/rpc';
-    if (network === 'ethereum') return 'https://eth.llamarpc.com';
-    if (network === 'arbitrum') return 'https://arb1.arbitrum.io/rpc';
+    // Canonical registry lookup — EVM_RPC_URLS in constants.ts is the single
+    // source of truth (same map the EvmAdapter resolves against), so this
+    // helper can never drift from the payment path.
+    if (EVM_RPC_URLS[network]) return EVM_RPC_URLS[network];
+    // Legacy short-form aliases
+    const aliasToCaip2: Record<string, string> = {
+      'base': BASE_MAINNET_NETWORK,
+      'base-sepolia': BASE_SEPOLIA_NETWORK,
+      'ethereum': ETHEREUM_MAINNET_NETWORK,
+      'arbitrum': ARBITRUM_ONE_NETWORK,
+      'polygon': POLYGON_NETWORK,
+      'optimism': OPTIMISM_NETWORK,
+      'avalanche': AVALANCHE_NETWORK,
+      'bsc': BSC_MAINNET_NETWORK,
+      'world': WORLD_MAINNET_NETWORK,
+      'monad': MONAD_MAINNET_NETWORK,
+      'robinhood': ROBINHOOD_MAINNET_NETWORK,
+      'skale-base': SKALE_BASE_NETWORK,
+      'skale-base-sepolia': SKALE_BASE_SEPOLIA_NETWORK,
+    };
+    const caip2 = aliasToCaip2[network];
+    if (caip2 && EVM_RPC_URLS[caip2]) return EVM_RPC_URLS[caip2];
     return 'https://api.dexter.cash/api/base/rpc';
   }
 
@@ -226,6 +254,9 @@ export function getChainName(network: string): string {
     [OPTIMISM_NETWORK]: 'Optimism',
     [AVALANCHE_NETWORK]: 'Avalanche',
     [BSC_MAINNET_NETWORK]: 'BSC',
+    [WORLD_MAINNET_NETWORK]: 'World Chain',
+    [MONAD_MAINNET_NETWORK]: 'Monad',
+    [ROBINHOOD_MAINNET_NETWORK]: 'Robinhood Chain',
     [SKALE_BASE_NETWORK]: 'SKALE Base',
     [SKALE_BASE_SEPOLIA_NETWORK]: 'SKALE Base Sepolia',
     // EVM family — legacy short-form aliases
@@ -237,6 +268,9 @@ export function getChainName(network: string): string {
     'optimism': 'Optimism',
     'avalanche': 'Avalanche',
     'bsc': 'BSC',
+    'world': 'World Chain',
+    'monad': 'Monad',
+    'robinhood': 'Robinhood Chain',
     'skale-base': 'SKALE Base',
     'skale-base-sepolia': 'SKALE Base Sepolia',
   };
@@ -301,6 +335,12 @@ export function getExplorerUrl(txSignature: string, network: string): string {
       chainId = '43114';
     } else if (network === 'bsc') {
       chainId = '56';
+    } else if (network === 'world') {
+      chainId = '480';
+    } else if (network === 'monad') {
+      chainId = '143';
+    } else if (network === 'robinhood') {
+      chainId = '4663';
     } else if (network === 'skale-base') {
       chainId = '1187947933';
     } else if (network === 'skale-base-sepolia') {
@@ -316,6 +356,9 @@ export function getExplorerUrl(txSignature: string, network: string): string {
       case '10': return `https://optimistic.etherscan.io/tx/${txSignature}`;
       case '43114': return `https://snowtrace.io/tx/${txSignature}`;
       case '56': return `https://bscscan.com/tx/${txSignature}`;
+      case '480': return `https://worldscan.org/tx/${txSignature}`;
+      case '143': return `https://monadvision.com/tx/${txSignature}`;
+      case '4663': return `https://robinhoodchain.blockscout.com/tx/${txSignature}`;
       case '1187947933': return `https://elated-tan-skat.explorer.mainnet.skalenodes.com/tx/${txSignature}`;
       case '324705682': return `https://base-sepolia-testnet.explorer.skalenodes.com/tx/${txSignature}`;
       default: return `https://basescan.org/tx/${txSignature}`;
