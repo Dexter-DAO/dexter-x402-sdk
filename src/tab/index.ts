@@ -61,7 +61,7 @@ export {
 } from './types';
 
 // Phase 2 implementations.
-export { openTab, resumeTab, humanToAtomic, atomicToHuman, voucherToHeader, DEFAULT_FACILITATOR_URL } from './tab';
+export { openTab, resumeTab, humanToAtomic, atomicToHuman, voucherToHeader, armTabOpen, DEFAULT_FACILITATOR_URL } from './tab';
 
 // Grant lane: a Tab from a granted session key (the /tabs/connect ceremony's
 // custody modes) — openTab minus the passkey, resume = the on-chain frontier.
