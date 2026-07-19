@@ -109,3 +109,16 @@ export {
   type TabTermsResult,
   type ResolveTabTermsOptions,
 } from './terms';
+
+// Session-key primitives for DELEGATED-SIGNER integrations (Hark mandates,
+// 2026-07-19): a service that holds a subscriber's session key and signs
+// per-delivery voucher increments needs the raw building blocks, not the
+// Tab class (which assumes the buyer's own process drives the stream).
+export {
+  generateSessionKeypair,
+  makeSessionKey,
+  signVoucher,
+  scopeCapAtomic,
+  parseAtomic,
+  deriveChannelId,
+} from './sessions';
