@@ -14,6 +14,11 @@ export interface TabOffer {
   asset: string;
   /** CAIP-2 network from the challenge (x402 v2 form). */
   networkCaip2: string;
+  /** Preserved verbatim from accepts[].extra for policy-aware callers. */
+  voucherHeader?: string;
+  registrationEncoding?: string;
+  termsVersion?: string;
+  acceptanceRule?: string;
   resourceUrl?: string;
 }
 
@@ -90,6 +95,18 @@ export async function resolveTabOffer(
       amountAtomic: tabOption.amount,
       asset: tabOption.asset,
       networkCaip2: tabOption.network.caip2,
+      ...(typeof tabOption.extra?.voucherHeader === 'string'
+        ? { voucherHeader: tabOption.extra.voucherHeader }
+        : {}),
+      ...(typeof tabOption.extra?.registrationEncoding === 'string'
+        ? { registrationEncoding: tabOption.extra.registrationEncoding }
+        : {}),
+      ...(typeof tabOption.extra?.termsVersion === 'string'
+        ? { termsVersion: tabOption.extra.termsVersion }
+        : {}),
+      ...(typeof tabOption.extra?.acceptanceRule === 'string'
+        ? { acceptanceRule: tabOption.extra.acceptanceRule }
+        : {}),
       resourceUrl: challenge.resourceUrl,
     },
   };

@@ -74,6 +74,12 @@ export {
 // Step 3a: pay-a-URL — counterparty resolved from the wire, never the caller.
 export { resolveTabOffer, type TabOffer, type TabOfferResult } from './resolve';
 export {
+  HOSTED_TAB_ACCEPTANCE_RULE,
+  HOSTED_TAB_REGISTRATION_ENCODING,
+  HOSTED_TAB_TERMS_VERSION,
+  HOSTED_TAB_VOUCHER_HEADER,
+} from './hosted-terms';
+export {
   payUrlWithTab,
   type PayUrlWithTabOptions,
   type PayUrlWithTabResult,

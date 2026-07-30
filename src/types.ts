@@ -110,6 +110,14 @@ export interface AcceptsExtra {
    * Provided by the facilitator's batch-settlement kind. EVM only.
    */
   receiverAuthorizer?: string;
+  /** Tab seller-wire header advertised by the default hosted scheme. */
+  voucherHeader?: string;
+  /** Tab registration encoding carried inside each seller voucher. */
+  registrationEncoding?: string;
+  /** Immutable commercial-terms version for this Tab offer. */
+  termsVersion?: string;
+  /** Event that makes usage accepted under the advertised terms version. */
+  acceptanceRule?: string;
   /** Additional chain-specific fields */
   [key: string]: unknown;
 }

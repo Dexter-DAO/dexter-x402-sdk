@@ -180,6 +180,10 @@ describe('tabOrExactMiddleware', () => {
     expect(accepts).toHaveLength(2);
     expect(accepts[0].scheme).toBe('tab');
     expect(accepts[1].scheme).toBe('exact');
+    expect(accepts[0].extra).toMatchObject({
+      termsVersion: 'dexter-tab-hosted-pay-before-delivery/v1',
+      acceptanceRule: 'pay_before_delivery_seller_2xx',
+    });
     for (const accept of accepts) {
       expect(accept.payTo).toBe(SELLER);
       expect(accept.network).toBe(CAIP2);
@@ -205,6 +209,10 @@ describe('tabOrExactMiddleware', () => {
     expect(schemes).toContain('exact');
     const tab = challenge!.options.find((o) => o.scheme === 'tab');
     expect(tab!.network.caip2).toBe(CAIP2);
+    expect(tab!.extra).toMatchObject({
+      termsVersion: 'dexter-tab-hosted-pay-before-delivery/v1',
+      acceptanceRule: 'pay_before_delivery_seller_2xx',
+    });
   });
 
   it('dispatches voucher-carrying requests to the tab rail (no fresh challenge)', async () => {
