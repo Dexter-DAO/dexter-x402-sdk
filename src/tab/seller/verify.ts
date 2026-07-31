@@ -33,7 +33,16 @@ import type { SignedVoucher, AtomicAmount } from '../types';
 import { voucherPayloadMessage } from '../messages';
 import { DEXTER_VAULT_PROGRAM_ID } from '../instructions';
 // V6: sessions live in their own per-counterparty PDA, not inline in the vault.
-import { fetchSessionAccount, isSessionLive } from '@dexterai/vault/session';
+import {
+  deriveSessionPda,
+  fetchSessionAccount,
+  isSessionLive,
+} from '@dexterai/vault/session';
+import {
+  contextBoundVoucherV2Message,
+  sessionVoucherV2AuthorizationNonce,
+  voucherV2SequenceOrdinal,
+} from '@dexterai/vault/messages';
 
 // ── Registration parsing ───────────────────────────────────────────────
 //
@@ -119,14 +128,6 @@ export function parseRegistration(registration: Uint8Array): ParsedRegistration 
   if (maxAmount === 0n) {
     throw new InvalidRegistrationError('cap_zero');
   }
-  const nowSec = BigInt(Math.floor(Date.now() / 1000));
-  if (expiresAt <= nowSec) {
-    throw new InvalidRegistrationError(
-      'expiry_in_past',
-      `expires_at=${expiresAt}, now=${nowSec}`,
-    );
-  }
-
   return {
     programId,
     vaultPda,
@@ -280,11 +281,41 @@ export function verifyVoucherSignature(
     throw new InvalidVoucherSignatureError(`sessionSignature must be 64 bytes, got ${voucher.sessionSignature.length}`);
   }
 
-  const message = voucherPayloadMessage({
-    channelId: channelIdBytes,
-    cumulativeAmount: BigInt(voucher.payload.cumulativeAmount),
-    sequenceNumber: voucher.payload.sequenceNumber,
-  });
+  const registration = parseRegistration(voucher.sessionRegistration);
+  if (!bytesEqual(registration.sessionPubkey, voucher.sessionPublicKey)) {
+    throw new InvalidVoucherSignatureError(
+      'registration session key does not match voucher session key',
+    );
+  }
+  const v2 = registration.nonce >= 0x8000_0000;
+  let message: Uint8Array;
+  if (v2) {
+    sessionVoucherV2AuthorizationNonce(registration.nonce);
+    voucherV2SequenceOrdinal(voucher.payload.sequenceNumber);
+    const [sessionPda] = deriveSessionPda(
+      registration.vaultPda,
+      registration.allowedCounterparty,
+      registration.programId,
+    );
+    message = contextBoundVoucherV2Message({
+      programId: registration.programId,
+      vaultPda: registration.vaultPda,
+      sessionPda,
+      seller: registration.allowedCounterparty,
+      sessionNonce: registration.nonce,
+      channelId: channelIdBytes,
+      cumulativeAmount: BigInt(voucher.payload.cumulativeAmount),
+      sequenceNumber: voucher.payload.sequenceNumber,
+    });
+  } else {
+    // Historical V1 verification remains read-only for already-issued,
+    // owner-authorized recovery. New session admission requires V2.
+    message = voucherPayloadMessage({
+      channelId: channelIdBytes,
+      cumulativeAmount: BigInt(voucher.payload.cumulativeAmount),
+      sequenceNumber: voucher.payload.sequenceNumber,
+    });
+  }
 
   const ok = nacl.sign.detached.verify(
     message,

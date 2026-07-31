@@ -18,7 +18,12 @@
  */
 
 import nacl from 'tweetnacl';
-import type { PublicKey } from '@solana/web3.js';
+import { PublicKey } from '@solana/web3.js';
+import {
+  contextBoundVoucherV2Message,
+  finalVoucherV2Sequence,
+  sessionVoucherV2AuthorizationNonce,
+} from '@dexterai/vault/messages';
 import type {
   SessionKey,
   SessionScope,
@@ -86,6 +91,18 @@ export function signVoucher(
   if (channelIdBytes.length !== 32) {
     throw new Error(`channelIdBytes must be 32 bytes, got ${channelIdBytes.length}`);
   }
+  if (session.registration.length === 188) {
+    const registration = new DataView(
+      session.registration.buffer,
+      session.registration.byteOffset,
+      session.registration.byteLength,
+    );
+    if (registration.getUint32(176, true) >= 0x8000_0000) {
+      throw new Error(
+        'context-bound V2 sessions require signContextBoundFinalVoucherV2 and a durable reservation',
+      );
+    }
+  }
 
   const cumulative = BigInt(payload.cumulativeAmount);
   const cap = BigInt(session.scope.maxAmountAtomic);
@@ -115,6 +132,142 @@ export function signVoucher(
     sessionPublicKey: session.publicKey,
     sessionRegistration: session.registration,
     sessionSignature,
+  };
+}
+
+export interface SignContextBoundFinalVoucherV2Input {
+  programId: string;
+  vaultPda: string;
+  sessionPda: string;
+  seller: string;
+  sessionNonce: number;
+  channelId: string;
+  cumulativeAmountAtomic: string;
+  sequenceOrdinal: number;
+  sessionPrivateKey: Uint8Array;
+  sessionPublicKey: Uint8Array;
+  sessionRegistration: Uint8Array;
+}
+
+export interface SignContextBoundFinalVoucherV2Result {
+  channelId: string;
+  cumulativeAmount: string;
+  sequenceNumber: number;
+  sessionPublicKey: string;
+  sessionSignature: string;
+  sessionRegistration: string;
+}
+
+const HEX_32 = /^[0-9a-f]{64}$/;
+const U64_MAX = (1n << 64n) - 1n;
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const output = new Uint8Array(hex.length / 2);
+  for (let index = 0; index < output.length; index += 1) {
+    output[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
+  }
+  return output;
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= (left[index] ?? 0) ^ (right[index] ?? 0);
+  }
+  return difference === 0;
+}
+
+/**
+ * Canonical hosted-purchase signer for Native Tab V2.
+ *
+ * Every output is a FINAL, context-bound obligation. The function validates
+ * the complete 188-byte registration against the supplied on-chain context
+ * and validates the ed25519 secret/public pair before signing. It does not
+ * open or settle the reservation; the durable purchasing gateway owns those
+ * transaction lifecycles.
+ */
+export function signContextBoundFinalVoucherV2(
+  input: SignContextBoundFinalVoucherV2Input,
+): SignContextBoundFinalVoucherV2Result {
+  if (
+    !HEX_32.test(input.channelId)
+    || input.sessionPublicKey.length !== 32
+    || input.sessionPrivateKey.length !== 64
+    || input.sessionRegistration.length !== 188
+    || !/^[1-9][0-9]*$/.test(input.cumulativeAmountAtomic)
+  ) {
+    throw new Error('native_tab_v2_signing_input_invalid');
+  }
+  const cumulativeAmount = BigInt(input.cumulativeAmountAtomic);
+  if (cumulativeAmount > U64_MAX) {
+    throw new Error('native_tab_v2_cumulative_amount_invalid');
+  }
+
+  const programId = new PublicKey(input.programId);
+  const vaultPda = new PublicKey(input.vaultPda);
+  const sessionPda = new PublicKey(input.sessionPda);
+  const seller = new PublicKey(input.seller);
+  const registration = input.sessionRegistration;
+  const view = new DataView(
+    registration.buffer,
+    registration.byteOffset,
+    registration.byteLength,
+  );
+  const domain = new Uint8Array(32);
+  domain.set(new TextEncoder().encode('OTS_SESSION_REGISTER_V2'));
+  const exactRegistration =
+    sameBytes(registration.subarray(0, 32), domain)
+    && sameBytes(registration.subarray(32, 64), programId.toBytes())
+    && sameBytes(registration.subarray(64, 96), vaultPda.toBytes())
+    && sameBytes(registration.subarray(96, 128), input.sessionPublicKey)
+    && sameBytes(registration.subarray(144, 176), seller.toBytes())
+    && view.getUint32(176, true) === input.sessionNonce
+    && cumulativeAmount <= view.getBigUint64(128, true);
+  if (!exactRegistration) {
+    throw new Error('native_tab_v2_registration_identity_mismatch');
+  }
+  sessionVoucherV2AuthorizationNonce(input.sessionNonce);
+
+  const derived = nacl.sign.keyPair.fromSeed(
+    input.sessionPrivateKey.subarray(0, 32),
+  );
+  if (
+    !sameBytes(derived.publicKey, input.sessionPublicKey)
+    || !sameBytes(
+      input.sessionPrivateKey.subarray(32, 64),
+      input.sessionPublicKey,
+    )
+  ) {
+    throw new Error('native_tab_v2_session_key_mismatch');
+  }
+
+  const sequenceNumber = finalVoucherV2Sequence(input.sequenceOrdinal);
+  const message = contextBoundVoucherV2Message({
+    programId,
+    vaultPda,
+    sessionPda,
+    seller,
+    sessionNonce: input.sessionNonce,
+    channelId: hexToBytes(input.channelId),
+    cumulativeAmount,
+    sequenceNumber,
+  });
+  const signature = nacl.sign.detached(message, input.sessionPrivateKey);
+
+  return {
+    channelId: input.channelId,
+    cumulativeAmount: input.cumulativeAmountAtomic,
+    sequenceNumber,
+    sessionPublicKey: bytesToHex(input.sessionPublicKey),
+    sessionSignature: bytesToHex(signature),
+    sessionRegistration: bytesToHex(registration),
   };
 }
 

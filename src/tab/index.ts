@@ -124,7 +124,10 @@ export {
   generateSessionKeypair,
   makeSessionKey,
   signVoucher,
+  signContextBoundFinalVoucherV2,
   scopeCapAtomic,
   parseAtomic,
   deriveChannelId,
+  type SignContextBoundFinalVoucherV2Input,
+  type SignContextBoundFinalVoucherV2Result,
 } from './sessions';
