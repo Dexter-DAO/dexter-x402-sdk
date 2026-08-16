@@ -62,7 +62,20 @@ function composedIxs(): TransactionInstruction[] {
   const livePubkey = new Uint8Array(32).fill(0xd1);
   const newPubkey = new Uint8Array(32).fill(0xa7);
   const revokeMsg = sessionRevokeMessage({
-    programId: DEXTER_VAULT_PROGRAM_ID, vaultPda: VAULT, sessionPubkey: livePubkey,
+    programId: DEXTER_VAULT_PROGRAM_ID,
+    vaultPda: VAULT,
+    sessionPda: deriveSessionPda(VAULT, SELLER)[0],
+    sessionPubkey: livePubkey,
+    maxAmount: 1_000_000n,
+    expiresAt: BigInt(NOW + 1800),
+    allowedCounterparty: SELLER,
+    nonce: 42,
+    spent: 0n,
+    currentOutstanding: 0n,
+    maxRevolvingCapacity: 1_000_000n,
+    crystallizedCumulative: 0n,
+    lastLockedSequence: 0,
+    expectedPendingVoucherCount: 0,
   });
   const rc = signChallenge(P256, sha256(revokeMsg));
   const registerMsg = sessionRegisterMessage({
@@ -81,6 +94,7 @@ function composedIxs(): TransactionInstruction[] {
     buildSecp256r1VerifyInstruction(P256.publicKey, rc.signature, precompileMsg(rc)),
     buildRevokeSessionKeyInstruction({
       vaultPda: VAULT, allowedCounterparty: SELLER,
+      expectedPendingVoucherCount: 0,
       clientDataJSON: rc.clientDataJSON, authenticatorData: rc.authenticatorData,
     }),
     buildSecp256r1VerifyInstruction(P256.publicKey, gc.signature, precompileMsg(gc)),

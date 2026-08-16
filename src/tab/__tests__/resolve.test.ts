@@ -25,7 +25,12 @@ const tabAccept = {
   asset: USDC,
   payTo: SELLER,
   maxTimeoutSeconds: 60,
-  extra: { voucherHeader: 'x-tab-voucher' },
+  extra: {
+    voucherHeader: 'x-tab-voucher',
+    registrationEncoding: 'base64(188-byte sessionRegisterMessage)',
+    termsVersion: 'dexter-tab-hosted-pay-before-delivery/v1',
+    acceptanceRule: 'pay_before_delivery_seller_2xx',
+  },
 };
 
 const fetchReturning = (res: Response) => (async () => res) as unknown as typeof fetch;
@@ -38,6 +43,16 @@ describe('resolveTabOffer', () => {
     expect(out.offer.payTo).toBe(SELLER);
     expect(out.offer.amountAtomic).toBe('10000');
     expect(out.offer.networkCaip2).toBe(CAIP2);
+    expect(out.offer.voucherHeader).toBe('x-tab-voucher');
+    expect(out.offer.registrationEncoding).toBe(
+      'base64(188-byte sessionRegisterMessage)',
+    );
+    expect(out.offer.termsVersion).toBe(
+      'dexter-tab-hosted-pay-before-delivery/v1',
+    );
+    expect(out.offer.acceptanceRule).toBe(
+      'pay_before_delivery_seller_2xx',
+    );
     expect(out.offer.resourceUrl).toBe('http://s/paid');
   });
 

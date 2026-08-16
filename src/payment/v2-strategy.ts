@@ -37,9 +37,11 @@ const GENERIC_PAYABLE_SCHEMES = new Set(['exact', 'exact-approval']);
  * signing the next cumulative voucher and re-requesting with the
  * X-Tab-Voucher header — no facilitator round-trip.
  *
- * Returns null to signal "fall through to the generic path": the tab could
- * not sign (scope exceeded / closed) or the seller refused the voucher
- * (second 402). Any other outcome is final and returned as a PayResult.
+ * Returns null to signal "fall through to the generic path" only for a
+ * historical V1 tab that could not sign (scope exceeded / closed) or whose
+ * voucher the seller refused (second 402). V2 FINAL signing includes an exact
+ * durable reservation fence: any throw may be an after-commit timeout, so it
+ * is final and must be reconciled rather than paid again on another rail.
  */
 async function payWithTab(
   url: string,
@@ -50,9 +52,19 @@ async function payWithTab(
   let signed: SignedVoucher;
   try {
     signed = await tab.signNextVoucher(option.amount);
-  } catch {
-    // Cap exceeded, session expired, or tab closed — the tab cannot cover
-    // this request, but a generic option still might.
+  } catch (err: unknown) {
+    if (tab.voucherVersion !== 1) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        reason: 'error',
+        detail:
+          'context-bound FINAL tab voucher was not safely released; retry or ' +
+          `reconcile this tab before another payment rail is attempted (${detail})`,
+      };
+    }
+    // Historical V1 only: cap exceeded, session expired, or tab closed means
+    // the tab cannot cover this request, but a generic option still might.
     return null;
   }
 
@@ -78,6 +90,19 @@ async function payWithTab(
   }
 
   if (response.status === 402) {
+    if (tab.voucherVersion !== 1) {
+      // V2 is FINAL and durably reserved before signNextVoucher returns. The
+      // seller now holds an irrevocable bearer claim even if this particular
+      // response says 402. Never consult an optional/private rollback hook and
+      // never pay again on another rail.
+      return {
+        ok: false,
+        reason: 'error',
+        detail:
+          'seller refused an irrevocable FINAL tab voucher; its exact reservation ' +
+          'must be reconciled before another payment rail is attempted',
+      };
+    }
     // Seller refused the voucher — fall through to the generic path. First,
     // roll the tab's counter back so close() doesn't ALSO settle the refused
     // increment after the generic path pays exact (double-pay). The rollback
@@ -95,7 +120,16 @@ async function payWithTab(
     const rollback = (
       tab as Tab & { rollbackVoucher?: (v: SignedVoucher) => boolean }
     ).rollbackVoucher;
-    rollback?.call(tab, signed);
+    const rolledBack = rollback?.call(tab, signed);
+    if (rolledBack !== true) {
+      return {
+        ok: false,
+        reason: 'error',
+        detail:
+          'seller refused a V1 tab voucher but local rollback was unavailable or ' +
+          'failed; another payment rail was not attempted to avoid double payment',
+      };
+    }
     return null;
   }
   if (!response.ok) {
@@ -126,8 +160,8 @@ export const v2Strategy: PaymentStrategy = {
     // When the caller holds an open tab and the merchant offers scheme
     // 'tab' (SVM-only) paying TO the tab's counterparty, pay by voucher
     // header directly — no facilitator round-trip. A refusal (second 402)
-    // or a scope-exceeded signing failure falls through to the generic
-    // path below.
+    // or a historical V1 signing failure may fall through to the generic path.
+    // V2 signing/reservation failures are terminal reconciliation outcomes.
     if (opts.tab) {
       const tabOption = challenge.options.find(
         o =>

@@ -1,6 +1,6 @@
 {
   "name": "@dexterai/x402",
-  "version": "5.4.2",
+  "version": "6.0.0-rc.0",
   "description": "Full-stack x402 SDK - add paid API monetization to any endpoint. Express middleware, React hooks, Access Pass, dynamic pricing. Solana, Base, Polygon, Arbitrum, Optimism, Avalanche, World Chain, Monad, Robinhood Chain, SKALE.",
   "author": "Dexter",
   "license": "MIT",
@@ -74,7 +74,8 @@
     "prepublishOnly": "npm run build",
     "release": "npm version patch && npm publish --access public",
     "release:minor": "npm version minor && npm publish --access public",
-    "release:major": "npm version major && npm publish --access public"
+    "release:major": "npm version major && npm publish --access public",
+    "release:next": "npm publish --access public --tag next"
   },
   "dependencies": {
     "@dexterai/x402-ads-types": "^0.2.0",
@@ -86,15 +87,15 @@
     "@x402/core": "2.12.0",
     "@x402/evm": "2.12.0",
     "@x402/extensions": "2.12.0",
+    "bs58": "^6.0.0",
     "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
-    "@dexterai/vault": "^0.37.0",
+    "@dexterai/vault": "0.43.1",
     "@types/aws-lambda": "^8.10.161",
     "@types/express": "^5.0.6",
     "@types/node": "^22.10.0",
     "@types/react": "^18.0.0",
-    "bs58": "^6.0.0",
     "ethers": "^6.13.0",
     "express": "^5.2.1",
     "react": "^18.0.0",
@@ -104,7 +105,7 @@
     "vitest": "^2.1.8"
   },
   "peerDependencies": {
-    "@dexterai/vault": ">=0.34.0",
+    "@dexterai/vault": "0.43.1",
     "@solana/wallet-adapter-base": "^0.9.0",
     "react": "^18.0.0 || ^19.0.0",
     "stripe": "^20.0.0",
@@ -129,7 +130,7 @@
     }
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "keywords": [
     "x402",

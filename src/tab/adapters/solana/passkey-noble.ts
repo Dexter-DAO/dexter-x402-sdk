@@ -10,8 +10,10 @@
  *
  * From the on-chain program's perspective the two paths are
  * indistinguishable: both produce a 64-byte (r||s) low-S secp256r1
- * signature over `authenticatorData || sha256(clientDataJSON)`, where
- * `clientDataJSON.challenge` base64url-decodes to sha256(operation_msg).
+ * signature over `authenticatorData || sha256(clientDataJSON)`. For V7,
+ * `clientDataJSON.challenge` is the canonical 200-byte authorization envelope
+ * binding program, vault, monotonic guard nonce, operation hash, and fresh
+ * ceremony entropy.
  *
  * This module mirrors the helper at
  * dexter-vault/tests/helpers/secp256r1.ts (signOperationWithPasskey).
@@ -20,6 +22,12 @@
 
 import { p256 } from '@noble/curves/p256';
 import { sha256 } from '@noble/hashes/sha256';
+import { PublicKey } from '@solana/web3.js';
+import {
+  buildPasskeyAuthorizationChallenge,
+  classifyPasskeyAuthorizationOperation,
+} from '@dexterai/vault';
+import { sessionVoucherV2AuthorizationNonce } from '@dexterai/vault/messages';
 
 import type { PasskeySignerWithPublicKey } from '@dexterai/vault/signers';
 
@@ -64,9 +72,9 @@ function base64urlEncode(input: Uint8Array): string {
 
 /**
  * Synthesize a clientDataJSON with the shape WebAuthn produces. The
- * on-chain verifier parses `challenge` out of this and asserts it matches
- * sha256(operationMessage), so the field name and base64url encoding must
- * be exact.
+ * on-chain verifier parses `challenge` out of this and validates the complete
+ * authorization envelope, so the field name and base64url encoding must be
+ * exact.
  */
 function buildClientDataJSON(challengeBytes: Uint8Array, origin = `https://${RP_ID}`): Uint8Array {
   const challenge = base64urlEncode(challengeBytes);
@@ -107,20 +115,47 @@ export interface SignedPasskeyPayload {
   signature: Uint8Array;
 }
 
+export interface NodePasskeyAuthorizationContext {
+  programId: PublicKey;
+  vault: PublicKey;
+  nonce: bigint;
+}
+
+export interface NodePasskeySignerOptions {
+  /**
+   * Optional authoritative nonce resolver for operations whose wire format
+   * does not itself carry enough guard-generation context. The session V2
+   * register/replace/revoke messages are recognized locally; callers using
+   * this development signer for any other V7 operation should provide this.
+   */
+  resolveAuthorizationContext?: (
+    operationMessage: Uint8Array,
+  ) => Promise<NodePasskeyAuthorizationContext>;
+  /**
+   * Explicit opt-in for pre-V7 development fixtures whose challenge was the
+   * bare sha256(operation). The safe default is false: an unknown operation
+   * must never be signed under a weaker authorization envelope merely because
+   * the node helper did not recognize its wire format.
+   */
+  allowLegacyOperationHash?: boolean;
+  /** Deterministic test seam. Production defaults to fresh random 32 bytes. */
+  ceremonyNonce?: () => Uint8Array;
+}
+
 /**
- * Run the full ceremony for a given operation message. The ceremony binds
- * the signature to the operation by way of `challenge = sha256(operation)`
- * embedded in the clientDataJSON.
+ * Legacy helper for pre-V7 fixtures whose challenge was exactly
+ * `sha256(operation)`. Supported V7 session operations must use
+ * `passkeySignerFromP256Keypair`, which constructs the canonical envelope.
  *
  * On the chain side, the program:
  *   1. Reads its sibling precompile instruction from the instructions sysvar
  *   2. Asserts the precompile verified `authenticatorData || sha256(clientDataJSON)`
- *   3. Parses `challenge` from clientDataJSON and asserts it == sha256(operation_msg)
- *      that the program itself reconstructs from its args
+ *   3. Parses and validates the challenge against the operation the program
+ *      reconstructs from its args
  *
  * The "operation message" is one of: setSwig, requestWithdrawal, registerSessionKey, etc.
- * For tab streaming, the operation is the 180-byte registration or 128-byte revocation
- * message produced by messages.ts.
+ * For tab streaming, the operation is the canonical versioned registration,
+ * replacement, or revocation message produced by messages.ts.
  */
 export function signOperationWithPasskey(
   keypair: P256Keypair,
@@ -140,14 +175,14 @@ export function signOperationWithPasskey(
 
 /**
  * The low-level WebAuthn ceremony for the node path. Builds clientDataJSON /
- * authenticatorData from the GIVEN challenge (the caller has already computed
- * challenge = sha256(operationMessage)) and returns the same three buffers
+ * authenticatorData from the GIVEN challenge (legacy hash or canonical V7
+ * envelope, as selected by the caller) and returns the same three buffers
  * the vault's browser signer's assertion produces. Crucially it does NOT
  * assemble `precompileMessage` — that's x402-protocol assembly the adapter
  * rebuilds itself, identical on both the node and browser paths.
  *
- * `passkeySignerFromP256Keypair` wraps this with the sha256(op) hashing step
- * so it conforms to vault 0.19's `signOperation(operationMessage)` contract.
+ * `passkeySignerFromP256Keypair` wraps this with Vault 0.43.1's canonical
+ * V7 challenge construction for supported session operations.
  */
 export function signChallenge(
   keypair: P256Keypair,
@@ -173,11 +208,10 @@ export function signChallenge(
 }
 
 /**
- * Build a unified `PasskeySignerWithPublicKey` (vault's canonical 0.19 shape)
+ * Build a unified `PasskeySignerWithPublicKey` (Vault 0.43.1's canonical shape)
  * from a locally-held P-256 keypair — the node/CLI path. Returns
  * `{ credentialId, publicKey, signOperation(operationMessage) }`. The signer
- * owns the hashing locus: it computes `challenge = sha256(operationMessage)`
- * internally (mirroring vault's `DexterApiBrowserPasskeySigner.signOperation`),
+ * owns canonical challenge construction for recognized V7 session operations,
  * so the adapter hands it the RAW operation message and never pre-hashes.
  * The adapter still rebuilds the precompile message from the returned bytes.
  *
@@ -186,11 +220,67 @@ export function signChallenge(
  * secp256r1 precompile over the clientDataJSON/authenticatorData, not the
  * credentialId, so an empty value is correct here.
  */
-export function passkeySignerFromP256Keypair(kp: P256Keypair): PasskeySignerWithPublicKey {
+export function passkeySignerFromP256Keypair(
+  kp: P256Keypair,
+  options: NodePasskeySignerOptions = {},
+): PasskeySignerWithPublicKey {
   return {
     credentialId: new Uint8Array(0),
     publicKey: kp.publicKey,
-    signOperation: async (operationMessage) =>
-      signChallenge(kp, sha256(operationMessage)),
+    signOperation: async (operationMessage) => {
+      const context = options.resolveAuthorizationContext
+        ? await options.resolveAuthorizationContext(operationMessage.slice())
+        : inferSessionAuthorizationContext(operationMessage);
+      if (!context) {
+        if (options.allowLegacyOperationHash === true) {
+          return signChallenge(kp, sha256(operationMessage));
+        }
+        throw new Error('passkey_authorization_context_required');
+      }
+      const ceremonyNonce = options.ceremonyNonce
+        ? options.ceremonyNonce()
+        : p256.utils.randomPrivateKey();
+      if (ceremonyNonce.length !== 32) {
+        throw new Error('ceremonyNonce must be exactly 32 bytes');
+      }
+      const challenge = buildPasskeyAuthorizationChallenge({
+        programId: context.programId,
+        vault: context.vault,
+        nonce: context.nonce,
+        operationHash: sha256(operationMessage),
+        ceremonyNonce,
+      });
+      return signChallenge(kp, challenge);
+    },
   };
+}
+
+function inferSessionAuthorizationContext(
+  operationMessage: Uint8Array,
+): NodePasskeyAuthorizationContext | null {
+  const classified = classifyPasskeyAuthorizationOperation(operationMessage);
+  if (classified.kind === 'session_register_v2') {
+    return {
+      programId: classified.fields.programId,
+      vault: classified.fields.vault,
+      nonce: BigInt(
+        sessionVoucherV2AuthorizationNonce(
+          classified.fields.registrationNonce,
+        ),
+      ),
+    };
+  }
+  if (classified.kind === 'session_replace_v1') {
+    return {
+      programId: classified.fields.programId,
+      vault: classified.fields.vault,
+      nonce: classified.fields.authorizationNonce,
+    };
+  }
+
+  // Revoke V2/V3 deliberately does not infer the live authorization nonce.
+  // Other passkey operations may have advanced the guard since session
+  // registration, so the caller must resolve the authoritative value at the
+  // moment of the close ceremony.
+  return null;
 }

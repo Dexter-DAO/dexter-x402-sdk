@@ -75,6 +75,12 @@ describe('tabChallengeMiddleware', () => {
     // standard buyers (toNetworkRef) silently drop.
     expect(accepts[0].network).toBe(CAIP2);
     expect(accepts[0].maxAmountRequired).toBe('10000');
+    expect(accepts[0].extra).toMatchObject({
+      voucherHeader: 'x-tab-voucher',
+      registrationEncoding: 'base64(188-byte sessionRegisterMessage)',
+      termsVersion: 'dexter-tab-hosted-pay-before-delivery/v1',
+      acceptanceRule: 'pay_before_delivery_seller_2xx',
+    });
   });
 
   it('INTEROP RECEIPT: the emitted challenge parses under the standard v2 buyer', async () => {
@@ -93,6 +99,10 @@ describe('tabChallengeMiddleware', () => {
     // Pin the RAW CAIP-2 too: family-only would still pass if the wire
     // regressed to an alias that happened to resolve.
     expect(tab!.network.caip2).toBe(CAIP2);
+    expect(tab!.extra).toMatchObject({
+      termsVersion: 'dexter-tab-hosted-pay-before-delivery/v1',
+      acceptanceRule: 'pay_before_delivery_seller_2xx',
+    });
   });
 
   it('answers 503 + Retry-After when the facilitator is unreachable', async () => {

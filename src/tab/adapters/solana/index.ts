@@ -14,12 +14,11 @@
  * expose voucher signing for the session, and (e) tear the session down
  * at close.
  *
- * The adapter does NOT touch pending_voucher_count. That counter belongs
+ * The adapter does NOT mutate pending_voucher_count. That counter belongs
  * to the facilitator's dexter_authority and is decremented inside the
- * facilitator's `POST /tab/settle` tx (via the new vault.settle_tab_voucher
- * instruction) atomically with the USDC transfer. The SDK's `Tab.close()`
- * POSTs the final voucher to the facilitator; this adapter only owns the
- * passkey-signed session register/revoke layer.
+ * facilitator's `POST /tab/settle` tx atomically with the USDC transfer.
+ * After that POST lands, the adapter reads the Vault counter and SessionAccount
+ * in one RPC context and binds both into the passkey-signed V3 revocation.
  */
 
 import {
@@ -28,7 +27,9 @@ import {
   Transaction,
   type Signer,
   type ConfirmOptions,
+  type Commitment,
 } from '@solana/web3.js';
+import bs58 from 'bs58';
 
 import type {
   VaultAdapter,
@@ -39,6 +40,8 @@ import type {
   TabNetworkId,
   AtomicAmount,
   AuthorizeSessionOptions,
+  FinalVoucherV2ReservationInput,
+  FinalVoucherV2ReservationReceipt,
 } from '../../types';
 import { LiveSessionExistsError } from '../../types';
 
@@ -51,12 +54,15 @@ import {
 
 import {
   sessionRegisterMessage,
+  sessionReplaceV1Message,
   sessionRevokeMessage,
+  sessionVoucherV2Nonce,
 } from '../../messages';
 
 import {
   generateSessionKeypair,
   makeSessionKey,
+  signContextBoundFinalVoucherV2,
   signVoucher,
   parseAtomic,
   deriveChannelId,
@@ -68,34 +74,53 @@ import {
 import {
   fetchVaultSessionAccounts,
   fetchSessionAccount,
+  decodeSessionAccount,
+  deriveSessionPda,
   isSessionLive,
   sessionPdasOf,
   waitForSession,
   resolveVaultUsdcAta,
   composeRevokeThenRegister,
 } from '@dexterai/vault/session';
-import type { SessionAccountState } from '@dexterai/vault/types';
+import { decodeVaultFull } from '@dexterai/vault/reader';
+import {
+  fetchPasskeyAuthorizationState,
+  validatePasskeyAuthorizationClientData,
+} from '@dexterai/vault';
+import { parseRegistration } from '../../seller/verify';
 
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';
 
 import { createSelfPayingComposeSend } from './composeSend';
+import { verifySolanaFinalVoucherV2Reservation } from './reservation-verifier';
 import type { TransactionInstruction } from '@solana/web3.js';
 
 // ── Passkey signer abstraction (unified with @dexterai/vault) ───────────
 //
-// The adapter consumes vault 0.19's canonical signer shape: a 33-byte SEC1
+// The adapter consumes Vault 0.43.1's canonical signer shape: a 33-byte SEC1
 // publicKey + signOperation(operationMessage). Both paths conform — node via
 // passkeySignerFromP256Keypair, browser via vault's
 // DexterApiBrowserPasskeySigner — with NO bridge shim, sharing ONE vault
-// (vault is a peerDependency, never bundled). The SIGNER owns the hashing
-// locus (challenge = sha256(op), internal); the adapter hands it the RAW
-// operation message and only owns the precompile assembly
+// (vault is an exact peerDependency, never bundled). The SIGNER owns the
+// canonical V7 challenge policy (program, vault, monotonic guard nonce,
+// operation hash, and fresh entropy); the adapter hands it the RAW operation
+// message and only owns the precompile assembly
 // (precompileMessage = authenticatorData ‖ sha256(clientDataJSON)).
 
 import type { PasskeySignerWithPublicKey as PasskeySigner } from '@dexterai/vault/signers';
 export type { PasskeySignerWithPublicKey as PasskeySigner } from '@dexterai/vault/signers';
 export { passkeySignerFromP256Keypair } from './passkey-noble';
+export {
+  createSolanaFinalVoucherV2ReservationVerifier,
+  verifySolanaFinalVoucherV2Reservation,
+  SolanaFinalVoucherV2ReservationError,
+  SOLANA_FINAL_VOUCHER_V2_MEMO_PROGRAM_ID,
+  SOLANA_FINAL_VOUCHER_V2_PROGRAM_ID,
+  type SolanaReservationPostStateEvidence,
+  type SolanaReservationTransactionEvidence,
+  type SolanaReservationVerifierSeams,
+} from './reservation-verifier';
 
 // ── Adapter options ────────────────────────────────────────────────────
 
@@ -118,9 +143,10 @@ export interface CreateSolanaVaultAdapterOptions {
    *  vault account is not a signer for register/revoke (the passkey
    *  signature in the precompile sibling is the authorization). */
   feePayer: Signer;
-  /** Confirmation options for sendAndConfirm. Defaults to 'confirmed' to
-   *  match production code (FE/API). For test suites, override to
-   *  'finalized' — see reference_anchor_test_commitment in repo memory. */
+  /** Confirmation/preflight options for registration and replacement.
+   *  Defaults to `confirmed` to match those existing paths. Session close is
+   *  stricter: it always proves the exact revoke at `finalized` before the SDK
+   *  reports the credential revoked or allows the key to be wiped. */
   confirmOptions?: ConfirmOptions;
   /** Testing/production seams (default: the real chain readers + the
    *  self-paying v0+ALT compose transport). Same seam idiom as
@@ -132,15 +158,164 @@ export interface CreateSolanaVaultAdapterOptions {
 export interface SolanaAdapterSeams {
   fetchSession?: typeof fetchSessionAccount;
   fetchSessions?: typeof fetchVaultSessionAccounts;
+  fetchPasskeyAuthorization?: typeof fetchPasskeyAuthorizationState;
+  readCloseRevocationSnapshot?: ReadCloseRevocationSnapshot;
+  /** Full target-state reader used by close retry reconciliation. Unlike the
+   *  legacy snapshot seam, this can prove that the old credential is already
+   *  cleared or has been replaced without ever targeting the replacement. */
+  readCloseRevocationTargetState?: ReadCloseRevocationTargetState;
   resolveUsdcAta?: typeof resolveVaultUsdcAta;
   waitForSession?: typeof waitForSession;
   /** Atomic-compose transport override: receives the FULL composed
-   *  instruction list ([secp(revoke), revoke, secp(register), register]),
+   *  instruction list ([secp(replace), replace] for a live V7 target),
    *  must send + confirm ATOMICALLY in one transaction. Production default:
    *  `createSelfPayingComposeSend` (v0+ALT — the compose does NOT fit a
    *  legacy transaction, K-T4a). */
   composeSend?: (instructions: TransactionInstruction[]) => Promise<string>;
 }
+
+interface CloseRevocationSnapshot {
+  contextSlot: number;
+  programId: PublicKey;
+  vaultPda: PublicKey;
+  sessionPda: PublicKey;
+  sessionPubkey: Uint8Array;
+  maxAmount: bigint;
+  expiresAt: bigint;
+  allowedCounterparty: PublicKey;
+  nonce: number;
+  spent: bigint;
+  currentOutstanding: bigint;
+  maxRevolvingCapacity: bigint;
+  crystallizedCumulative: bigint;
+  lastLockedSequence: number;
+  expectedPendingVoucherCount: number;
+}
+
+interface ReadCloseRevocationSnapshotArgs {
+  connection: Connection;
+  vaultPda: PublicKey;
+  allowedCounterparty: PublicKey;
+  programId?: PublicKey;
+  commitment?: Commitment;
+}
+
+type ReadCloseRevocationSnapshot = (
+  args: ReadCloseRevocationSnapshotArgs,
+) => Promise<CloseRevocationSnapshot>;
+
+type CloseRevocationTargetState =
+  | { kind: 'live'; snapshot: CloseRevocationSnapshot }
+  | {
+      kind: 'invalidated';
+      contextSlot: number;
+      sessionPda: PublicKey;
+      reason: 'absent' | 'cleared';
+    };
+
+type ReadCloseRevocationTargetState = (
+  args: ReadCloseRevocationSnapshotArgs,
+) => Promise<CloseRevocationTargetState>;
+
+/**
+ * Read the Vault's global pending-voucher counter and the named SessionAccount
+ * in one RPC context. The V3 revocation ceremony must bind one state that
+ * actually existed; split reads could combine values from different slots.
+ */
+async function readCloseRevocationTargetState({
+  connection,
+  vaultPda,
+  allowedCounterparty,
+  programId = DEXTER_VAULT_PROGRAM_ID,
+  commitment = 'finalized',
+}: ReadCloseRevocationSnapshotArgs): Promise<CloseRevocationTargetState> {
+  const [sessionPda] = deriveSessionPda(
+    vaultPda,
+    allowedCounterparty,
+    programId,
+  );
+  const response = await connection.getMultipleAccountsInfoAndContext(
+    [vaultPda, sessionPda],
+    { commitment },
+  );
+  const [vaultAccount, sessionAccount] = response.value;
+  if (!vaultAccount) {
+    throw new Error('close revocation: vault account not found');
+  }
+  if (!vaultAccount.owner.equals(programId)) {
+    throw new Error('close revocation: vault has the wrong owner');
+  }
+
+  const vault = decodeVaultFull(Buffer.from(vaultAccount.data));
+  if (!vault.exists || vault.version !== 7) {
+    throw new Error('close revocation: Vault V7 required');
+  }
+  if (!sessionAccount) {
+    return {
+      kind: 'invalidated',
+      contextSlot: response.context.slot,
+      sessionPda,
+      reason: 'absent',
+    };
+  }
+  if (!sessionAccount.owner.equals(programId)) {
+    throw new Error('close revocation: session has the wrong owner');
+  }
+
+  const session = decodeSessionAccount(sessionPda, sessionAccount.data);
+  if (session.version === 0) {
+    return {
+      kind: 'invalidated',
+      contextSlot: response.context.slot,
+      sessionPda,
+      reason: 'cleared',
+    };
+  }
+  if (session.version !== 1) {
+    throw new Error('close revocation: live SessionAccount required');
+  }
+  if (session.vault !== vaultPda.toBase58()) {
+    throw new Error('close revocation: session belongs to a different vault');
+  }
+  if (session.session.allowedCounterparty !== allowedCounterparty.toBase58()) {
+    throw new Error('close revocation: session counterparty mismatch');
+  }
+
+  return {
+    kind: 'live',
+    snapshot: {
+      contextSlot: response.context.slot,
+      programId: new PublicKey(programId),
+      vaultPda: new PublicKey(vaultPda),
+      sessionPda,
+      sessionPubkey: Uint8Array.from(session.session.sessionPubkey),
+      maxAmount: session.session.maxAmount,
+      // Preserve the signed i64 exactly instead of round-tripping through a JS
+      // number. This is the fixed SessionAccount expiry offset in Vault V7.
+      expiresAt: Buffer.from(sessionAccount.data).readBigInt64LE(82),
+      allowedCounterparty: new PublicKey(allowedCounterparty),
+      nonce: session.session.nonce,
+      spent: session.session.spent,
+      currentOutstanding: session.session.currentOutstanding,
+      maxRevolvingCapacity: session.session.maxRevolvingCapacity,
+      crystallizedCumulative: session.session.crystallizedCumulative,
+      lastLockedSequence: session.session.lastLockedSequence,
+      expectedPendingVoucherCount: vault.pendingVoucherCount,
+    },
+  };
+}
+
+interface PendingCloseRevocation {
+  key: string;
+  message: Uint8Array;
+  serializedTransaction: Uint8Array;
+  signature: string;
+  blockhash: string;
+  lastValidBlockHeight: number;
+  finalizedHistoryFloorSlot: number | null;
+}
+
+type PendingCloseReconciliation = 'complete' | 'fresh_allowed' | 'unresolved';
 
 // ── register_session_key construction ──────────────────────────────────
 //
@@ -198,6 +373,7 @@ export function buildAdapterRegisterInstruction(p: AdapterRegisterIxParams) {
 
 class SolanaVaultAdapter implements VaultAdapter {
   readonly network: TabNetworkId = 'solana:mainnet';
+  readonly sessionVoucherVersion = 2 as const;
   readonly swigAddress: string;
   readonly vaultPda: string;
 
@@ -207,6 +383,11 @@ class SolanaVaultAdapter implements VaultAdapter {
   private readonly feePayer: Signer;
   private readonly confirmOptions: ConfirmOptions;
   private readonly seams: SolanaAdapterSeams;
+  /** Exact close wires survive transport ambiguity for the lifetime of this
+   * adapter. A retry must reconcile one of these before it may prompt/sign a
+   * replacement revoke. */
+  private readonly pendingCloseRevocations = new Map<string, PendingCloseRevocation>();
+  private readonly completedCloseRevocations = new Map<string, Uint8Array>();
 
   constructor(opts: CreateSolanaVaultAdapterOptions) {
     this.connection = opts.connection;
@@ -223,10 +404,222 @@ class SolanaVaultAdapter implements VaultAdapter {
     this.seams = opts.seams ?? {};
   }
 
+  private closeRevocationKey(session: SessionKey): string {
+    const registration = parseRegistration(session.registration);
+    const [sessionPda] = deriveSessionPda(
+      this.vaultPdaKey,
+      registration.allowedCounterparty,
+      DEXTER_VAULT_PROGRAM_ID,
+    );
+    return [
+      sessionPda.toBase58(),
+      bytesToHex(registration.sessionPubkey),
+      registration.nonce.toString(),
+    ].join(':');
+  }
+
+  private async readCloseTargetState(
+    allowedCounterparty: PublicKey,
+  ): Promise<CloseRevocationTargetState | null> {
+    const args: ReadCloseRevocationSnapshotArgs = {
+      connection: this.connection,
+      vaultPda: this.vaultPdaKey,
+      allowedCounterparty,
+      programId: DEXTER_VAULT_PROGRAM_ID,
+      commitment: 'finalized',
+    };
+    if (this.seams.readCloseRevocationTargetState) {
+      return this.seams.readCloseRevocationTargetState(args);
+    }
+    if (this.seams.readCloseRevocationSnapshot) {
+      try {
+        return {
+          kind: 'live',
+          snapshot: await this.seams.readCloseRevocationSnapshot(args),
+        };
+      } catch {
+        // The older seam cannot distinguish a cleared target from an RPC or
+        // decoding failure. Never manufacture invalidation proof from it.
+        return null;
+      }
+    }
+    return readCloseRevocationTargetState(args);
+  }
+
+  private targetInvalidated(
+    state: CloseRevocationTargetState,
+    registration: ReturnType<typeof parseRegistration>,
+  ): boolean {
+    if (state.kind === 'invalidated') return true;
+    const snapshot = state.snapshot;
+    const [expectedSessionPda] = deriveSessionPda(
+      this.vaultPdaKey,
+      registration.allowedCounterparty,
+      DEXTER_VAULT_PROGRAM_ID,
+    );
+    if (
+      !snapshot.programId.equals(DEXTER_VAULT_PROGRAM_ID)
+      || !snapshot.vaultPda.equals(this.vaultPdaKey)
+      || !snapshot.sessionPda.equals(expectedSessionPda)
+      || !snapshot.allowedCounterparty.equals(registration.allowedCounterparty)
+    ) {
+      throw new Error('session revocation snapshot identity mismatch');
+    }
+    // The PDA is seller-scoped and can be reused by an atomic replacement.
+    // A different key or generation means the old credential is already dead;
+    // it is success for this close, never a reason to revoke the replacement.
+    if (
+      !Buffer.from(snapshot.sessionPubkey)
+        .equals(Buffer.from(registration.sessionPubkey))
+      || snapshot.nonce !== registration.nonce
+    ) {
+      return true;
+    }
+    if (
+      snapshot.maxAmount !== registration.maxAmount
+      || snapshot.expiresAt !== registration.expiresAt
+      || snapshot.maxRevolvingCapacity !== registration.maxRevolvingCapacity
+    ) {
+      throw new Error('session revocation snapshot identity mismatch');
+    }
+    return false;
+  }
+
+  private rememberCompletedClose(
+    key: string,
+    message: Uint8Array,
+  ): Uint8Array {
+    const stable = Uint8Array.from(message);
+    this.pendingCloseRevocations.delete(key);
+    this.completedCloseRevocations.set(key, stable);
+    return Uint8Array.from(stable);
+  }
+
+  private async reconcilePendingClose(
+    pending: PendingCloseRevocation,
+    registration: ReturnType<typeof parseRegistration>,
+    allowExactRebroadcast: boolean,
+  ): Promise<PendingCloseReconciliation> {
+    let statusRead = false;
+    let observedStatus: Awaited<ReturnType<Connection['getSignatureStatuses']>>['value'][number]
+      = null;
+    try {
+      const response = await this.connection.getSignatureStatuses(
+        [pending.signature],
+        { searchTransactionHistory: true },
+      );
+      statusRead = true;
+      observedStatus = response.value[0] ?? null;
+      if (observedStatus?.confirmationStatus === 'finalized') {
+        return observedStatus.err === null ? 'complete' : 'fresh_allowed';
+      }
+    } catch {
+      // Finalized transaction history and target state below are independent
+      // reconciliation sources; a transient status RPC cannot authorize a
+      // replacement transaction.
+    }
+
+    let finalizedTransactionRead = false;
+    try {
+      const transaction = await this.connection.getTransaction(
+        pending.signature,
+        { commitment: 'finalized', maxSupportedTransactionVersion: 0 },
+      );
+      finalizedTransactionRead = true;
+      if (transaction) {
+        if (!transaction.meta || !Object.prototype.hasOwnProperty.call(transaction.meta, 'err')) {
+          return 'unresolved';
+        }
+        return transaction.meta.err === null ? 'complete' : 'fresh_allowed';
+      }
+    } catch {
+      // Absence is usable only when the finalized history read itself
+      // succeeded and history coverage is independently proven below.
+    }
+
+    const target = await this.readCloseTargetState(
+      registration.allowedCounterparty,
+    ).catch(() => null);
+    if (target && this.targetInvalidated(target, registration)) {
+      return 'complete';
+    }
+
+    // A transport exception may have happened before the original wire
+    // reached any validator. While its blockhash is still live, a caller retry
+    // may rebroadcast only the byte-identical transaction and confirm that
+    // same signature to finality—never sign a second revoke.
+    if (allowExactRebroadcast && statusRead && observedStatus === null) {
+      try {
+        const validity = await this.connection.isBlockhashValid(
+          pending.blockhash,
+          { commitment: 'confirmed' },
+        );
+        if (validity.value) {
+          const returnedSignature = await this.connection.sendRawTransaction(
+            pending.serializedTransaction,
+            {
+              skipPreflight: false,
+              preflightCommitment:
+                this.confirmOptions.preflightCommitment
+                ?? this.confirmOptions.commitment,
+            },
+          );
+          if (returnedSignature !== pending.signature) return 'unresolved';
+          const confirmation = await this.connection.confirmTransaction(
+            {
+              signature: pending.signature,
+              blockhash: pending.blockhash,
+              lastValidBlockHeight: pending.lastValidBlockHeight,
+            },
+            'finalized',
+          );
+          return confirmation.value.err === null
+            ? 'complete'
+            : 'fresh_allowed';
+        }
+      } catch {
+        // Retain the exact wire. A later retry can poll/rebroadcast it, or a
+        // finalized expiry proof can eventually permit a fresh ceremony.
+      }
+    }
+
+    // Any non-final status is positive evidence that this exact wire landed
+    // on a live fork. Blockhash expiry is only admission expiry; it does not
+    // invalidate a transaction that already landed and may still finalize.
+    // Therefore history/height absence may authorize a fresh revoke only
+    // when the history-aware signature read itself returned exact absence.
+    if (statusRead && observedStatus !== null) {
+      return 'unresolved';
+    }
+
+    if (
+      !statusRead
+      || !finalizedTransactionRead
+      || pending.finalizedHistoryFloorSlot === null
+    ) {
+      return 'unresolved';
+    }
+    try {
+      const [finalizedBlockHeight, minimumLedgerSlot] = await Promise.all([
+        this.connection.getBlockHeight('finalized'),
+        this.connection.getMinimumLedgerSlot(),
+      ]);
+      if (
+        finalizedBlockHeight > pending.lastValidBlockHeight
+        && minimumLedgerSlot <= pending.finalizedHistoryFloorSlot
+      ) {
+        return 'fresh_allowed';
+      }
+    } catch {
+      // No invented expiry/nonlanding proof.
+    }
+    return 'unresolved';
+  }
+
   /**
-   * Authorize a session key on chain. ONE passkey ceremony on the fresh
-   * path (register only); TWO when atomically replacing a live session
-   * (revoke ceremony + register ceremony). Returns a SessionKey the caller
+   * Authorize a session key on chain. Exactly ONE passkey ceremony on either
+   * the fresh register path or the context-bound live replacement path.
+   * Returns a SessionKey the caller
    * passes to `signWithSession` for every voucher.
    *
    * K-T4e — the live-target fork. The session PDA is keyed by
@@ -241,7 +634,7 @@ class SolanaVaultAdapter implements VaultAdapter {
    *  - LIVE + default policy → LiveSessionExistsError (stranding guard;
    *    thrown BEFORE any passkey ceremony is burned);
    *  - LIVE + onLiveSession:'replace' → ONE atomic transaction
-   *    [secp(revoke), revoke, secp(register), register] composed via
+   *    [secp(replace), replace_session_key_v1] composed via
    *    @dexterai/vault's composeRevokeThenRegister and sent v0+ALT (the
    *    compose overflows a legacy tx even at zero siblings — K-T4a).
    */
@@ -280,17 +673,34 @@ class SolanaVaultAdapter implements VaultAdapter {
       });
     }
 
-    // 1. Generate the in-memory session keypair (ed25519). The PUBLIC key
+    // 1. Read the permanent per-vault authorization guard before constructing
+    //    any operation bytes. V7 session nonces are not random: the high bit
+    //    marks context-bound V2 and the low 31 bits MUST equal this exact
+    //    guard generation. Missing/malformed guard state cannot be guessed.
+    const fetchAuthorization =
+      this.seams.fetchPasskeyAuthorization ?? fetchPasskeyAuthorizationState;
+    const authorization = await fetchAuthorization(
+      this.connection,
+      this.vaultPdaKey,
+      DEXTER_VAULT_PROGRAM_ID,
+    );
+    if (
+      authorization === null
+      || authorization.version !== 1
+      || !authorization.vault.equals(this.vaultPdaKey)
+    ) {
+      throw new Error('passkey_authorization_guard_unavailable');
+    }
+
+    // 2. Generate the in-memory session keypair (ed25519). The PUBLIC key
     //    is what the passkey endorses; the private key never leaves this
     //    process.
     const kp = generateSessionKeypair();
 
-    // 2. Build the canonical 188-byte registration message. The on-chain
-    //    program reconstructs this byte-for-byte from its args and
-    //    cross-checks against what the precompile verified.
-    //    The nonce is an implementation detail of the registration
-    //    ceremony, not part of the user-facing scope.
-    const nonce = deriveNonce();
+    // 3. Build the canonical V2 registration. A live replacement signs the
+    //    complete current SessionAccount snapshot plus the exact guard nonce;
+    //    the program preserves its accepted meters instead of clearing them.
+    const nonce = sessionVoucherV2Nonce(authorization.nonce);
     const message = sessionRegisterMessage({
       programId: DEXTER_VAULT_PROGRAM_ID,
       vaultPda: this.vaultPdaKey,
@@ -301,15 +711,63 @@ class SolanaVaultAdapter implements VaultAdapter {
       allowedCounterparty: counterparty,
       nonce,
     });
+    const operationMessage = live
+      ? sessionReplaceV1Message({
+          programId: DEXTER_VAULT_PROGRAM_ID,
+          vaultPda: this.vaultPdaKey,
+          sessionPda: new PublicKey(existing.address),
+          authorizationNonce: authorization.nonce,
+          retired: {
+            sessionPubkey: existing.session.sessionPubkey,
+            maxAmount: existing.session.maxAmount,
+            expiresAt: BigInt(existing.session.expiresAt),
+            allowedCounterparty: new PublicKey(
+              existing.session.allowedCounterparty,
+            ),
+            nonce: existing.session.nonce,
+            spent: existing.session.spent,
+            currentOutstanding: existing.session.currentOutstanding,
+            maxRevolvingCapacity:
+              existing.session.maxRevolvingCapacity,
+            crystallizedCumulative:
+              existing.session.crystallizedCumulative,
+            lastLockedSequence: existing.session.lastLockedSequence,
+          },
+          replacement: {
+            sessionPubkey: kp.publicKey,
+            maxAmount: parseAtomic(scope.maxAmountAtomic),
+            expiresAt: BigInt(scope.expiresAtUnix),
+            allowedCounterparty: counterparty,
+            nonce,
+            maxRevolvingCapacity,
+          },
+        })
+      : message;
 
-    // 3. Have the passkey sign it. The signer hashes internally
-    //    (challenge = sha256(operationMessage)); the adapter owns only the
-    //    precompile assembly.
-    const registerCeremony = await this.passkey.signOperation(message);
+    // 4. One passkey ceremony binds the complete operation. The browser
+    //    signer obtains the canonical 200-byte challenge from Dexter policy;
+    //    the compose independently re-reads and validates the live snapshot.
+    const registerCeremony = await this.passkey.signOperation(operationMessage);
 
     if (live) {
-      await this.sendAtomicReplace(existing, scope, counterparty, kp.publicKey, nonce, maxRevolvingCapacity, registerCeremony);
+      await this.sendAtomicReplace(
+        scope,
+        counterparty,
+        kp.publicKey,
+        nonce,
+        maxRevolvingCapacity,
+        registerCeremony,
+      );
     } else {
+      const signedAuthorization = validatePasskeyAuthorizationClientData({
+        clientDataJSON: registerCeremony.clientDataJSON,
+        operationMessage,
+        expectedVault: this.vaultPdaKey,
+        expectedProgramId: DEXTER_VAULT_PROGRAM_ID,
+      });
+      if (signedAuthorization.nonce !== authorization.nonce) {
+        throw new Error('passkey_authorization_guard_changed');
+      }
       await this.sendBareRegister(scope, counterparty, kp.publicKey, nonce, maxRevolvingCapacity, registerCeremony);
     }
 
@@ -408,23 +866,12 @@ class SolanaVaultAdapter implements VaultAdapter {
   }
 
   /**
-   * The LIVE path: ONE atomic transaction
-   * [secp(revoke), revoke_session_key, secp(register), register_session_key]
-   * via @dexterai/vault's composeRevokeThenRegister — the buyer is never
-   * left sessionless mid-flow, and `live_session_count` is conserved across
-   * the pair. Costs a SECOND passkey ceremony (the revoke, bound to the
-   * CURRENT live session pubkey — compose re-validates the binding and
-   * throws RevokeCeremonyMismatchError if the session rotated since our
-   * read, rather than burning the tx on-chain).
-   *
-   * Transport: v0 + ephemeral ALT (createSelfPayingComposeSend) — the
-   * compose measures 1347 B legacy at ZERO siblings, past the 1232 B wire
-   * cap (K-T4a). The adapter's feePayer both pays and owns the ALT: the
-   * loop's self-paying path and a sponsored path differ only in WHOSE
-   * Signer was handed to the adapter.
+   * The LIVE path: ONE atomic [secp(replace), replace_session_key_v1]
+   * transaction via @dexterai/vault's compatibility-named
+   * composeRevokeThenRegister. The buyer is never left sessionless, accepted
+   * meters survive, and a session/guard race fails before transport.
    */
   private async sendAtomicReplace(
-    existing: SessionAccountState,
     scope: SessionScope,
     counterparty: PublicKey,
     sessionPubkey: Uint8Array,
@@ -432,17 +879,6 @@ class SolanaVaultAdapter implements VaultAdapter {
     maxRevolvingCapacity: bigint,
     registerCeremony: { signature: Uint8Array; clientDataJSON: Uint8Array; authenticatorData: Uint8Array },
   ): Promise<void> {
-    // The revoke ceremony binds to the LIVE session pubkey (the handler
-    // rebuilds this message from the PDA's current session_pubkey — a
-    // rotated-away pubkey can only revert on-chain, and compose fails fast
-    // on the mismatch before submitting).
-    const revokeMessage = sessionRevokeMessage({
-      programId: DEXTER_VAULT_PROGRAM_ID,
-      vaultPda: this.vaultPdaKey,
-      sessionPubkey: existing.session.sessionPubkey,
-    });
-    const revokeCeremony = await this.passkey.signOperation(revokeMessage);
-
     const resolveAta = this.seams.resolveUsdcAta ?? resolveVaultUsdcAta;
     const vaultUsdcAta = await resolveAta(this.connection, new PublicKey(this.swigAddress));
 
@@ -474,15 +910,11 @@ class SolanaVaultAdapter implements VaultAdapter {
           authenticatorData: registerCeremony.authenticatorData,
           signature: registerCeremony.signature,
         },
-        revokeCeremony: {
-          clientDataJSON: revokeCeremony.clientDataJSON,
-          authenticatorData: revokeCeremony.authenticatorData,
-          signature: revokeCeremony.signature,
-        },
         credentialPublicKey: this.passkey.publicKey,
         send: transport.send,
         fetchSession: this.seams.fetchSession,
         fetchSessions: this.seams.fetchSessions,
+        fetchPasskeyAuthorization: this.seams.fetchPasskeyAuthorization,
       });
     } finally {
       // Cleanup never gates (or fails) the money op.
@@ -505,11 +937,48 @@ class SolanaVaultAdapter implements VaultAdapter {
     // string id — Phase 3 will tighten the contract to require the
     // raw 32 bytes flow through unchanged.
     const channelIdBytes = await hashChannelId(payload.channelId);
+    const registration = parseRegistration(session.registration);
+    if ((registration.nonce & 0x8000_0000) !== 0) {
+      const [sessionPda] = deriveSessionPda(
+        registration.vaultPda,
+        registration.allowedCounterparty,
+        registration.programId,
+      );
+      const signed = signContextBoundFinalVoucherV2({
+        programId: registration.programId.toBase58(),
+        vaultPda: registration.vaultPda.toBase58(),
+        sessionPda: sessionPda.toBase58(),
+        seller: registration.allowedCounterparty.toBase58(),
+        sessionNonce: registration.nonce,
+        channelId: bytesToHex(channelIdBytes),
+        cumulativeAmountAtomic: payload.cumulativeAmount,
+        sequenceOrdinal: payload.sequenceNumber,
+        sessionPrivateKey: session.privateKey,
+        sessionPublicKey: session.publicKey,
+        sessionRegistration: session.registration,
+      });
+      return {
+        payload: {
+          channelId: signed.channelId,
+          cumulativeAmount: signed.cumulativeAmount,
+          sequenceNumber: signed.sequenceNumber,
+        },
+        sessionPublicKey: Uint8Array.from(
+          Buffer.from(signed.sessionPublicKey, 'hex'),
+        ),
+        sessionSignature: Uint8Array.from(
+          Buffer.from(signed.sessionSignature, 'hex'),
+        ),
+        sessionRegistration: Uint8Array.from(
+          Buffer.from(signed.sessionRegistration, 'hex'),
+        ),
+      };
+    }
     return signVoucher(session, payload, channelIdBytes);
   }
 
   /**
-   * Open-tab on-chain signature. Returns the canonical 180-byte
+   * Open-tab on-chain signature. Returns the canonical 188-byte V2
    * registration message — the same bytes the seller verifies the
    * passkey signed (and the same bytes the facilitator decodes to
    * recover the vault PDA in `POST /tab/settle`). The on-chain
@@ -525,8 +994,19 @@ class SolanaVaultAdapter implements VaultAdapter {
     return session.registration;
   }
 
+  async verifyFinalVoucherV2Reservation(
+    input: FinalVoucherV2ReservationInput,
+    receipt: FinalVoucherV2ReservationReceipt,
+  ): Promise<void> {
+    await verifySolanaFinalVoucherV2Reservation(
+      this.connection,
+      input,
+      receipt,
+    );
+  }
+
   /**
-   * Close-tab on-chain signature. Returns the canonical 128-byte
+   * Close-tab on-chain signature. Returns the canonical versioned
    * revocation message + submits the revoke_session_key tx on chain.
    *
    * The on-chain settle that actually moves USDC (vault.settle_tab_voucher
@@ -540,20 +1020,78 @@ class SolanaVaultAdapter implements VaultAdapter {
     _channelId: string,
     _cumulativeAmount: AtomicAmount,
   ): Promise<Uint8Array> {
-    // 1. Build the 128-byte revocation message. The on-chain handler
-    //    rejects this if session_pubkey doesn't match active_session.
-    const message = sessionRevokeMessage({
-      programId: DEXTER_VAULT_PROGRAM_ID,
-      vaultPda: this.vaultPdaKey,
-      sessionPubkey: session.publicKey,
-    });
+    const registration = parseRegistration(session.registration);
+    if (
+      !registration.vaultPda.equals(this.vaultPdaKey)
+      || !Buffer.from(registration.sessionPubkey)
+        .equals(Buffer.from(session.publicKey))
+    ) {
+      throw new Error('session registration identity mismatch');
+    }
+    const key = this.closeRevocationKey(session);
+    const completed = this.completedCloseRevocations.get(key);
+    if (completed) return Uint8Array.from(completed);
 
-    // 2. Passkey-sign the revocation. ONE more prompt at tab close. The
-    //    signer hashes the message internally (challenge = sha256(message)).
+    // Reconcile an earlier exact signed wire before any new passkey prompt.
+    // A finalized success, or a finalized target read proving the old
+    // credential cleared/replaced, completes this close. Only finalized
+    // failure or history-covered expiry/absence permits a fresh ceremony.
+    const existing = this.pendingCloseRevocations.get(key);
+    if (existing) {
+      const reconciliation = await this.reconcilePendingClose(
+        existing,
+        registration,
+        true,
+      );
+      if (reconciliation === 'complete') {
+        return this.rememberCompletedClose(key, existing.message);
+      }
+      if (reconciliation === 'unresolved') {
+        throw new Error(
+          `session revoke finality unresolved for ${existing.signature}; retry close`,
+        );
+      }
+      this.pendingCloseRevocations.delete(key);
+    }
+
+    // 1. Read the Vault and SessionAccount together at finalized commitment
+    //    AFTER Tab.close() has awaited settlement. V3 binds every live meter
+    //    plus the exact global pending count; placeholders or split-slot reads
+    //    would reopen a race. A cleared/replaced old credential is already the
+    //    desired terminal condition and must never target the replacement.
+    const target = await this.readCloseTargetState(
+      registration.allowedCounterparty,
+    );
+    if (!target) {
+      throw new Error('close revocation target state unavailable');
+    }
+    if (
+      target.kind === 'invalidated'
+      || this.targetInvalidated(target, registration)
+    ) {
+      return this.rememberCompletedClose(key, session.registration);
+    }
+    const snapshot = target.snapshot;
+
+    // A successful/covered settle must already be visible in the same
+    // SessionAccount snapshot we are about to sign. If this RPC is lagging,
+    // fail before the passkey prompt; close() stays retryable.
+    const expectedFinalCumulative = parseAtomic(_cumulativeAmount);
+    const terminalFrontier = snapshot.spent > snapshot.crystallizedCumulative
+      ? snapshot.spent
+      : snapshot.crystallizedCumulative;
+    if (terminalFrontier < expectedFinalCumulative) {
+      throw new Error('session revocation snapshot is behind final settlement');
+    }
+
+    const message = sessionRevokeMessage(snapshot);
+
+    // 2. Passkey-sign the exact-state revocation. ONE more prompt at tab close. The
+    //    signer binds it through the canonical V7 authorization challenge.
     const { signature, clientDataJSON, authenticatorData } = await this.passkey.signOperation(message);
     const precompileMessage = concatBytes(authenticatorData, sha256(clientDataJSON));
 
-    // 3. Submit the two-instruction tx.
+    // 3. Build and sign the exact two-instruction tx.
     const precompileIx = buildSecp256r1VerifyInstruction(
       this.passkey.publicKey,
       signature,
@@ -561,30 +1099,99 @@ class SolanaVaultAdapter implements VaultAdapter {
     );
     const revokeIx = buildRevokeSessionKeyInstruction({
       vaultPda: this.vaultPdaKey,
-      // V6: revoke names the per-counterparty session PDA (Borsh arg + seed).
-      allowedCounterparty: new PublicKey(session.scope.allowedCounterparty),
+      // V7: the same exact counter is in the passkey message and instruction.
+      allowedCounterparty: snapshot.allowedCounterparty,
+      expectedPendingVoucherCount: snapshot.expectedPendingVoucherCount,
       clientDataJSON,
       authenticatorData,
     });
 
     const tx = new Transaction().add(precompileIx, revokeIx);
     tx.feePayer = this.feePayer.publicKey;
+    let finalizedHistoryFloorSlot: number | null = null;
+    try {
+      const floor = await this.connection.getSlot('finalized');
+      finalizedHistoryFloorSlot = Number.isSafeInteger(floor) && floor >= 0
+        ? floor
+        : null;
+    } catch {
+      // Broadcast is still safe. If transport becomes ambiguous, absence can
+      // never authorize a new wire without this pre-broadcast history floor.
+    }
     const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash(
       this.confirmOptions.commitment,
     );
     tx.recentBlockhash = blockhash;
     tx.sign(this.feePayer);
+    if (!tx.signature) throw new Error('session revoke transaction is unsigned');
 
-    const sig = await this.connection.sendRawTransaction(tx.serialize(), {
-      skipPreflight: false,
-      preflightCommitment: this.confirmOptions.preflightCommitment ?? this.confirmOptions.commitment,
-    });
-    await this.connection.confirmTransaction(
-      { signature: sig, blockhash, lastValidBlockHeight },
-      this.confirmOptions.commitment,
-    );
+    const serializedTransaction = Uint8Array.from(tx.serialize());
+    const expectedSignature = bs58.encode(tx.signature);
+    const pending: PendingCloseRevocation = {
+      key,
+      message: Uint8Array.from(message),
+      serializedTransaction,
+      signature: expectedSignature,
+      blockhash,
+      lastValidBlockHeight,
+      finalizedHistoryFloorSlot,
+    };
+    // Persist the complete exact wire in adapter state BEFORE the first
+    // transport call. A thrown send/confirm can never erase its identity.
+    this.pendingCloseRevocations.set(key, pending);
 
-    return message;
+    let confirmation: Awaited<ReturnType<Connection['confirmTransaction']>>;
+    try {
+      const returnedSignature = await this.connection.sendRawTransaction(
+        serializedTransaction,
+        {
+          skipPreflight: false,
+          preflightCommitment:
+            this.confirmOptions.preflightCommitment
+            ?? this.confirmOptions.commitment,
+        },
+      );
+      if (returnedSignature !== expectedSignature) {
+        throw new Error(
+          `session revoke signature mismatch expected=${expectedSignature} returned=${returnedSignature}`,
+        );
+      }
+      confirmation = await this.connection.confirmTransaction(
+        { signature: expectedSignature, blockhash, lastValidBlockHeight },
+        'finalized',
+      );
+    } catch (error) {
+      const reconciliation = await this.reconcilePendingClose(
+        pending,
+        registration,
+        false,
+      );
+      if (reconciliation === 'complete') {
+        return this.rememberCompletedClose(key, message);
+      }
+      if (reconciliation === 'fresh_allowed') {
+        this.pendingCloseRevocations.delete(key);
+        throw new Error(
+          'session revoke transaction finalized without effect; retry close',
+          { cause: error },
+        );
+      }
+      throw new Error(
+        `session revoke finality unresolved for ${expectedSignature}; retry close`,
+        { cause: error },
+      );
+    }
+    if (confirmation.value.err) {
+      // The finalized error proves this exact atomic transaction had no
+      // effect. Retain no stale wire; a later retry will re-read the target and
+      // only then may create a fresh passkey-bound revoke.
+      this.pendingCloseRevocations.delete(key);
+      throw new Error(
+        `session revoke transaction failed: ${JSON.stringify(confirmation.value.err)}`,
+      );
+    }
+
+    return this.rememberCompletedClose(key, message);
   }
 }
 
@@ -603,16 +1210,6 @@ function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
   out.set(a, 0);
   out.set(b, a.length);
   return out;
-}
-
-function deriveNonce(): number {
-  // Process-local monotonic-ish nonce. The on-chain program doesn't
-  // enforce monotonicity (non-monotonic nonce is a caller footgun, per
-  // the Rust comment on RegisterSessionKeyArgs.nonce). We just want
-  // uniqueness within a session.
-  // NOTE: avoids Date.now() to stay safe under deterministic-resume
-  // harnesses; uses Math.random instead.
-  return Math.floor(Math.random() * 0xffffffff) >>> 0;
 }
 
 async function hashChannelId(channelId: string): Promise<Uint8Array> {

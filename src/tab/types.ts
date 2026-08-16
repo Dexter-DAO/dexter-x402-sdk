@@ -50,11 +50,18 @@ export interface VaultAdapter {
   swigAddress: string;
   /** Program/contract account holding the OTS gate state. */
   vaultPda: string;
+  /**
+   * Voucher generation this adapter issues. V6 requires `2` for buyer-side
+   * open/recovery. The `1` discriminator remains only so a historical adapter
+   * is rejected explicitly instead of being mistaken for V2 or silently
+   * falling through after an obligation may exist.
+   */
+  readonly sessionVoucherVersion: 1 | 2;
 
   /**
    * Use the ROOT signer (passkey) to authorize a fresh session key. This is
-   * the only call that prompts the user (twice when atomically replacing a
-   * live session — one revoke ceremony + one register ceremony). Returns a
+   * the only call that prompts the user. V7 live replacement binds retirement
+   * and replacement into one ceremony. Returns a
    * session that can be passed to `signWithSession` freely until the scope's
    * cap or expiry is reached.
    *
@@ -83,7 +90,90 @@ export interface VaultAdapter {
    * facilitator settles via `settle_voucher(amount, increment: false)`.
    */
   signCloseTab(session: SessionKey, channelId: string, cumulativeAmount: AtomicAmount): Promise<Uint8Array>;
+
+  /**
+   * V2-only independent postcondition check. The reservation provider returns
+   * a voucher-bound receipt; the adapter must then prove the corresponding
+   * finalized on-chain reservation and authority-signed voucher-binding Memo
+   * from its own chain connection before the voucher may leave this process.
+   * V1 adapters omit this method.
+   */
+  verifyFinalVoucherV2Reservation?: VerifyFinalVoucherV2Reservation;
 }
+
+/** Exact durable release fence for a buyer-signed FINAL V2 voucher. */
+export interface FinalVoucherV2ReservationInput {
+  network: TabNetworkId;
+  programId: string;
+  buyerSwigAddress: string;
+  vaultPda: string;
+  sessionPda: string;
+  seller: string;
+  channelId: string;
+  sessionNonce: number;
+  reservationAmountAtomic: AtomicAmount;
+  previousCumulativeAtomic: AtomicAmount;
+  /** SHA-256 of the canonical complete voucher identity. */
+  voucherDigest: string;
+  /** SDK retry identity. Exact-byte retries retain this value; provider
+   * lifecycle and receipt identities remain provider-owned and distinct. */
+  idempotencyKey: string;
+  voucher: SignedVoucher;
+}
+
+/**
+ * Provider attestation returned only after its durable transaction lifecycle
+ * has finalized the exact reservation and read back the exact post-state.
+ * The SDK validates every voucher/session field and the VaultAdapter proves
+ * both the reservation and its authority-signed voucher-binding Memo from the
+ * transaction itself; this is deliberately not a boolean ack.
+ */
+export interface FinalVoucherV2ReservationReceipt {
+  contract:
+    | 'dexter-native-tab-open-receipt/v1'
+    | 'dexter-native-tab-open-receipt/v2';
+  operationId: string;
+  callerOperationId: string;
+  network: string;
+  transaction: string;
+  /** FINAL vouchers are released only after the exact reservation transaction
+   * reaches Solana finalized commitment. A merely confirmed fork is not a
+   * durable capacity guarantee. */
+  commitment: 'finalized';
+  confirmationSlot: number;
+  postStateSlot: number;
+  buyerSwigAddress: string;
+  vaultPda: string;
+  sessionPda: string;
+  seller: string;
+  channelId: string;
+  sessionPublicKey: string;
+  voucherDigest: string;
+  cumulativeAmountAtomic: string;
+  sequenceNumber: number;
+  providerReceiptId: string;
+  reservationAmountAtomic: string;
+  pendingVoucherCountBefore: number;
+  pendingVoucherCountAfter: number;
+  currentOutstandingBeforeAtomic: '0';
+  currentOutstandingAfterAtomic: string;
+  rootOperationId?: string;
+  generation?: number;
+  predecessorCallerOperationId?: string;
+  predecessorLifecycleOperationId?: string;
+  predecessorReleaseDigest?: string;
+  stableReservationId?: string;
+  economicEffectDigest?: string;
+}
+
+export type ReserveFinalVoucherV2 = (
+  input: FinalVoucherV2ReservationInput,
+) => Promise<FinalVoucherV2ReservationReceipt>;
+
+export type VerifyFinalVoucherV2Reservation = (
+  input: FinalVoucherV2ReservationInput,
+  receipt: FinalVoucherV2ReservationReceipt,
+) => Promise<void>;
 
 /**
  * Live-session policy for `authorizeSession` / `openTab` (K-T4e).
@@ -99,8 +189,7 @@ export interface VaultAdapter {
  *    (`tab.close()` — or POST its last signed voucher to `/tab/settle`) and
  *    retries, or acknowledges the replace explicitly.
  *  - `'replace'`: compose the ATOMIC same-transaction
- *    [secp(revoke), revoke, secp(register), register] so the buyer is never
- *    left sessionless mid-flow. Costs a second passkey ceremony. Value
+ *    [secp(replace), replace] so the buyer is never left sessionless. Value
  *    already settled or crystallized into LockedClaims survives the replace;
  *    anything signed beyond the frontier is voided.
  */
@@ -142,6 +231,14 @@ export interface TabState {
 export interface Tab {
   /** Deterministic channel id derived from buyer/seller/scope/salt. */
   readonly channelId: string;
+  /**
+   * Voucher contract used by this live handle. V2 FINAL vouchers are fenced
+   * by a durable reservation and therefore may never fall through to another
+   * payment rail after an indeterminate signing/reservation error.
+   *
+   * Required in v6. An absent generation is not safely equivalent to V1.
+   */
+  readonly voucherVersion: 1 | 2;
   /** Which network the underlying vault lives on. */
   readonly network: TabNetworkId;
   /**
@@ -224,7 +321,7 @@ export interface OpenTabOptions {
   vault: VaultAdapter;
   /** CAIP-2-style network the vault lives on; cross-checked against vault.network. */
   network: TabNetworkId;
-  /** Seller's endpoint host (used for the counterparty binding + voucher routing). */
+  /** Seller's base58 Solana public key for the counterparty binding. */
   seller: string;
   /** Max amount per voucher — caps how aggressive a single charge can be. */
   perUnitCap: HumanAmount;
@@ -248,6 +345,12 @@ export interface OpenTabOptions {
    * See {@link AuthorizeSessionOptions}.
    */
   onLiveSession?: 'error' | 'replace';
+  /**
+   * Required by V2-capable adapters. The callback must durably persist and
+   * establish the exact FINAL voucher reservation before resolving. It must
+   * be idempotent for identical voucher bytes; a timeout is retried exactly.
+   */
+  reserveFinalVoucherV2?: ReserveFinalVoucherV2;
 }
 
 /**
@@ -279,6 +382,27 @@ export class UnsupportedNetworkError extends Error {
   constructor(public readonly network: string) {
     super(`Network ${network} is not yet supported by @dexterai/x402/tab`);
     this.name = 'UnsupportedNetworkError';
+  }
+}
+
+/**
+ * Thrown before buyer-side I/O when v6 is asked to open or reconstruct a
+ * historical V1 tab. The coupled v6 facilitator has no compatible V1 arming
+ * endpoint and the Vault-wide pending counter cannot prove which historical
+ * session owns an existing reservation. Seller-side verification of already
+ * issued V1 vouchers remains available so those obligations can be settled.
+ */
+export class HistoricalV1MigrationRequiredError extends Error {
+  readonly code = 'native_tab_v1_migration_required';
+
+  constructor(public readonly surface: 'armTabOpen' | 'openTab' | 'tabFromGrant') {
+    super(
+      'native_tab_v1_migration_required: @dexterai/x402 v6 cannot safely arm ' +
+      `or reconstruct a buyer-side V1 tab through ${surface}; settle or revoke ` +
+      'the historical session through the deployment that originally opened ' +
+      'it, then create a context-bound V2 session',
+    );
+    this.name = 'HistoricalV1MigrationRequiredError';
   }
 }
 

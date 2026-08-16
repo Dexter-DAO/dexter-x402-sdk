@@ -72,6 +72,12 @@ describe("scheme: 'tab' accepts entry", () => {
     expect(accept.extra?.registrationEncoding).toBe(
       'base64(188-byte sessionRegisterMessage)',
     );
+    expect(accept.extra?.termsVersion).toBe(
+      'dexter-tab-hosted-pay-before-delivery/v1',
+    );
+    expect(accept.extra?.acceptanceRule).toBe(
+      'pay_before_delivery_seller_2xx',
+    );
     // SVM invariant still holds for tab: feePayer flows through from the facilitator.
     expect(accept.extra?.feePayer).toBe(FEE_PAYER);
   });

@@ -39,19 +39,34 @@ A **tab** keeps both halves. You open one against your own wallet with a single 
 The cap is enforced at consensus by an on-chain program — not by this library, and not by Dexter. The closest familiar shape is an auth-and-capture card hold, except the hold lives on-chain instead of inside a processor, and no one ever takes your money.
 
 ```ts
-import { payUrlWithTab } from '@dexterai/x402/tab';
+import { payUrlWithTab, type ReserveFinalVoucherV2 } from '@dexterai/x402/tab';
 
+const reserveFinalVoucherV2: ReserveFinalVoucherV2 = async (input) => {
+  const response = await fetch('/api/native-tab/reserve', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) throw new Error(`reservation failed: ${response.status}`);
+  return response.json();
+};
 const tabs = new Map();                          // one open tab per seller, reused across calls
 const { result, tab } = await payUrlWithTab(
   'https://api.example.com/paid/infer',
   { method: 'GET' },
-  { vault, perUnitCap: '0.01', totalCap: '1.00', tabs },
+  {
+    vault,
+    perUnitCap: '0.01',
+    totalCap: '1.00',
+    tabs,
+    reserveFinalVoucherV2,
+  },
 );
 // ...the agent keeps calling; every call reuses the same tab, with no new prompt...
 await tab?.close();                              // one on-chain settle pays the seller for everything
 ```
 
-That's the whole loop: one tap to open, unlimited calls under the cap, one settle to close. The seller's address comes off the wire from the URL's own `402` challenge — never from your code. The `vault` is built once from your passkey-rooted wallet; see [Setup](#setup).
+That's the whole loop: one tap to open, unlimited calls under the cap, one settle to close. The seller's address comes off the wire from the URL's own `402` challenge — never from your code. The `vault` is built once from your passkey-rooted wallet; see [Setup](#setup). The reservation route belongs in your authenticated backend: it returns a voucher-bound receipt only after finality, and the SDK independently verifies the finalized Solana transaction, its Dexter-authority-signed voucher-binding Memo, and finalized Vault/SessionAccount state before releasing the FINAL voucher.
 
 ---
 
@@ -160,7 +175,7 @@ Tabs are Solana. One-shot and batch settlement span Solana and the major EVM cha
 ## More
 
 - **[REFERENCE.md](./REFERENCE.md)** — every export, option table, and example: tabs, one-shot, batch settlement, discovery.
-- **Upgrading?** `5.0.0` makes `@dexterai/vault` a peer dependency (`>=0.19`) and unifies the passkey signer on `signOperation`. Migration from v4/v3: [REFERENCE.md](./REFERENCE.md#migration).
+- **Upgrading?** v6 pins the tested Vault `0.43.1` pair, requires voucher-bound V2 reservation receipts, and uses exact-state V3 revocation. Migration from v5/v4/v3: [REFERENCE.md](./REFERENCE.md#migration).
 - **License** — MIT, see [LICENSE](./LICENSE).
 
 ---

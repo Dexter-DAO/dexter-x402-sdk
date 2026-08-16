@@ -7,10 +7,14 @@
  * must SKIP tab options (never submit a plain transfer against them).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { PublicKey } from '@solana/web3.js';
 import { v2Strategy } from '../v2-strategy';
 import { openTab } from '../../tab/tab';
 import type { Tab, VaultAdapter } from '../../tab/types';
 import type { SignedVoucher } from '../../tab/types';
+import { sessionRegisterMessage } from '../../tab/messages';
+import { DEXTER_VAULT_PROGRAM_ID } from '../../tab/instructions';
+import { finalizedReservationReceipt } from '../../tab/__tests__/reservation-fixture';
 
 // ── Fixtures ───────────────────────────────────────────────────────────
 
@@ -58,8 +62,9 @@ function make402(accepts: unknown[]): Response {
 }
 
 /** A fake open Tab whose signNextVoucher we can observe. */
-function makeFakeTab(counterparty: string): Tab & {
+function makeFakeTab(counterparty: string, voucherVersion: 1 | 2 = 1): Tab & {
   signNextVoucher: ReturnType<typeof vi.fn>;
+  rollbackVoucher?: ReturnType<typeof vi.fn>;
 } {
   const signNextVoucher = vi.fn(
     async (incrementAtomic: string): Promise<SignedVoucher> => ({
@@ -73,21 +78,29 @@ function makeFakeTab(counterparty: string): Tab & {
       sessionSignature: new Uint8Array(64).fill(3),
     }),
   );
-  return {
+  const tab = {
     channelId: 'ab'.repeat(32),
+    voucherVersion,
     network: 'solana:mainnet',
     counterparty,
     state: { isOpen: true, spent: '0', remaining: '5', expiresInSec: 3600 },
     signNextVoucher,
     stream: vi.fn(),
     close: vi.fn(),
-  } as unknown as Tab & { signNextVoucher: ReturnType<typeof vi.fn> };
+  } as unknown as Tab & {
+    signNextVoucher: ReturnType<typeof vi.fn>;
+    rollbackVoucher?: ReturnType<typeof vi.fn>;
+  };
+  if (voucherVersion === 1) {
+    tab.rollbackVoucher = vi.fn(() => true);
+  }
+  return tab;
 }
 
 /**
- * A REAL tab (TabImpl via openTab) over a fake VaultAdapter, for tests
+ * A REAL V2 tab (TabImpl via openTab) over a fake VaultAdapter, for tests
  * that assert the tab's internal voucher accounting — fake-Tab mocks can't
- * observe counter rollback.
+ * observe whether an irrevocable refused obligation remains recorded.
  */
 async function makeRealTab(): Promise<
   Tab & {
@@ -99,39 +112,45 @@ async function makeRealTab(): Promise<
     network: 'solana:mainnet',
     swigAddress: OTHER_PUBKEY,
     vaultPda: OTHER_PUBKEY,
-    authorizeSession: async scope => ({
-      publicKey: new Uint8Array(32).fill(1),
-      privateKey: new Uint8Array(64).fill(9),
-      scope,
-      registration: new Uint8Array(180).fill(2),
-    }),
-    signWithSession: async (_session, payload) => ({
-      payload,
-      sessionPublicKey: new Uint8Array(32).fill(1),
-      sessionRegistration: new Uint8Array(180).fill(2),
+    sessionVoucherVersion: 2,
+    authorizeSession: async scope => {
+      const publicKey = new Uint8Array(32).fill(1);
+      return {
+        publicKey,
+        privateKey: new Uint8Array(64).fill(9),
+        scope,
+        registration: sessionRegisterMessage({
+          programId: DEXTER_VAULT_PROGRAM_ID,
+          vaultPda: new PublicKey(OTHER_PUBKEY),
+          sessionPubkey: publicKey,
+          maxAmount: BigInt(scope.maxAmountAtomic),
+          expiresAt: BigInt(scope.expiresAtUnix),
+          allowedCounterparty: new PublicKey(scope.allowedCounterparty),
+          nonce: 0x8000_0007,
+          maxRevolvingCapacity: BigInt(scope.revolvingCapacityAtomic!),
+        }),
+      };
+    },
+    signWithSession: async (session, payload) => ({
+      payload: {
+        ...payload,
+        sequenceNumber: (payload.sequenceNumber | 0x8000_0000) >>> 0,
+      },
+      sessionPublicKey: session.publicKey,
+      sessionRegistration: session.registration,
       sessionSignature: new Uint8Array(64).fill(3),
     }),
     signOpenTab: async () => new Uint8Array(0),
     signCloseTab: async () => new Uint8Array(0),
+    verifyFinalVoucherV2Reservation: async () => undefined,
   };
-  // openTab now arms drain-protection via POST /tab/open (fail-closed). Stub
-  // that single call so the tab can be constructed over the fake adapter; the
-  // caller re-stubs fetch afterward for its own negotiation assertions.
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async () =>
-      new Response(
-        JSON.stringify({ success: true, armed: true, signature: 'TEST_ARM_SIG' }),
-        { status: 200 },
-      ),
-    ),
-  );
   const tab = await openTab({
     vault: adapter,
     network: 'solana:mainnet',
     seller: SELLER_PUBKEY, // matches TAB_ACCEPT.payTo
     perUnitCap: '0.005', // 5000 atomic = TAB_ACCEPT.amount
     totalCap: '5',
+    reserveFinalVoucherV2: async input => finalizedReservationReceipt(input),
   });
   return tab as Tab & {
     rollbackVoucher(v: SignedVoucher): boolean;
@@ -300,13 +319,160 @@ describe('v2Strategy.pay — tab negotiation', () => {
     expect(result).toHaveProperty('ok');
   });
 
-  it('rolls the tab back on seller refusal so close() will not double-settle the refused increment', async () => {
+  it.each(['missing', 'false'] as const)(
+    'does not fall through to exact when V1 rollback is %s',
+    async rollbackBehavior => {
+      const tab = makeFakeTab(SELLER_PUBKEY, 1);
+      if (rollbackBehavior === 'missing') {
+        delete tab.rollbackVoucher;
+      } else {
+        tab.rollbackVoucher = vi.fn(() => false);
+      }
+      const order: string[] = [];
+      const mockFetch = vi.fn(
+        async (_url: string | URL | Request, init?: RequestInit) => {
+          const headers = new Headers(init?.headers ?? undefined);
+          if (headers.has('X-Tab-Voucher')) {
+            order.push('voucher');
+            return make402([TAB_ACCEPT, EXACT_EVM_ACCEPT]);
+          }
+          if (headers.has('PAYMENT-SIGNATURE')) {
+            order.push('exact');
+            return new Response('{"ok":true}', { status: 200 });
+          }
+          return make402([TAB_ACCEPT, EXACT_EVM_ACCEPT]);
+        },
+      );
+      vi.stubGlobal('fetch', mockFetch);
+
+      const challenge = await v2Strategy.parseChallenge(
+        make402([TAB_ACCEPT, EXACT_EVM_ACCEPT]),
+      );
+      const result = await v2Strategy.pay(
+        'https://example.com/api',
+        { method: 'GET' },
+        challenge!,
+        await makeEvmWallets(),
+        { tab, maxAmountAtomic: '100000' },
+      );
+
+      expect(order).toEqual(['voucher']);
+      expect(result).toMatchObject({
+        ok: false,
+        reason: 'error',
+        detail: expect.stringMatching(/rollback.*avoid double payment/i),
+      });
+    },
+  );
+
+  it('never falls through to exact after a seller refuses an irrevocable V2 FINAL voucher', async () => {
+    const tab = makeFakeTab(SELLER_PUBKEY, 2);
+    const order: string[] = [];
+    const mockFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers ?? undefined);
+      if (headers.has('X-Tab-Voucher')) {
+        order.push('voucher');
+        return make402([TAB_ACCEPT, EXACT_EVM_ACCEPT]);
+      }
+      if (headers.has('PAYMENT-SIGNATURE')) {
+        order.push('exact');
+        return new Response('{"ok":true}', { status: 200 });
+      }
+      return make402([TAB_ACCEPT, EXACT_EVM_ACCEPT]);
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const challenge = await v2Strategy.parseChallenge(
+      make402([TAB_ACCEPT, EXACT_EVM_ACCEPT]),
+    );
+    const result = await v2Strategy.pay(
+      'https://example.com/api',
+      { method: 'GET' },
+      challenge!,
+      await makeEvmWallets(),
+      { tab, maxAmountAtomic: '100000' },
+    );
+
+    expect('rollbackVoucher' in tab).toBe(false);
+    expect(order).toEqual(['voucher']);
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'error',
+      detail: expect.stringMatching(/must be reconciled/i),
+    });
+  });
+
+  it('never falls through to exact when V2 signing or durable reservation is indeterminate', async () => {
+    const tab = makeFakeTab(SELLER_PUBKEY, 2);
+    tab.signNextVoucher.mockRejectedValueOnce(new Error('reservation timeout'));
+    const mockFetch = vi.fn(async () => new Response('{"ok":true}', { status: 200 }));
+    vi.stubGlobal('fetch', mockFetch);
+
+    const challenge = await v2Strategy.parseChallenge(
+      make402([TAB_ACCEPT, EXACT_EVM_ACCEPT]),
+    );
+    const result = await v2Strategy.pay(
+      'https://example.com/api',
+      { method: 'GET' },
+      challenge!,
+      await makeEvmWallets(),
+      { tab, maxAmountAtomic: '100000' },
+    );
+
+    expect(tab.signNextVoucher).toHaveBeenCalledOnce();
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'error',
+      detail: expect.stringMatching(/reconcile.*another payment rail/i),
+    });
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['invalid', 3],
+  ])(
+    'fails closed when the tab voucher generation is %s',
+    async (_label, voucherVersion) => {
+      const tab = makeFakeTab(SELLER_PUBKEY);
+      Object.defineProperty(tab, 'voucherVersion', {
+        configurable: true,
+        value: voucherVersion,
+      });
+      tab.signNextVoucher.mockRejectedValueOnce(
+        new Error('indeterminate reservation'),
+      );
+      const mockFetch = vi.fn(async () =>
+        new Response('{"ok":true}', { status: 200 }));
+      vi.stubGlobal('fetch', mockFetch);
+
+      const challenge = await v2Strategy.parseChallenge(
+        make402([TAB_ACCEPT, EXACT_EVM_ACCEPT]),
+      );
+      const result = await v2Strategy.pay(
+        'https://example.com/api',
+        { method: 'GET' },
+        challenge!,
+        await makeEvmWallets(),
+        { tab, maxAmountAtomic: '100000' },
+      );
+
+      expect(tab.signNextVoucher).toHaveBeenCalledOnce();
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        ok: false,
+        reason: 'error',
+        detail: expect.stringMatching(/reconcile.*another payment rail/i),
+      });
+    },
+  );
+
+  it('keeps a refused V2 obligation recorded and never double-pays through exact', async () => {
     const tab = await makeRealTab();
 
-    // A prior PAID request on the tab: seq 1, cumulative 5000. This is the
-    // voucher close() must settle — the refused increment must not survive.
+    // A prior paid FINAL obligation on the tab.
     const preRefusal = await tab.signNextVoucher('5000');
-    expect(preRefusal.payload.sequenceNumber).toBe(1);
+    expect(preRefusal.payload.sequenceNumber).toBe(0x8000_0001);
 
     const refusedVouchers: string[] = [];
     const order: string[] = [];
@@ -337,29 +503,24 @@ describe('v2Strategy.pay — tab negotiation', () => {
       { tab, maxAmountAtomic: '100000' },
     );
 
-    // Voucher attempted, refused, then the generic exact path paid.
-    expect(order[0]).toBe('voucher');
-    expect(order).toContain('exact');
-    expect(result).toHaveProperty('ok');
+    // The V2 voucher was attempted once. Its exact durable reservation makes
+    // fallback to another payment rail unsafe, so exact was never attempted.
+    expect(order).toEqual(['voucher']);
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'error',
+      detail: expect.stringMatching(/must be reconciled/i),
+    });
 
-    // The refused voucher was seq 2 / cumulative 10000...
+    // The refused FINAL obligation remains the tab's authoritative state.
     expect(refusedVouchers).toHaveLength(1);
     const refused = JSON.parse(
       Buffer.from(refusedVouchers[0], 'base64').toString('utf8'),
     );
-    expect(refused.payload.sequenceNumber).toBe(2);
+    expect(refused.payload.sequenceNumber).toBe(0x8000_0002);
     expect(refused.payload.cumulativeAmount).toBe('10000');
-
-    // ...and the rollback reverted the tab to the PRE-refusal voucher, so a
-    // close() here would settle seq 1 / 5000 — not the refused increment the
-    // generic path already paid for.
-    expect(tab.lastSignedVoucher).toBe(preRefusal);
-    expect(tab.state.spent).toBe('0.005');
-
-    // The next voucher REUSES the refused sequence/cumulative.
-    const reissued = await tab.signNextVoucher('5000');
-    expect(reissued.payload.sequenceNumber).toBe(2);
-    expect(reissued.payload.cumulativeAmount).toBe('10000');
+    expect(tab.lastSignedVoucher?.payload).toEqual(refused.payload);
+    expect(tab.state.spent).toBe('0.01');
   });
 
   it('ignores the tab when its counterparty does not match the option payTo', async () => {

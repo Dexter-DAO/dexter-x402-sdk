@@ -61,7 +61,9 @@ describe('node passkey signer — signOperation(operationMessage) contract', () 
 
   test('binds the WebAuthn challenge to sha256(operationMessage) (the on-chain law)', async () => {
     const kp = generateP256Keypair();
-    const signer = passkeySignerFromP256Keypair(kp);
+    const signer = passkeySignerFromP256Keypair(kp, {
+      allowLegacyOperationHash: true,
+    });
 
     const { clientDataJSON } = await signer.signOperation(operationMessage);
 
@@ -73,7 +75,9 @@ describe('node passkey signer — signOperation(operationMessage) contract', () 
 
   test('produced bytes verify against the real secp256r1 precompile math', async () => {
     const kp = generateP256Keypair();
-    const signer = passkeySignerFromP256Keypair(kp);
+    const signer = passkeySignerFromP256Keypair(kp, {
+      allowLegacyOperationHash: true,
+    });
 
     const { signature, clientDataJSON, authenticatorData } =
       await signer.signOperation(operationMessage);
@@ -87,7 +91,9 @@ describe('node passkey signer — signOperation(operationMessage) contract', () 
 
   test('signature does NOT verify under a different operation message (replay/tamper guard)', async () => {
     const kp = generateP256Keypair();
-    const signer = passkeySignerFromP256Keypair(kp);
+    const signer = passkeySignerFromP256Keypair(kp, {
+      allowLegacyOperationHash: true,
+    });
 
     const { signature, clientDataJSON, authenticatorData } =
       await signer.signOperation(operationMessage);
@@ -103,12 +109,23 @@ describe('node passkey signer — signOperation(operationMessage) contract', () 
   test('signature does NOT verify under a different public key', async () => {
     const kp = generateP256Keypair();
     const other = generateP256Keypair();
-    const signer = passkeySignerFromP256Keypair(kp);
+    const signer = passkeySignerFromP256Keypair(kp, {
+      allowLegacyOperationHash: true,
+    });
 
     const { signature, clientDataJSON, authenticatorData } =
       await signer.signOperation(operationMessage);
 
     const msgHash = precompileMessageHash(authenticatorData, clientDataJSON);
     expect(p256.verify(signature, msgHash, other.publicKey)).toBe(false);
+  });
+
+  test('signs nothing for an unknown operation unless legacy mode is explicit', async () => {
+    const kp = generateP256Keypair();
+    const signer = passkeySignerFromP256Keypair(kp);
+
+    await expect(signer.signOperation(operationMessage)).rejects.toThrow(
+      'passkey_authorization_context_required',
+    );
   });
 });

@@ -2,12 +2,10 @@
  * createSelfPayingComposeSend — the CLIENT-SIDE v0 + Address-Lookup-Table
  * transport for the atomic revoke-then-register compose (K-T4e).
  *
- * WHY THIS EXISTS: K-T4a proved the atomic single-tx revoke-then-register
- * ([secp(revoke), revoke, secp(register), register]) OVERFLOWS the legacy
- * 1232-byte wire cap even at ZERO siblings — it measures 1347 B and web3.js
- * `Transaction.serialize()` itself throws (size proof:
- * dexter-vault-sdk tests/session.composeTxSize.test.ts; constants reused
- * here, not re-derived). The LIVE (revoke-composed) path must therefore
+ * WHY THIS EXISTS: the live replacement carries a large, fully bound operation
+ * plus the V7 account set. The compatibility compose routes it through a v0
+ * transaction and address lookup table instead of relying on the legacy
+ * 1232-byte wire envelope. The LIVE replacement path therefore
  * assemble a v0 `VersionedTransaction` with an ephemeral address lookup
  * table holding every non-signer account of the composed instructions
  * (vault, target session PDA, vaultUsdcAta, swig, swig wallet PDA, sysvar,

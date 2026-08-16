@@ -51,6 +51,12 @@ import {
   USDC_MINT,
   DEXTER_FACILITATOR_URL,
 } from '../types';
+import {
+  HOSTED_TAB_ACCEPTANCE_RULE,
+  HOSTED_TAB_REGISTRATION_ENCODING,
+  HOSTED_TAB_TERMS_VERSION,
+  HOSTED_TAB_VOUCHER_HEADER,
+} from '../tab/hosted-terms';
 import { USDC_ADDRESSES, BSC_STABLECOIN_ADDRESSES } from '../constants';
 import { FacilitatorClient, type SupportedKind } from './facilitator-client';
 import { encodeBase64Json, decodeBase64Json, isSolanaNetwork } from '../utils';
@@ -307,7 +313,12 @@ export function createX402Server(config: X402ServerConfig): X402Server {
         : {}),
       // tab: surface the voucher transport so generic buyers can discover it.
       ...(scheme === 'tab'
-        ? { voucherHeader: 'x-tab-voucher', registrationEncoding: 'base64(188-byte sessionRegisterMessage)' }
+        ? {
+            voucherHeader: HOSTED_TAB_VOUCHER_HEADER,
+            registrationEncoding: HOSTED_TAB_REGISTRATION_ENCODING,
+            termsVersion: HOSTED_TAB_TERMS_VERSION,
+            acceptanceRule: HOSTED_TAB_ACCEPTANCE_RULE,
+          }
         : {}),
     };
   }

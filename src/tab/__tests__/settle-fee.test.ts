@@ -13,7 +13,7 @@
  *     settleTx) must remain byte-identical.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { openTab } from '../tab';
+import { TabImpl } from '../tab';
 import type { Tab, VaultAdapter } from '../types';
 
 // Any valid base58 pubkeys — never hit on chain in these tests.
@@ -27,6 +27,7 @@ function makeFakeAdapter(): VaultAdapter {
     network: 'solana:mainnet',
     swigAddress: VAULT_PUBKEY,
     vaultPda: VAULT_PUBKEY,
+    sessionVoucherVersion: 1,
     authorizeSession: async scope => ({
       publicKey: new Uint8Array(32).fill(1),
       privateKey: new Uint8Array(64).fill(9),
@@ -51,35 +52,38 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-/** Success response for armTabOpen (/tab/open). */
-function armOpenResponse(): Response {
-  return jsonResponse({ success: true, armed: true, signature: 'arm-stub' });
-}
-
 /**
- * Build a URL-routing fetch mock:
- *   - /tab/open  → armOpenResponse()
- *   - /tab/settle → settleResponse()
- *
- * Returns the mock so tests can inspect settle-specific calls.
+ * Build a /tab/settle fetch mock. The local V1 handle below represents an
+ * already-issued historical tab; v6 public open/recovery does not arm V1.
  */
 function makeRoutingFetch(settleResponse: () => Response) {
-  return vi.fn(async (input: string | URL | Request) => {
-    const url = String(input);
-    if (url.endsWith('/tab/open')) return armOpenResponse();
-    return settleResponse();
-  });
+  return vi.fn(async (_input: string | URL | Request) => settleResponse());
 }
 
-/** Open a tab and sign one voucher so close() has something to settle. */
+/** Build an already-issued V1 tab and sign one voucher for close coverage. */
 async function makeTabWithVoucher(mockFetch: ReturnType<typeof vi.fn>): Promise<Tab> {
   vi.stubGlobal('fetch', mockFetch);
-  const tab = await openTab({
-    vault: makeFakeAdapter(),
+  const vault = makeFakeAdapter();
+  const expiresAtUnix = Math.floor(Date.now() / 1000) + 3600;
+  const channelIdHex = '11'.repeat(32);
+  const session = await vault.authorizeSession({
+    channelId: channelIdHex,
+    maxAmountAtomic: '5000000',
+    revolvingCapacityAtomic: '5000000',
+    expiresAtUnix,
+    allowedCounterparty: SELLER_PUBKEY,
+  });
+  const tab = new TabImpl({
+    vault,
     network: 'solana:mainnet',
     seller: SELLER_PUBKEY,
-    perUnitCap: '0.01', // 10000 atomic
-    totalCap: '5',
+    counterparty: SELLER_PUBKEY,
+    session,
+    channelIdHex,
+    channelIdBytes: Uint8Array.from(Buffer.from(channelIdHex, 'hex')),
+    perUnitCapAtomic: 10000n,
+    totalCapAtomic: 5000000n,
+    expiresAtUnix,
     facilitatorUrl: FACILITATOR_URL,
   });
   await tab.signNextVoucher('10000');
@@ -112,7 +116,6 @@ describe('Tab.close() — facilitator fee fields', () => {
     expect(result.netAmount).toBe('9900');
 
     // Sanity: the settle call went to the facilitator's /tab/settle.
-    // mockFetch is called twice total: once for /tab/open (arm), once for /tab/settle.
     const settleCalls = mockFetch.mock.calls.filter(([url]) =>
       String(url).endsWith('/tab/settle'),
     );

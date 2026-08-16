@@ -70,6 +70,9 @@ export const TAB_VOUCHER_HEADER = 'x-tab-voucher';
 
 interface SessionCacheEntry {
   registration: ParsedRegistration;
+  /** Exact 188-byte on-chain witness accepted for this channel. Every later
+   * voucher must carry the same bytes; a channel id alone is not identity. */
+  registrationBytes: Uint8Array;
   // Last accepted voucher's cumulative — used for monotonicity.
   lastCumulativeAtomic: AtomicAmount;
 }
@@ -248,9 +251,18 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
         const persisted = await ledger.get(channelId);
         entry = {
           registration: parsed,
+          registrationBytes: voucher.sessionRegistration.slice(),
           lastCumulativeAtomic: persisted?.lastVoucher?.payload.cumulativeAmount ?? '0',
         };
         cache.set(channelId, entry);
+      } else if (!sameBytes(entry.registrationBytes, voucher.sessionRegistration)) {
+        // Cache hits must not turn the buyer-chosen channel id into an
+        // authorization oracle. Without this exact binding, an attacker can
+        // reuse a cached channel with a self-signed registration/key while
+        // scope enforcement still reads the legitimate cached cap/seller.
+        throw new InvalidVoucherSignatureError(
+          'voucher registration does not match the channel\'s verified registration',
+        );
       }
 
       // 3. Verify the voucher signature over the canonical message.
@@ -538,6 +550,15 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
       next(err);
     }
   };
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left[index] ^ right[index];
+  }
+  return difference === 0;
 }
 
 /** Pull the SellerTab off a request. Throws if the middleware didn't run. */
