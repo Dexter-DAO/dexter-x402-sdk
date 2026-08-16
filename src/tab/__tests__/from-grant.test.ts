@@ -23,6 +23,9 @@ import { deriveSessionPda } from '@dexterai/vault/session';
 
 import { tabFromGrant } from '../from-grant';
 import { voucherToHeader } from '../tab';
+import { DEXTER_VAULT_PROGRAM_ID } from '../instructions';
+import { sessionRegisterMessage } from '../messages';
+import { signVoucher } from '../sessions';
 import { parseRegistration } from '../seller/verify';
 import { tabMiddleware } from '../seller/middleware';
 import type {
@@ -90,6 +93,7 @@ function sessionAccountData(args: {
 /** Vault account (readVaultFull contract): version@8, swig_address@43..75. */
 function vaultAccountData(swigAddress: string): Buffer {
   const buf = Buffer.alloc(150);
+  Buffer.from([211, 8, 232, 43, 2, 152, 117, 119]).copy(buf, 0);
   buf.writeUInt8(6, 8); // version
   new PublicKey(swigAddress).toBuffer().copy(buf, 43);
   return buf;
@@ -107,7 +111,15 @@ function fakeConnection(accounts: Map<string, Buffer>): Connection & { reads: st
     getAccountInfo: async (pda: PublicKey) => {
       reads.push(pda.toBase58());
       const data = accounts.get(pda.toBase58());
-      return data ? { data } : null;
+      return data
+        ? {
+            data,
+            owner: DEXTER_VAULT_PROGRAM_ID,
+            executable: false,
+            lamports: 1,
+            rentEpoch: 0,
+          }
+        : null;
     },
   } as unknown as Connection & { reads: string[] };
 }
@@ -167,7 +179,7 @@ beforeEach(() => vi.restoreAllMocks());
 
 describe('tabFromGrant — registration rebuild', () => {
   it('rebuilds the 188-byte registration byte-for-byte from approveSpendGrant output', async () => {
-    stubFetchRouter();
+    const { calls } = stubFetchRouter();
     const kp = nacl.sign.keyPair();
 
     // The REAL grant ceremony (custody mode i, injected recorder sign fn).
@@ -181,12 +193,16 @@ describe('tabFromGrant — registration rebuild', () => {
       request,
       vaultPda: VAULT,
       sign: async (message) => ({ signedBytes: message }),
-      nonce: 42,
+      authorizationNonce: 42n,
       sessionKeypair: { publicKey: kp.publicKey, privateKey: kp.secretKey },
     });
 
     const conn = connFor(grant.params, sessionAccountData({ params: grant.params }));
-    const tab = await tabFromGrant(baseOptions(kp, grant.params, conn));
+    const reserveFinalVoucherV2 = vi.fn(async () => ({ armed: true as const }));
+    const tab = await tabFromGrant({
+      ...baseOptions(kp, grant.params, conn),
+      reserveFinalVoucherV2,
+    });
     const voucher = await tab.signNextVoucher('5000');
 
     // Byte-exact against the ceremony's own signed message.
@@ -197,8 +213,79 @@ describe('tabFromGrant — registration rebuild', () => {
     expect(parsed.vaultPda.equals(VAULT)).toBe(true);
     expect(parsed.allowedCounterparty.toBase58()).toBe(SELLER.toBase58());
     expect(parsed.maxAmount).toBe(1000000n);
-    expect(parsed.nonce).toBe(42);
+    expect(parsed.nonce).toBe(0x8000_0000 + 42);
     expect(Buffer.from(parsed.sessionPubkey).equals(Buffer.from(kp.publicKey))).toBe(true);
+    expect(voucher.payload.sequenceNumber).toBe(0x8000_0001);
+    expect(reserveFinalVoucherV2).toHaveBeenCalledOnce();
+    expect(reserveFinalVoucherV2).toHaveBeenCalledWith(expect.objectContaining({
+      buyerSwigAddress: SWIG,
+      vaultPda: VAULT.toBase58(),
+      seller: SELLER.toBase58(),
+      sessionNonce: 0x8000_0000 + 42,
+      reservationAmountAtomic: '5000',
+      previousCumulativeAtomic: '0',
+      voucher,
+    }));
+    expect(calls.some((call) => call.url === `${FAC}/tab/open`)).toBe(false);
+  });
+
+  it('refuses a V2 grant without a durable reservation fence before any I/O', async () => {
+    const { fetchMock } = stubFetchRouter();
+    const kp = nacl.sign.keyPair();
+    const params = grantParams(kp, { nonce: 0x8000_002a });
+    const conn = connFor(params, sessionAccountData({ params }));
+
+    await expect(
+      tabFromGrant(baseOptions(kp, params, conn)),
+    ).rejects.toThrow(/native_tab_v2_reservation_fence_required/);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect((conn as any).reads).toHaveLength(0);
+  });
+
+  it('retries the exact same FINAL voucher after an ambiguous reservation failure', async () => {
+    stubFetchRouter();
+    const kp = nacl.sign.keyPair();
+    const params = grantParams(kp, { nonce: 0x8000_002a });
+    const conn = connFor(params, sessionAccountData({ params }));
+    const reserved: Array<import('../types').FinalVoucherV2ReservationInput> = [];
+    const reserveFinalVoucherV2 = vi.fn(async (input) => {
+      reserved.push(input);
+      if (reserved.length === 1) throw new Error('reservation_timeout_unknown');
+      return { armed: true as const };
+    });
+    const tab = await tabFromGrant({
+      ...baseOptions(kp, params, conn),
+      reserveFinalVoucherV2,
+    });
+
+    await expect(tab.signNextVoucher('5000')).rejects.toThrow(
+      /reservation_timeout_unknown/,
+    );
+    expect(tab.state.spent).toBe('0');
+
+    const voucher = await tab.signNextVoucher('5000');
+    expect(voucher.payload.sequenceNumber).toBe(0x8000_0001);
+    expect(reserved).toHaveLength(2);
+    expect(voucherToHeader(reserved[1].voucher)).toBe(
+      voucherToHeader(reserved[0].voucher),
+    );
+    expect(voucherToHeader(voucher)).toBe(voucherToHeader(reserved[0].voucher));
+    expect((tab as any).rollbackVoucher(voucher)).toBe(false);
+  });
+
+  it('refuses a new FINAL voucher while the V2 session has an outstanding claim', async () => {
+    stubFetchRouter();
+    const kp = nacl.sign.keyPair();
+    const params = grantParams(kp, { nonce: 0x8000_002a });
+    const conn = connFor(
+      params,
+      sessionAccountData({ params, currentOutstanding: 5000n }),
+    );
+
+    await expect(tabFromGrant({
+      ...baseOptions(kp, params, conn),
+      reserveFinalVoucherV2: async () => ({ armed: true }),
+    })).rejects.toThrow(/native_tab_v2_reservation_pending/);
   });
 });
 
@@ -461,6 +548,39 @@ describe('tabFromGrant — drain-protection arming', () => {
 // ── 5. Wire round-trip through the REAL seller middleware ──────────────
 
 describe('tabFromGrant — voucher satisfies the seller middleware (real oracle)', () => {
+  it('passes a context-bound FINAL V2 voucher through the real seller verifier', async () => {
+    stubFetchRouter();
+    const kp = nacl.sign.keyPair();
+    const params = grantParams(kp, { nonce: 0x8000_002a });
+    const conn = connFor(params, sessionAccountData({ params }));
+    const tab = await tabFromGrant({
+      ...baseOptions(kp, params, conn),
+      reserveFinalVoucherV2: async () => ({ armed: true }),
+    });
+    const mw = tabMiddleware({
+      connection: conn,
+      sellerPubkey: SELLER.toBase58(),
+      perUnit: '0.005',
+      network: 'solana:mainnet',
+      settle: 'on-close',
+      facilitatorUrl: FAC,
+    });
+
+    const voucher = await tab.signNextVoucher('5000');
+    expect(voucher.payload.sequenceNumber).toBe(0x8000_0001);
+    const req = fakeReq(voucherToHeader(voucher));
+    const res = fakeRes();
+    const next = vi.fn();
+    await mw(
+      req as unknown as ExpressRequest,
+      res as unknown as ExpressResponse,
+      next as NextFunction,
+    );
+    expect(res.statusCode).toBe(0);
+    expect(next).toHaveBeenCalledOnce();
+    expect(req.tab?.cumulative()).toBe('0.005');
+  });
+
   it('streams two vouchers through tabMiddleware: decode + registration + on-chain + ed25519 + scope all pass', async () => {
     stubFetchRouter();
     const kp = nacl.sign.keyPair();
@@ -537,6 +657,74 @@ describe('tabFromGrant — voucher satisfies the seller middleware (real oracle)
     await mw(fakeReq(header) as unknown as ExpressRequest, res2 as unknown as ExpressResponse, vi.fn() as NextFunction);
     expect(res2.statusCode).toBe(402);
     expect(res2.body).toMatchObject({ error: 'invalid_voucher', reason: 'non_monotonic' });
+  });
+
+  it('never lets a forged registration/key inherit a verified channel cache entry', async () => {
+    stubFetchRouter();
+    const kp = nacl.sign.keyPair();
+    const params = grantParams(kp);
+    const conn = connFor(params, sessionAccountData({ params }));
+    const tab = await tabFromGrant(baseOptions(kp, params, conn));
+    const mw = tabMiddleware({
+      connection: conn,
+      sellerPubkey: SELLER.toBase58(),
+      perUnit: '0.005',
+      network: 'solana:mainnet',
+      settle: 'on-close',
+      facilitatorUrl: FAC,
+    });
+
+    const legitimate = await tab.signNextVoucher('5000');
+    const firstRes = fakeRes();
+    await mw(
+      fakeReq(voucherToHeader(legitimate)) as unknown as ExpressRequest,
+      firstRes as unknown as ExpressResponse,
+      vi.fn() as NextFunction,
+    );
+    expect(firstRes.statusCode).toBe(0);
+    firstRes.emit('finish');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const attacker = nacl.sign.keyPair();
+    const attackerRegistration = sessionRegisterMessage({
+      programId: DEXTER_VAULT_PROGRAM_ID,
+      vaultPda: VAULT,
+      sessionPubkey: attacker.publicKey,
+      maxAmount: 9_000_000n,
+      expiresAt: BigInt(NOW + 3600),
+      allowedCounterparty: SELLER,
+      nonce: 99,
+      maxRevolvingCapacity: 9_000_000n,
+    });
+    const forged = signVoucher({
+      publicKey: attacker.publicKey,
+      privateKey: attacker.secretKey,
+      registration: attackerRegistration,
+      scope: {
+        channelId: legitimate.payload.channelId,
+        maxAmountAtomic: '9000000',
+        expiresAtUnix: NOW + 3600,
+        allowedCounterparty: SELLER.toBase58(),
+      },
+    }, {
+      channelId: legitimate.payload.channelId,
+      cumulativeAmount: '10000',
+      sequenceNumber: 2,
+    }, Uint8Array.from(Buffer.from(legitimate.payload.channelId, 'hex')));
+    const forgedRes = fakeRes();
+    const forgedNext = vi.fn();
+    await mw(
+      fakeReq(voucherToHeader(forged)) as unknown as ExpressRequest,
+      forgedRes as unknown as ExpressResponse,
+      forgedNext as NextFunction,
+    );
+    expect(forgedRes.statusCode).toBe(402);
+    expect(forgedNext).not.toHaveBeenCalled();
+    expect(forgedRes.body).toMatchObject({
+      error: 'invalid_voucher',
+      reason: 'unknown',
+      detail: expect.stringMatching(/verified registration/),
+    });
   });
 });
 

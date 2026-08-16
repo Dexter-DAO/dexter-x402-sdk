@@ -51,6 +51,9 @@ export type {
   ResumeTabOptions,
   AuthorizeSessionOptions,
   LiveSessionDetails,
+  FinalVoucherV2ReservationInput,
+  FinalVoucherV2ReservationReceipt,
+  ReserveFinalVoucherV2,
 } from './types';
 
 export {
@@ -89,10 +92,16 @@ export {
 // shim so existing consumers of `@dexterai/x402/tab` can import them by name.
 export {
   sessionRegisterMessage,
+  sessionReplaceV1Message,
   sessionRevokeMessage,
+  sessionVoucherV2Nonce,
+  sessionVoucherV2AuthorizationNonce,
+  finalVoucherV2Sequence,
+  voucherV2SequenceOrdinal,
   voucherPayloadMessage,
   buildVoucherMessage,
   type SessionRegisterMessageArgs,
+  type SessionReplaceV1MessageArgs,
   type SessionRevokeMessageArgs,
   type VoucherPayloadBytes,
 } from './messages';

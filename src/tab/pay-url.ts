@@ -13,7 +13,12 @@
  * protocol dispatch. Three requests total per call; sellers see the extra
  * probes as ordinary 402s.
  */
-import type { Tab, VaultAdapter, HumanAmount } from './types';
+import type {
+  Tab,
+  VaultAdapter,
+  HumanAmount,
+  ReserveFinalVoucherV2,
+} from './types';
 import type { PayResult } from '../payment/types';
 import { payAndFetch } from '../payment';
 import { openTab, humanToAtomic } from './tab';
@@ -35,6 +40,8 @@ export interface PayUrlWithTabOptions {
    * `OpenTabOptions.onLiveSession` (K-T4e).
    */
   onLiveSession?: 'error' | 'replace';
+  /** Exact V2 reservation fence forwarded to openTab. */
+  reserveFinalVoucherV2?: ReserveFinalVoucherV2;
   /**
    * Open-tab registry keyed by counterparty base58. Pass the SAME Map across
    * calls to reuse one open tab per seller instead of re-registering
@@ -101,6 +108,7 @@ export async function payUrlWithTab(
       sessionDuration: opts.sessionDuration,
       facilitatorUrl: opts.facilitatorUrl,
       onLiveSession: opts.onLiveSession,
+      reserveFinalVoucherV2: opts.reserveFinalVoucherV2,
     });
     opts.tabs?.set(offer.payTo, tab);
   }

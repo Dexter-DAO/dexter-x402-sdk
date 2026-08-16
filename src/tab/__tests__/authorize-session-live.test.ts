@@ -14,22 +14,30 @@
  *   3. LIVE + no acknowledgement             → throw LiveSessionExistsError
  *      carrying the on-chain evidence (never silently strand the tail);
  *   4. LIVE + onLiveSession:'replace'        → compose the ATOMIC same-tx
- *      [secp(revoke), revoke, secp(register), register] via the vault
- *      0.34 composeRevokeThenRegister primitive (v0+ALT transport).
+ *      [secp(replace), replace_session_key_v1] via the compatibility-named
+ *      composeRevokeThenRegister primitive (v0+ALT transport).
  *
  * Verification oracles are REAL: fake Connection serves real-layout
  * SessionAccount bytes (from-grant.test.ts pattern), the REAL vault
  * compose/builders produce the expected instructions, and ceremonies are
  * re-derived with the same deterministic P-256 signer for byte-compare.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Keypair, PublicKey, Transaction, type Connection, type TransactionInstruction } from '@solana/web3.js';
 import {
   deriveSessionPda,
   fetchSessionAccount,
   fetchVaultSessionAccounts,
 } from '@dexterai/vault/session';
-import { sessionRevokeMessage, sessionRegisterMessage } from '@dexterai/vault/messages';
+import {
+  sessionRegisterMessage,
+  sessionReplaceV1Message,
+  sessionVoucherV2Nonce,
+} from '@dexterai/vault/messages';
+import {
+  buildPasskeyAuthorizationChallenge,
+  fetchPasskeyAuthorizationState,
+} from '@dexterai/vault';
 
 import { createSolanaVaultAdapter } from '../adapters/solana/index';
 import {
@@ -39,11 +47,11 @@ import {
 } from '../adapters/solana/passkey-noble';
 import {
   buildRegisterSessionKeyInstruction,
-  buildRevokeSessionKeyInstruction,
   buildSecp256r1VerifyInstruction,
   DEXTER_VAULT_PROGRAM_ID,
   SECP256R1_PROGRAM_ID,
 } from '../instructions';
+import { buildReplaceSessionKeyV1Instruction } from '@dexterai/vault/instructions';
 import { LiveSessionExistsError, type SessionScope } from '../types';
 import { sha256 } from '@noble/hashes/sha256';
 
@@ -56,7 +64,11 @@ const FEE_PAYER = Keypair.generate();
 const NOW = Math.floor(Date.now() / 1000);
 
 const P256 = generateP256Keypair();
-const PASSKEY = passkeySignerFromP256Keypair(P256);
+const AUTHORIZATION_NONCE = 23n;
+const CEREMONY_NONCE = new Uint8Array(32).fill(0x5a);
+const PASSKEY = passkeySignerFromP256Keypair(P256, {
+  ceremonyNonce: () => CEREMONY_NONCE.slice(),
+});
 
 /** Real-layout 162-byte SessionAccount (vault session/decode.ts contract). */
 function sessionAccountData(args: {
@@ -125,6 +137,7 @@ function makeAdapter(
     composeSend?: (ixs: TransactionInstruction[]) => Promise<string>;
     fetchSession?: typeof fetchSessionAccount;
     fetchSessions?: typeof fetchVaultSessionAccounts;
+    fetchPasskeyAuthorization?: typeof fetchPasskeyAuthorizationState;
   } = {},
 ) {
   return createSolanaVaultAdapter({
@@ -136,6 +149,12 @@ function makeAdapter(
     seams: {
       // Content-aware post-register wait is chain-polling; stub it fast.
       waitForSession: vi.fn(async () => ({}) as never),
+      fetchPasskeyAuthorization: vi.fn(async () => ({
+        version: 1,
+        bump: 255,
+        vault: VAULT,
+        nonce: AUTHORIZATION_NONCE,
+      })),
       // The swig has no on-chain USDC ATA in the fake — resolve as
       // credit-only (null); the builder's optional-account sentinel covers it.
       ...seams,
@@ -156,15 +175,11 @@ function scopeFor(): SessionScope {
   };
 }
 
-beforeEach(() => {
-  // deriveNonce() uses Math.random — pin it so register bytes are reproducible.
-  vi.spyOn(Math, 'random').mockReturnValue(0.5);
-});
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const EXPECTED_NONCE = Math.floor(0.5 * 0xffffffff) >>> 0;
+const EXPECTED_NONCE = sessionVoucherV2Nonce(AUTHORIZATION_NONCE);
 
 // ── 1. NOT live → the bare legacy register (pre-K-T4e bytes) ────────────
 
@@ -205,7 +220,7 @@ describe('authorizeSession — target NOT live (absent / cleared / expired)', ()
       allowedCounterparty: SELLER,
       nonce: EXPECTED_NONCE,
     });
-    const ceremony = signChallenge(P256, sha256(message));
+    const ceremony = canonicalCeremony(message);
     const expected = buildRegisterSessionKeyInstruction({
       vaultPda: VAULT,
       sessionPubkey: session.publicKey,
@@ -280,7 +295,7 @@ describe('authorizeSession — LIVE target, onLiveSession: replace (atomic)', ()
     ]));
   }
 
-  it('sends ONE composed tx [secp(revoke), revoke, secp(register), register] through the compose transport', async () => {
+  it('sends ONE composed tx [secp(replace), replace] through the compose transport', async () => {
     const conn = liveConn();
     const captured: TransactionInstruction[][] = [];
     const composeSend = vi.fn(async (ixs: TransactionInstruction[]) => {
@@ -296,72 +311,67 @@ describe('authorizeSession — LIVE target, onLiveSession: replace (atomic)', ()
     expect(conn.legacySends).toHaveLength(0);
 
     const ixs = captured[0];
-    expect(ixs).toHaveLength(4);
-    // Adjacency law (webauthn.rs: verify introspects current_index − 1):
-    // each secp verify immediately precedes its vault instruction.
+    expect(ixs).toHaveLength(2);
+    // Adjacency law (webauthn.rs: verify introspects current_index - 1):
+    // the one secp verify immediately precedes replace_session_key_v1.
     expect(ixs[0].programId.equals(SECP256R1_PROGRAM_ID)).toBe(true);
     expect(ixs[1].programId.equals(DEXTER_VAULT_PROGRAM_ID)).toBe(true);
-    expect(ixs[2].programId.equals(SECP256R1_PROGRAM_ID)).toBe(true);
-    expect(ixs[3].programId.equals(DEXTER_VAULT_PROGRAM_ID)).toBe(true);
 
-    // Byte-exact revoke leg: ceremony over sessionRevokeMessage of the LIVE
-    // pubkey (NOT the new one), built through the REAL vault builder.
-    const revokeMsg = sessionRevokeMessage({
+    // Byte-exact one-ceremony replace: both the complete retired snapshot and
+    // every replacement field are bound into the 348-byte operation.
+    const replaceMessage = sessionReplaceV1Message({
       programId: DEXTER_VAULT_PROGRAM_ID,
       vaultPda: VAULT,
-      sessionPubkey: livePubkey,
+      sessionPda: SESSION_PDA,
+      authorizationNonce: AUTHORIZATION_NONCE,
+      retired: {
+        sessionPubkey: livePubkey,
+        maxAmount: 2_000_000n,
+        expiresAt: BigInt(NOW + 3600),
+        allowedCounterparty: SELLER,
+        nonce: 7,
+        spent: 0n,
+        currentOutstanding: 0n,
+        maxRevolvingCapacity: 2_000_000n,
+        crystallizedCumulative: 0n,
+        lastLockedSequence: 0,
+      },
+      replacement: {
+        sessionPubkey: session.publicKey,
+        maxAmount: 1_000_000n,
+        expiresAt: BigInt(NOW + 1800),
+        allowedCounterparty: SELLER,
+        nonce: EXPECTED_NONCE,
+        maxRevolvingCapacity: 900_000n,
+      },
     });
-    const revokeCeremony = signChallenge(P256, sha256(revokeMsg));
-    const expectedRevoke = buildRevokeSessionKeyInstruction({
+    const ceremony = canonicalCeremony(replaceMessage);
+    const expectedReplace = buildReplaceSessionKeyV1Instruction({
       vaultPda: VAULT,
-      allowedCounterparty: SELLER,
-      clientDataJSON: revokeCeremony.clientDataJSON,
-      authenticatorData: revokeCeremony.authenticatorData,
-    });
-    expect(Buffer.from(ixs[1].data).equals(Buffer.from(expectedRevoke.data))).toBe(true);
-    expect(ixs[1].keys.map((k) => k.pubkey.toBase58()))
-      .toEqual(expectedRevoke.keys.map((k) => k.pubkey.toBase58()));
-    // ...and its secp sibling verifies exactly that ceremony.
-    const expectedRevokeSecp = buildSecp256r1VerifyInstruction(
-      P256.publicKey,
-      revokeCeremony.signature,
-      revokeCeremony.authenticatorData.length
-        ? concat(revokeCeremony.authenticatorData, sha256(revokeCeremony.clientDataJSON))
-        : new Uint8Array(),
-    );
-    expect(Buffer.from(ixs[0].data).equals(Buffer.from(expectedRevokeSecp.data))).toBe(true);
-
-    // Byte-exact register leg (new session pubkey, pinned nonce). The live
-    // target session is EXCLUDED from its own sibling set by the builder.
-    const registerMsg = sessionRegisterMessage({
-      programId: DEXTER_VAULT_PROGRAM_ID,
-      vaultPda: VAULT,
+      authorizationNonce: AUTHORIZATION_NONCE,
       sessionPubkey: session.publicKey,
-      maxAmount: 1000000n,
-      maxRevolvingCapacity: 900000n,
+      maxAmount: 1_000_000n,
       expiresAt: BigInt(NOW + 1800),
       allowedCounterparty: SELLER,
       nonce: EXPECTED_NONCE,
-    });
-    const registerCeremony = signChallenge(P256, sha256(registerMsg));
-    const expectedRegister = buildRegisterSessionKeyInstruction({
-      vaultPda: VAULT,
-      sessionPubkey: session.publicKey,
-      maxAmount: 1000000n,
-      maxRevolvingCapacity: 900000n,
-      expiresAt: BigInt(NOW + 1800),
-      allowedCounterparty: SELLER,
-      nonce: EXPECTED_NONCE,
+      maxRevolvingCapacity: 900_000n,
       swigAddress: SWIG,
       vaultUsdcAta: null,
-      payer: FEE_PAYER.publicKey,
-      siblingSessionPdas: [SESSION_PDA], // builder excludes the target itself
-      clientDataJSON: registerCeremony.clientDataJSON,
-      authenticatorData: registerCeremony.authenticatorData,
+      siblingSessionPdas: [SESSION_PDA],
+      clientDataJSON: ceremony.clientDataJSON,
+      authenticatorData: ceremony.authenticatorData,
     });
-    expect(Buffer.from(ixs[3].data).equals(Buffer.from(expectedRegister.data))).toBe(true);
-    expect(ixs[3].keys.map((k) => k.pubkey.toBase58()))
-      .toEqual(expectedRegister.keys.map((k) => k.pubkey.toBase58()));
+    expect(Buffer.from(ixs[1].data).equals(Buffer.from(expectedReplace.data))).toBe(true);
+    expect(ixs[1].keys.map((k) => k.pubkey.toBase58()))
+      .toEqual(expectedReplace.keys.map((k) => k.pubkey.toBase58()));
+    const expectedSecp = buildSecp256r1VerifyInstruction(
+      P256.publicKey,
+      ceremony.signature,
+      ceremony.authenticatorData.length
+        ? concat(ceremony.authenticatorData, sha256(ceremony.clientDataJSON))
+        : new Uint8Array(),
+    );
+    expect(Buffer.from(ixs[0].data).equals(Buffer.from(expectedSecp.data))).toBe(true);
   });
 
   it('waits for the NEW session pubkey to be visible (content-aware, not existence)', async () => {
@@ -376,6 +386,12 @@ describe('authorizeSession — LIVE target, onLiveSession: replace (atomic)', ()
       seams: {
         waitForSession: waitSpy,
         composeSend: async () => 'ComposeSig111',
+        fetchPasskeyAuthorization: async () => ({
+          version: 1,
+          bump: 255,
+          vault: VAULT,
+          nonce: AUTHORIZATION_NONCE,
+        }),
       },
     });
 
@@ -409,9 +425,20 @@ describe('authorizeSession — LIVE target, onLiveSession: replace (atomic)', ()
 
     await expect(
       adapter.authorizeSession(scopeFor(), { onLiveSession: 'replace' }),
-    ).rejects.toThrow(/rotated|RevokeCeremonyMismatch/i);
+    ).rejects.toThrow(/exact current session snapshot/i);
   });
 });
+
+function canonicalCeremony(operationMessage: Uint8Array) {
+  const challenge = buildPasskeyAuthorizationChallenge({
+    programId: DEXTER_VAULT_PROGRAM_ID,
+    vault: VAULT,
+    nonce: AUTHORIZATION_NONCE,
+    operationHash: sha256(operationMessage),
+    ceremonyNonce: CEREMONY_NONCE,
+  });
+  return signChallenge(P256, challenge);
+}
 
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   const out = new Uint8Array(a.length + b.length);

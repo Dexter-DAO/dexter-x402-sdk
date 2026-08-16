@@ -58,7 +58,7 @@ function make402(accepts: unknown[]): Response {
 }
 
 /** A fake open Tab whose signNextVoucher we can observe. */
-function makeFakeTab(counterparty: string): Tab & {
+function makeFakeTab(counterparty: string, voucherVersion: 1 | 2 = 1): Tab & {
   signNextVoucher: ReturnType<typeof vi.fn>;
 } {
   const signNextVoucher = vi.fn(
@@ -75,6 +75,7 @@ function makeFakeTab(counterparty: string): Tab & {
   );
   return {
     channelId: 'ab'.repeat(32),
+    voucherVersion,
     network: 'solana:mainnet',
     counterparty,
     state: { isOpen: true, spent: '0', remaining: '5', expiresInSec: 3600 },
@@ -298,6 +299,69 @@ describe('v2Strategy.pay — tab negotiation', () => {
     expect(order).toContain('exact');
     expect(tab.signNextVoucher).toHaveBeenCalledTimes(1);
     expect(result).toHaveProperty('ok');
+  });
+
+  it('never falls through to exact after a seller refuses an irrevocable V2 FINAL voucher', async () => {
+    const tab = makeFakeTab(SELLER_PUBKEY, 2);
+    const order: string[] = [];
+    const mockFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers ?? undefined);
+      if (headers.has('X-Tab-Voucher')) {
+        order.push('voucher');
+        return make402([TAB_ACCEPT, EXACT_EVM_ACCEPT]);
+      }
+      if (headers.has('PAYMENT-SIGNATURE')) {
+        order.push('exact');
+        return new Response('{"ok":true}', { status: 200 });
+      }
+      return make402([TAB_ACCEPT, EXACT_EVM_ACCEPT]);
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const challenge = await v2Strategy.parseChallenge(
+      make402([TAB_ACCEPT, EXACT_EVM_ACCEPT]),
+    );
+    const result = await v2Strategy.pay(
+      'https://example.com/api',
+      { method: 'GET' },
+      challenge!,
+      await makeEvmWallets(),
+      { tab, maxAmountAtomic: '100000' },
+    );
+
+    expect('rollbackVoucher' in tab).toBe(false);
+    expect(order).toEqual(['voucher']);
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'error',
+      detail: expect.stringMatching(/must be reconciled/i),
+    });
+  });
+
+  it('never falls through to exact when V2 signing or durable reservation is indeterminate', async () => {
+    const tab = makeFakeTab(SELLER_PUBKEY, 2);
+    tab.signNextVoucher.mockRejectedValueOnce(new Error('reservation timeout'));
+    const mockFetch = vi.fn(async () => new Response('{"ok":true}', { status: 200 }));
+    vi.stubGlobal('fetch', mockFetch);
+
+    const challenge = await v2Strategy.parseChallenge(
+      make402([TAB_ACCEPT, EXACT_EVM_ACCEPT]),
+    );
+    const result = await v2Strategy.pay(
+      'https://example.com/api',
+      { method: 'GET' },
+      challenge!,
+      await makeEvmWallets(),
+      { tab, maxAmountAtomic: '100000' },
+    );
+
+    expect(tab.signNextVoucher).toHaveBeenCalledOnce();
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'error',
+      detail: expect.stringMatching(/reconcile.*another payment rail/i),
+    });
   });
 
   it('rolls the tab back on seller refusal so close() will not double-settle the refused increment', async () => {

@@ -38,6 +38,9 @@ import {
 } from './types';
 
 import { deriveChannelId } from './sessions';
+import { deriveSessionPda } from '@dexterai/vault/session';
+import { sessionRegisterMessage } from './messages';
+import { DEXTER_VAULT_PROGRAM_ID } from './instructions';
 
 // ── Defaults ───────────────────────────────────────────────────────────
 
@@ -105,6 +108,19 @@ interface TabInternals {
    * the resume story: the chain is the durable counter, no local state.
    */
   initialCumulativeAtomic?: bigint;
+  /** Initial V2 sequence ordinal recovered from durable terminal state. */
+  initialSequenceOrdinal?: number;
+  /**
+   * V2-only release fence. A FINAL voucher is an irrevocable bearer claim;
+   * it must not escape this process until an exact, durable reservation has
+   * been established for it. The callback must be idempotent for identical
+   * voucher bytes because a timeout is retried with the same signature.
+   */
+  beforeVoucherRelease?: (input: {
+    voucher: SignedVoucher;
+    incrementAtomic: AtomicAmount;
+    previousCumulativeAtomic: AtomicAmount;
+  }) => Promise<void>;
   /**
    * What `close()` does after posting the final voucher to `/tab/settle`:
    *  - 'revoke' (default, openTab): passkey-sign + submit the on-chain session
@@ -119,6 +135,7 @@ interface TabInternals {
 
 class TabImpl implements Tab {
   readonly channelId: string;
+  readonly voucherVersion: 1 | 2;
   readonly network: TabNetworkId;
   readonly counterparty: string;
 
@@ -129,7 +146,9 @@ class TabImpl implements Tab {
    *  the seller and the chain both reject). */
   private readonly initialCumulativeAtomic: bigint;
   private cumulativeAtomic: bigint;
-  private sequenceNumber: number = 0;
+  /** Ordinal only. V2's FINAL flag exists in the signed payload, not here. */
+  private sequenceNumber: number;
+  private readonly isFinalV2: boolean;
   private closed = false;
   /** Most recent voucher we signed. Held so `close()` can POST it to the
    *  facilitator for on-chain settle without needing the seller to round-trip
@@ -149,6 +168,16 @@ class TabImpl implements Tab {
     this.counterparty = internals.counterparty;
     this.initialCumulativeAtomic = internals.initialCumulativeAtomic ?? 0n;
     this.cumulativeAtomic = this.initialCumulativeAtomic;
+    this.sequenceNumber = internals.initialSequenceOrdinal ?? 0;
+    this.isFinalV2 = isContextBoundV2Session(internals.session);
+    this.voucherVersion = this.isFinalV2 ? 2 : 1;
+    if (this.isFinalV2 !== Boolean(internals.beforeVoucherRelease)) {
+      throw new Error(
+        this.isFinalV2
+          ? 'native_tab_v2_reservation_fence_required'
+          : 'native_tab_v1_must_not_use_v2_reservation_fence',
+      );
+    }
   }
 
   get state(): TabState {
@@ -208,6 +237,35 @@ class TabImpl implements Tab {
 
     const signed = await this.internals.vault.signWithSession(this.internals.session, payload);
 
+    // A chain adapter owns the signature bytes, not the accounting identity.
+    // Refuse an adapter that signs/returns a different voucher than requested;
+    // otherwise local counters and the bearer claim would silently diverge.
+    if (
+      signed.payload.channelId !== payload.channelId
+      || signed.payload.cumulativeAmount !== payload.cumulativeAmount
+      || (
+        this.isFinalV2
+          ? (signed.payload.sequenceNumber & 0x7fff_ffff) !== nextSequence
+            || (signed.payload.sequenceNumber & 0x8000_0000) === 0
+          : signed.payload.sequenceNumber !== nextSequence
+      )
+    ) {
+      throw new Error('tab_signer_returned_unexpected_voucher');
+    }
+
+    // FINAL V2 is deliberately not a speculative/reversible signature. The
+    // durable reservation fence runs after deterministic signing but before
+    // the voucher can be returned to a merchant-facing caller. If it times
+    // out, counters stay unchanged and the next retry reproduces the same
+    // exact bytes for idempotent reconciliation.
+    if (this.internals.beforeVoucherRelease) {
+      await this.internals.beforeVoucherRelease({
+        voucher: signed,
+        incrementAtomic: incrementAtomic,
+        previousCumulativeAtomic: this.cumulativeAtomic.toString(),
+      });
+    }
+
     // Commit: counters, one level of history, and the new last voucher.
     this.previousSignedVoucher = this.lastSignedVoucher;
     this.lastSignedVoucher = signed;
@@ -241,6 +299,11 @@ class TabImpl implements Tab {
    * introduced by rolling back.
    */
   rollbackVoucher(v: SignedVoucher): boolean {
+    // A FINAL V2 voucher is an irrevocable bearer claim and already has a
+    // durable exact reservation. Reusing its ordinal/cumulative or falling
+    // through to another payment rail would create a double-payment path.
+    if (this.isFinalV2) return false;
+
     const last = this.lastSignedVoucher;
     if (
       !last ||
@@ -368,6 +431,16 @@ class TabImpl implements Tab {
       ...settled,
     };
   }
+}
+
+function isContextBoundV2Session(session: SessionKey): boolean {
+  if (session.registration.length !== 188) return false;
+  const view = new DataView(
+    session.registration.buffer,
+    session.registration.byteOffset,
+    session.registration.byteLength,
+  );
+  return (view.getUint32(176, true) & 0x8000_0000) !== 0;
 }
 
 /**
@@ -604,6 +677,14 @@ export async function openTab(options: OpenTabOptions): Promise<Tab> {
   if (options.network !== 'solana:mainnet') {
     throw new UnsupportedNetworkError(options.network);
   }
+  if (
+    options.vault.sessionVoucherVersion === 2
+    && !options.reserveFinalVoucherV2
+  ) {
+    // Fail before authorizeSession creates/replaces any on-chain session. A
+    // V2 FINAL voucher may never be issued without an exact durable fence.
+    throw new Error('native_tab_v2_reservation_fence_required');
+  }
 
   // 2. Derive the channel id from (vault, seller, nonce). The buyer
   //    decides nonce; we use a random one here. A buyer who wants
@@ -659,15 +740,80 @@ export async function openTab(options: OpenTabOptions): Promise<Tab> {
     onLiveSession: options.onLiveSession,
   });
 
-  // Arm drain-protection on the facilitator. Fail closed: if the facilitator
-  // cannot confirm protection, we throw rather than return an unprotected tab.
-  await armTabOpen(
-    options.facilitatorUrl ?? DEFAULT_FACILITATOR_URL,
-    options.vault.swigAddress,
-    totalCapAtomic,
-    options.network,
-    counterparty,
-  );
+  const isV2 = isContextBoundV2Session(session);
+  if (!isV2) {
+    // Historical V1 recovery keeps the old total-cap arming contract.
+    await armTabOpen(
+      options.facilitatorUrl ?? DEFAULT_FACILITATOR_URL,
+      options.vault.swigAddress,
+      totalCapAtomic,
+      options.network,
+      counterparty,
+    );
+  }
+
+  let beforeVoucherRelease: TabInternals['beforeVoucherRelease'];
+  if (isV2) {
+    if (!options.reserveFinalVoucherV2) {
+      throw new Error('native_tab_v2_reservation_fence_required');
+    }
+    const registration = session.registration;
+    const view = new DataView(
+      registration.buffer,
+      registration.byteOffset,
+      registration.byteLength,
+    );
+    const programId = new PublicKey(registration.subarray(32, 64));
+    const registrationVault = new PublicKey(registration.subarray(64, 96));
+    const registrationSeller = new PublicKey(registration.subarray(144, 176));
+    const sessionNonce = view.getUint32(176, true);
+    const maxRevolvingCapacity = view.getBigUint64(180, true);
+    const expectedRegistration = sessionRegisterMessage({
+      programId: DEXTER_VAULT_PROGRAM_ID,
+      vaultPda: vaultPdaKey,
+      sessionPubkey: session.publicKey,
+      maxAmount: totalCapAtomic,
+      expiresAt: BigInt(expiresAtUnix),
+      allowedCounterparty: new PublicKey(counterparty),
+      nonce: sessionNonce,
+      maxRevolvingCapacity: BigInt(scope.revolvingCapacityAtomic!),
+    });
+    if (
+      !programId.equals(DEXTER_VAULT_PROGRAM_ID)
+      || !registrationVault.equals(vaultPdaKey)
+      || !registrationSeller.equals(new PublicKey(counterparty))
+      || maxRevolvingCapacity !== BigInt(scope.revolvingCapacityAtomic!)
+      || !Buffer.from(registration).equals(Buffer.from(expectedRegistration))
+    ) {
+      throw new Error('native_tab_v2_registration_identity_mismatch');
+    }
+    const [sessionPda] = deriveSessionPda(
+      registrationVault,
+      registrationSeller,
+      programId,
+    );
+    beforeVoucherRelease = async ({
+      voucher,
+      incrementAtomic,
+      previousCumulativeAtomic,
+    }) => {
+      const receipt = await options.reserveFinalVoucherV2!({
+        network: options.network,
+        buyerSwigAddress: options.vault.swigAddress,
+        vaultPda: registrationVault.toBase58(),
+        sessionPda: sessionPda.toBase58(),
+        seller: registrationSeller.toBase58(),
+        channelId: channelIdHex,
+        sessionNonce,
+        reservationAmountAtomic: incrementAtomic,
+        previousCumulativeAtomic,
+        voucher,
+      });
+      if (!receipt || receipt.armed !== true) {
+        throw new Error('native_tab_v2_reservation_not_confirmed');
+      }
+    };
+  }
 
   return new TabImpl({
     vault: options.vault,
@@ -681,6 +827,7 @@ export async function openTab(options: OpenTabOptions): Promise<Tab> {
     totalCapAtomic,
     expiresAtUnix,
     facilitatorUrl: options.facilitatorUrl ?? DEFAULT_FACILITATOR_URL,
+    beforeVoucherRelease,
   });
 }
 

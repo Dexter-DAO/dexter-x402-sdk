@@ -50,11 +50,14 @@ export interface VaultAdapter {
   swigAddress: string;
   /** Program/contract account holding the OTS gate state. */
   vaultPda: string;
+  /** New Solana sessions are context-bound V2. Legacy/custom adapters may
+   * omit this and retain the historical V1 runtime contract. */
+  readonly sessionVoucherVersion?: 1 | 2;
 
   /**
    * Use the ROOT signer (passkey) to authorize a fresh session key. This is
-   * the only call that prompts the user (twice when atomically replacing a
-   * live session — one revoke ceremony + one register ceremony). Returns a
+   * the only call that prompts the user. V7 live replacement binds retirement
+   * and replacement into one ceremony. Returns a
    * session that can be passed to `signWithSession` freely until the scope's
    * cap or expiry is reached.
    *
@@ -85,6 +88,28 @@ export interface VaultAdapter {
   signCloseTab(session: SessionKey, channelId: string, cumulativeAmount: AtomicAmount): Promise<Uint8Array>;
 }
 
+/** Exact durable release fence for a buyer-signed FINAL V2 voucher. */
+export interface FinalVoucherV2ReservationInput {
+  network: TabNetworkId;
+  buyerSwigAddress: string;
+  vaultPda: string;
+  sessionPda: string;
+  seller: string;
+  channelId: string;
+  sessionNonce: number;
+  reservationAmountAtomic: AtomicAmount;
+  previousCumulativeAtomic: AtomicAmount;
+  voucher: SignedVoucher;
+}
+
+export interface FinalVoucherV2ReservationReceipt {
+  armed: true;
+}
+
+export type ReserveFinalVoucherV2 = (
+  input: FinalVoucherV2ReservationInput,
+) => Promise<FinalVoucherV2ReservationReceipt>;
+
 /**
  * Live-session policy for `authorizeSession` / `openTab` (K-T4e).
  *
@@ -99,8 +124,7 @@ export interface VaultAdapter {
  *    (`tab.close()` — or POST its last signed voucher to `/tab/settle`) and
  *    retries, or acknowledges the replace explicitly.
  *  - `'replace'`: compose the ATOMIC same-transaction
- *    [secp(revoke), revoke, secp(register), register] so the buyer is never
- *    left sessionless mid-flow. Costs a second passkey ceremony. Value
+ *    [secp(replace), replace] so the buyer is never left sessionless. Value
  *    already settled or crystallized into LockedClaims survives the replace;
  *    anything signed beyond the frontier is voided.
  */
@@ -142,6 +166,16 @@ export interface TabState {
 export interface Tab {
   /** Deterministic channel id derived from buyer/seller/scope/salt. */
   readonly channelId: string;
+  /**
+   * Voucher contract used by this live handle. V2 FINAL vouchers are fenced
+   * by a durable reservation and therefore may never fall through to another
+   * payment rail after an indeterminate signing/reservation error.
+   *
+   * Optional only for source compatibility with third-party Tab
+   * implementations built before the versioned contract. Every Tab returned
+   * by this package sets it explicitly.
+   */
+  readonly voucherVersion?: 1 | 2;
   /** Which network the underlying vault lives on. */
   readonly network: TabNetworkId;
   /**
@@ -248,6 +282,12 @@ export interface OpenTabOptions {
    * See {@link AuthorizeSessionOptions}.
    */
   onLiveSession?: 'error' | 'replace';
+  /**
+   * Required by V2-capable adapters. The callback must durably persist and
+   * establish the exact FINAL voucher reservation before resolving. It must
+   * be idempotent for identical voucher bytes; a timeout is retried exactly.
+   */
+  reserveFinalVoucherV2?: ReserveFinalVoucherV2;
 }
 
 /**

@@ -46,7 +46,12 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { bytesToHex } from '@noble/hashes/utils';
 
 import type { ApprovedSpendGrantParams } from '@dexterai/vault/grant';
-import { fetchSessionAccount, isSessionLive } from '@dexterai/vault/session';
+import {
+  deriveSessionPda,
+  fetchSessionAccount,
+  isSessionLive,
+} from '@dexterai/vault/session';
+import { voucherV2SequenceOrdinal } from '@dexterai/vault/messages';
 import { readVaultFull } from '@dexterai/vault/reader';
 
 import type {
@@ -55,11 +60,13 @@ import type {
   AtomicAmount,
   SessionScope,
   VaultAdapter,
+  ReserveFinalVoucherV2,
 } from './types';
 import { sessionRegisterMessage } from './messages';
 import { DEXTER_VAULT_PROGRAM_ID } from './instructions';
 import {
   makeSessionKey,
+  signContextBoundFinalVoucherV2,
   signVoucher,
   parseAtomic,
   deriveChannelId,
@@ -133,6 +140,15 @@ export interface TabFromGrantOptions {
   facilitatorUrl?: string;
   /** Vault program id override (test/devnet). Default: DEXTER_VAULT_PROGRAM_ID. */
   programId?: PublicKey;
+  /**
+   * Required for every context-bound V2 grant. Called with the exact FINAL
+   * voucher before it can be returned to merchant-facing code. The
+   * implementation must durably persist and establish that voucher's exact
+   * on-chain reservation, be idempotent for identical bytes, and resolve only
+   * after authoritative confirmation. Historical low-bit V1 recovery ignores
+   * this seam and keeps the old facilitator arming flow.
+   */
+  reserveFinalVoucherV2?: ReserveFinalVoucherV2;
 }
 
 const NETWORK: TabNetworkId = 'solana:mainnet';
@@ -154,6 +170,13 @@ export async function tabFromGrant(options: TabFromGrantOptions): Promise<Tab> {
   }
   const totalCapAtomic = parseAtomic(options.params.maxAmountAtomic);
   const maxRevolvingCapacity = parseAtomic(options.params.maxRevolvingCapacityAtomic);
+  const isV2 = (options.params.nonce & 0x8000_0000) !== 0;
+  if (isV2 && !options.reserveFinalVoucherV2) {
+    throw new Error(
+      'native_tab_v2_reservation_fence_required: provide reserveFinalVoucherV2; ' +
+      'a FINAL voucher may not be released before its exact durable reservation',
+    );
+  }
 
   // ── 1. Key ↔ params self-check, BEFORE any I/O ────────────────────────
   // Catches handed-across-process key mixups. Two layers:
@@ -228,6 +251,8 @@ export async function tabFromGrant(options: TabFromGrantOptions): Promise<Tab> {
   // after a re-register that reused the session pubkey), vouchers signed here
   // could pass the seller and then die at settle. Refuse to straddle.
   if (
+    state.vault !== vaultPdaKey.toBase58() ||
+    state.session.allowedCounterparty !== counterpartyKey.toBase58() ||
     state.session.maxAmount !== totalCapAtomic ||
     state.session.expiresAt !== options.params.expiresAtUnix ||
     state.session.nonce !== options.params.nonce ||
@@ -240,6 +265,13 @@ export async function tabFromGrant(options: TabFromGrantOptions): Promise<Tab> {
       `params: ${options.params.maxAmountAtomic}/${options.params.expiresAtUnix}/` +
       `${options.params.nonce}/${options.params.maxRevolvingCapacityAtomic}) — ` +
       'refresh the grant hand-off',
+    );
+  }
+  if (isV2 && state.session.currentOutstanding !== 0n) {
+    throw new Error(
+      'native_tab_v2_reservation_pending: the session already has an exact ' +
+      `outstanding reservation of ${state.session.currentOutstanding}; recover ` +
+      'that immutable attempt before issuing another FINAL voucher',
     );
   }
 
@@ -268,7 +300,7 @@ export async function tabFromGrant(options: TabFromGrantOptions): Promise<Tab> {
   });
   const channelIdHex = bytesToHex(channelIdBytes);
 
-  // ── 5. Arm drain protection — fail-closed, same as openTab ───────────
+  // ── 5. Resolve buyer Swig and select the versioned reservation path ───
   let swigAddress = options.swigAddress;
   if (!swigAddress) {
     const vaultFull = await readVaultFull(connection, vaultPdaKey);
@@ -280,7 +312,19 @@ export async function tabFromGrant(options: TabFromGrantOptions): Promise<Tab> {
     }
     swigAddress = vaultFull.swigAddress;
   }
-  await armTabOpen(facilitatorUrl, swigAddress, totalCapAtomic, NETWORK, options.params.counterparty);
+  // Historical V1 is recovery-only and retains the old total-cap arming call.
+  // V2 cannot arm here: its on-chain reservation is one exact purchase and is
+  // cryptographically bound to the FINAL voucher that does not exist until
+  // signNextVoucher. TabImpl invokes the required release fence at that point.
+  if (!isV2) {
+    await armTabOpen(
+      facilitatorUrl,
+      swigAddress,
+      totalCapAtomic,
+      NETWORK,
+      options.params.counterparty,
+    );
+  }
 
   // ── 6. Assemble the Tab ───────────────────────────────────────────────
   const scope: SessionScope = {
@@ -300,6 +344,11 @@ export async function tabFromGrant(options: TabFromGrantOptions): Promise<Tab> {
   // passkey-locked verbs THROW loudly — nothing in this construction path
   // calls them ('settle-only' close never invokes signCloseTab), and any
   // future caller that does must hear "no passkey here", not a silent no-op.
+  const [sessionPda] = deriveSessionPda(
+    vaultPdaKey,
+    counterpartyKey,
+    programId,
+  );
   const vault: VaultAdapter = {
     network: NETWORK,
     swigAddress,
@@ -310,7 +359,38 @@ export async function tabFromGrant(options: TabFromGrantOptions): Promise<Tab> {
         'session birth requires the wallet owner\'s passkey ceremony',
       );
     },
-    signWithSession: async (s, payload) => signVoucher(s, payload, channelIdBytes),
+    signWithSession: async (s, payload) => {
+      if (!isV2) return signVoucher(s, payload, channelIdBytes);
+      const signed = signContextBoundFinalVoucherV2({
+        programId: programId.toBase58(),
+        vaultPda: vaultPdaKey.toBase58(),
+        sessionPda: sessionPda.toBase58(),
+        seller: counterpartyKey.toBase58(),
+        sessionNonce: options.params.nonce,
+        channelId: payload.channelId,
+        cumulativeAmountAtomic: payload.cumulativeAmount,
+        sequenceOrdinal: payload.sequenceNumber,
+        sessionPrivateKey: s.privateKey,
+        sessionPublicKey: s.publicKey,
+        sessionRegistration: s.registration,
+      });
+      return {
+        payload: {
+          channelId: signed.channelId,
+          cumulativeAmount: signed.cumulativeAmount,
+          sequenceNumber: signed.sequenceNumber,
+        },
+        sessionPublicKey: Uint8Array.from(
+          Buffer.from(signed.sessionPublicKey, 'hex'),
+        ),
+        sessionSignature: Uint8Array.from(
+          Buffer.from(signed.sessionSignature, 'hex'),
+        ),
+        sessionRegistration: Uint8Array.from(
+          Buffer.from(signed.sessionRegistration, 'hex'),
+        ),
+      };
+    },
     signOpenTab: async (s) => s.registration,
     signCloseTab: async () => {
       throw new Error(
@@ -333,6 +413,29 @@ export async function tabFromGrant(options: TabFromGrantOptions): Promise<Tab> {
     expiresAtUnix: options.params.expiresAtUnix,
     facilitatorUrl,
     initialCumulativeAtomic: frontier,
+    initialSequenceOrdinal:
+      isV2 && state.session.lastLockedSequence !== 0
+        ? voucherV2SequenceOrdinal(state.session.lastLockedSequence)
+        : 0,
+    beforeVoucherRelease: isV2
+      ? async ({ voucher, incrementAtomic, previousCumulativeAtomic }) => {
+          const receipt = await options.reserveFinalVoucherV2!({
+            network: NETWORK,
+            buyerSwigAddress: swigAddress,
+            vaultPda: vaultPdaKey.toBase58(),
+            sessionPda: sessionPda.toBase58(),
+            seller: counterpartyKey.toBase58(),
+            channelId: channelIdHex,
+            sessionNonce: options.params.nonce,
+            reservationAmountAtomic: incrementAtomic,
+            previousCumulativeAtomic,
+            voucher,
+          });
+          if (!receipt || receipt.armed !== true) {
+            throw new Error('native_tab_v2_reservation_not_confirmed');
+          }
+        }
+      : undefined,
     closeMode: 'settle-only',
   });
 }

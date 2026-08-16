@@ -2,7 +2,7 @@
  * Session-key lifecycle: generation, voucher signing, in-memory hygiene.
  *
  * A session key is an ed25519 keypair generated in process memory at tab
- * open. The buyer's passkey signs a 180-byte registration message endorsing
+ * open. The buyer's passkey signs a 188-byte V2 registration message endorsing
  * the session pubkey within a scope (counterparty, max amount, expiry).
  * From that point until tab close, the session key signs every voucher; the
  * passkey is never invoked again for the lifetime of the tab.
@@ -22,8 +22,10 @@ import { PublicKey } from '@solana/web3.js';
 import {
   contextBoundVoucherV2Message,
   finalVoucherV2Sequence,
+  sessionRegisterMessage,
   sessionVoucherV2AuthorizationNonce,
 } from '@dexterai/vault/messages';
+import { deriveSessionPda } from '@dexterai/vault/session';
 import type {
   SessionKey,
   SessionScope,
@@ -147,6 +149,8 @@ export interface SignContextBoundFinalVoucherV2Input {
   sessionPrivateKey: Uint8Array;
   sessionPublicKey: Uint8Array;
   sessionRegistration: Uint8Array;
+  /** Testable freshness seam. Defaults to the current Unix second. */
+  nowUnixSeconds?: number;
 }
 
 export interface SignContextBoundFinalVoucherV2Result {
@@ -162,17 +166,11 @@ const HEX_32 = /^[0-9a-f]{64}$/;
 const U64_MAX = (1n << 64n) - 1n;
 
 function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes)
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('');
+  return Buffer.from(bytes).toString('hex');
 }
 
 function hexToBytes(hex: string): Uint8Array {
-  const output = new Uint8Array(hex.length / 2);
-  for (let index = 0; index < output.length; index += 1) {
-    output[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
-  }
-  return output;
+  return Uint8Array.from(Buffer.from(hex, 'hex'));
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
@@ -187,11 +185,10 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
 /**
  * Canonical hosted-purchase signer for Native Tab V2.
  *
- * Every output is a FINAL, context-bound obligation. The function validates
- * the complete 188-byte registration against the supplied on-chain context
- * and validates the ed25519 secret/public pair before signing. It does not
- * open or settle the reservation; the durable purchasing gateway owns those
- * transaction lifecycles.
+ * Every output is a FINAL, context-bound obligation. The function owns bytes
+ * only: it validates the complete registration, derived session PDA, expiry,
+ * scope, and ed25519 keypair before signing. The caller must durably establish
+ * the exact reservation before releasing the resulting voucher.
  */
 export function signContextBoundFinalVoucherV2(
   input: SignContextBoundFinalVoucherV2Input,
@@ -214,37 +211,72 @@ export function signContextBoundFinalVoucherV2(
   const vaultPda = new PublicKey(input.vaultPda);
   const sessionPda = new PublicKey(input.sessionPda);
   const seller = new PublicKey(input.seller);
+  const [expectedSessionPda] = deriveSessionPda(
+    vaultPda,
+    seller,
+    programId,
+  );
+  if (!sessionPda.equals(expectedSessionPda)) {
+    throw new Error('native_tab_v2_session_pda_mismatch');
+  }
+
   const registration = input.sessionRegistration;
   const view = new DataView(
     registration.buffer,
     registration.byteOffset,
     registration.byteLength,
   );
-  const domain = new Uint8Array(32);
-  domain.set(new TextEncoder().encode('OTS_SESSION_REGISTER_V2'));
-  const exactRegistration =
-    sameBytes(registration.subarray(0, 32), domain)
-    && sameBytes(registration.subarray(32, 64), programId.toBytes())
-    && sameBytes(registration.subarray(64, 96), vaultPda.toBytes())
-    && sameBytes(registration.subarray(96, 128), input.sessionPublicKey)
-    && sameBytes(registration.subarray(144, 176), seller.toBytes())
-    && view.getUint32(176, true) === input.sessionNonce
-    && cumulativeAmount <= view.getBigUint64(128, true);
+  const maxAmount = view.getBigUint64(128, true);
+  const expiresAt = view.getBigInt64(136, true);
+  const maxRevolvingCapacity = view.getBigUint64(180, true);
+  const nowUnixSeconds = input.nowUnixSeconds
+    ?? Math.floor(Date.now() / 1_000);
+  if (!Number.isSafeInteger(nowUnixSeconds) || nowUnixSeconds < 0) {
+    throw new Error('native_tab_v2_signing_time_invalid');
+  }
+  const exactRegistration = sameBytes(
+    registration,
+    sessionRegisterMessage({
+      programId,
+      vaultPda,
+      sessionPubkey: input.sessionPublicKey,
+      maxAmount,
+      expiresAt,
+      allowedCounterparty: seller,
+      nonce: input.sessionNonce,
+      maxRevolvingCapacity,
+    }),
+  );
   if (!exactRegistration) {
     throw new Error('native_tab_v2_registration_identity_mismatch');
+  }
+  if (
+    maxAmount === 0n
+    || maxRevolvingCapacity === 0n
+    || maxRevolvingCapacity > maxAmount
+    || expiresAt <= BigInt(nowUnixSeconds)
+    || expiresAt > 0x7fff_ffff_ffff_ffffn - 604_800n
+    || cumulativeAmount > maxAmount
+  ) {
+    throw new Error('native_tab_v2_registration_semantics_invalid');
   }
   sessionVoucherV2AuthorizationNonce(input.sessionNonce);
 
   const derived = nacl.sign.keyPair.fromSeed(
     input.sessionPrivateKey.subarray(0, 32),
   );
-  if (
-    !sameBytes(derived.publicKey, input.sessionPublicKey)
-    || !sameBytes(
-      input.sessionPrivateKey.subarray(32, 64),
-      input.sessionPublicKey,
-    )
-  ) {
+  let keyMatches = false;
+  try {
+    keyMatches =
+      sameBytes(derived.publicKey, input.sessionPublicKey)
+      && sameBytes(
+        input.sessionPrivateKey.subarray(32, 64),
+        input.sessionPublicKey,
+      );
+  } finally {
+    derived.secretKey.fill(0);
+  }
+  if (!keyMatches) {
     throw new Error('native_tab_v2_session_key_mismatch');
   }
 

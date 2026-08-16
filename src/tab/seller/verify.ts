@@ -4,7 +4,7 @@
  * Two-layer verification:
  *
  *   1. parseRegistration(registrationBytes)
- *      Parses the 180-byte registration message into a scope. Synchronous,
+ *      Parses the 188-byte V2 registration message into a scope. Synchronous,
  *      no I/O. This gives the seller everything they need to enforce limits
  *      LOCALLY (cap, expiry, counterparty) and to know which vault to read
  *      for passkey verification.
@@ -167,6 +167,7 @@ export class OnChainVerificationError extends Error {
       | 'vault_not_found'
       | 'session_not_active'
       | 'session_pubkey_mismatch'
+      | 'registration_state_mismatch'
       | 'wrong_program',
     detail?: string,
   ) {
@@ -210,6 +211,7 @@ export async function verifyRegistrationOnChain(
     connection,
     registration.vaultPda,
     registration.allowedCounterparty,
+    registration.programId,
   );
 
   if (!state || state.version === 0) {
@@ -230,6 +232,41 @@ export async function verifyRegistrationOnChain(
     throw new OnChainVerificationError(
       'session_pubkey_mismatch',
       `on-chain ${bytesToHex(state.session.sessionPubkey)} != registration ${bytesToHex(registration.sessionPubkey)}`,
+    );
+  }
+
+  // The SessionAccount is the passkey-verified source of truth for EVERY
+  // immutable field in the 188-byte registration, not merely the session
+  // public key.  A caller can freely edit the registration bytes carried in a
+  // voucher; trusting a forged cap/expiry/nonce/revolving limit here lets the
+  // seller deliver under authority the chain never granted, even though the
+  // eventual terminal transaction rejects it.  Exact-compare the complete
+  // immutable witness before the middleware caches this registration or
+  // releases seller output.  Mutable meters (spent/outstanding/crystallized/
+  // lastLockedSequence) are intentionally excluded because they advance after
+  // registration.
+  const [expectedSessionPda] = deriveSessionPda(
+    registration.vaultPda,
+    registration.allowedCounterparty,
+    registration.programId,
+  );
+  const expiryIsExact =
+    Number.isSafeInteger(state.session.expiresAt)
+    && BigInt(state.session.expiresAt) === registration.expiresAt;
+  const immutableFieldsMatch =
+    state.address === expectedSessionPda.toBase58()
+    && state.vault === registration.vaultPda.toBase58()
+    && state.session.maxAmount === registration.maxAmount
+    && expiryIsExact
+    && state.session.allowedCounterparty
+      === registration.allowedCounterparty.toBase58()
+    && state.session.nonce === registration.nonce
+    && state.session.maxRevolvingCapacity
+      === registration.maxRevolvingCapacity;
+  if (!immutableFieldsMatch) {
+    throw new OnChainVerificationError(
+      'registration_state_mismatch',
+      '188-byte registration does not exactly match the active SessionAccount immutable fields',
     );
   }
 

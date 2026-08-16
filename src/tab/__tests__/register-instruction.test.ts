@@ -13,7 +13,12 @@
 import { describe, test, expect } from 'vitest';
 import { PublicKey, SystemProgram } from '@solana/web3.js';
 import { getAssociatedTokenAddressSync } from '@solana/spl-token';
+import { derivePasskeyAuthorizationPda } from '@dexterai/vault';
 import { deriveSessionPda } from '@dexterai/vault/session';
+import {
+  deriveGraphConfigPda,
+  deriveSwigVaultBindingPda,
+} from '@dexterai/vault/credit';
 
 import { buildAdapterRegisterInstruction } from '../adapters/solana/index';
 import {
@@ -57,15 +62,15 @@ const buildIx = () =>
   });
 
 describe('buildAdapterRegisterInstruction (real vault builder)', () => {
-  test('builds against the vault program with the V6 8-account list', () => {
+  test('builds against the vault program with the Vault 0.42.2 11-account list', () => {
     const ix = buildIx();
     expect(ix.programId.equals(DEXTER_VAULT_PROGRAM_ID)).toBe(true);
     // CANARY: if the vault program's register_session_key account list
     // changes again, this count (and the order checks below) must be
-    // revisited along with the adapter's arg construction. V6 keeps the V5
-    // [0..4] prefix and appends sessionPda + payer + system program (8 total
-    // with zero sibling sessions).
-    expect(ix.keys).toHaveLength(8);
+    // revisited along with the adapter's arg construction. Vault 0.42.2 binds
+    // the permanent passkey guard, Swig/Vault identity, and graph config in
+    // addition to the V6 session accounts (11 total with zero siblings).
+    expect(ix.keys).toHaveLength(11);
   });
 
   test('account order matches the on-chain Anchor struct', () => {
@@ -80,26 +85,34 @@ describe('buildAdapterRegisterInstruction (real vault builder)', () => {
     // [0] vault (writable)
     expect(ix.keys[0].pubkey.equals(VAULT_PDA)).toBe(true);
     expect(ix.keys[0].isWritable).toBe(true);
-    // [1] vault_usdc_ata — swig WALLET's USDC ATA (overcommit gate read)
-    expect(ix.keys[1].pubkey.equals(expectedAta)).toBe(true);
-    expect(ix.keys[1].isWritable).toBe(false);
-    // [2] swig — the STATE account, passed through verbatim
-    expect(ix.keys[2].pubkey.equals(SWIG)).toBe(true);
-    // [3] swig_wallet_address — derived by the builder from the state account
-    expect(ix.keys[3].pubkey.equals(swigWallet)).toBe(true);
-    // [4] instructions sysvar
-    expect(ix.keys[4].pubkey.equals(INSTRUCTIONS_SYSVAR_ID)).toBe(true);
-    // ── V6 additions ──
-    // [5] session PDA ([b"session", vault, counterparty]) — init_if_needed, writable
+    // [1] permanent per-vault passkey authorization guard
+    expect(ix.keys[1].pubkey.equals(derivePasskeyAuthorizationPda(VAULT_PDA)[0])).toBe(true);
+    expect(ix.keys[1].isWritable).toBe(true);
+    // [2] vault_usdc_ata — swig WALLET's USDC ATA (overcommit gate read)
+    expect(ix.keys[2].pubkey.equals(expectedAta)).toBe(true);
+    expect(ix.keys[2].isWritable).toBe(false);
+    // [3] swig — the STATE account, passed through verbatim
+    expect(ix.keys[3].pubkey.equals(SWIG)).toBe(true);
+    // [4] swig_wallet_address — derived by the builder from the state account
+    expect(ix.keys[4].pubkey.equals(swigWallet)).toBe(true);
+    // [5] instructions sysvar
+    expect(ix.keys[5].pubkey.equals(INSTRUCTIONS_SYSVAR_ID)).toBe(true);
+    // [6] session PDA ([b"session", vault, counterparty]) — init_if_needed, writable
     const [sessionPda] = deriveSessionPda(VAULT_PDA, COUNTERPARTY);
-    expect(ix.keys[5].pubkey.equals(sessionPda)).toBe(true);
-    expect(ix.keys[5].isWritable).toBe(true);
-    // [6] payer — rent for the session PDA; signer + writable
-    expect(ix.keys[6].pubkey.equals(PAYER)).toBe(true);
-    expect(ix.keys[6].isSigner).toBe(true);
+    expect(ix.keys[6].pubkey.equals(sessionPda)).toBe(true);
     expect(ix.keys[6].isWritable).toBe(true);
-    // [7] system program (for init_if_needed)
-    expect(ix.keys[7].pubkey.equals(SystemProgram.programId)).toBe(true);
+    // [7] payer — rent for the session PDA; signer + writable
+    expect(ix.keys[7].pubkey.equals(PAYER)).toBe(true);
+    expect(ix.keys[7].isSigner).toBe(true);
+    expect(ix.keys[7].isWritable).toBe(true);
+    // [8] system program (for init_if_needed)
+    expect(ix.keys[8].pubkey.equals(SystemProgram.programId)).toBe(true);
+    // [9] exact Swig -> Vault ownership binding
+    expect(ix.keys[9].pubkey.equals(deriveSwigVaultBindingPda(SWIG)[0])).toBe(true);
+    expect(ix.keys[9].isWritable).toBe(false);
+    // [10] global graph config used by the V7 credit gate
+    expect(ix.keys[10].pubkey.equals(deriveGraphConfigPda()[0])).toBe(true);
+    expect(ix.keys[10].isWritable).toBe(false);
   });
 
   test('ATA owner is the derived wallet PDA, not the swig state account', () => {
@@ -111,6 +124,6 @@ describe('buildAdapterRegisterInstruction (real vault builder)', () => {
       true,
     );
     const ix = buildIx();
-    expect(ix.keys[1].pubkey.equals(wrongAta)).toBe(false);
+    expect(ix.keys[2].pubkey.equals(wrongAta)).toBe(false);
   });
 });

@@ -12,8 +12,11 @@
  *     IFF the voucher being rolled back is exactly the most recent one.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { PublicKey } from '@solana/web3.js';
 import { openTab } from '../tab';
 import type { Tab, VaultAdapter, SignedVoucher, VoucherPayload } from '../types';
+import { sessionRegisterMessage } from '@dexterai/vault/messages';
+import { DEXTER_VAULT_PROGRAM_ID } from '../instructions';
 
 // Any valid base58 pubkeys — never hit on chain in these tests.
 const SELLER_PUBKEY = 'DhP2eR7XGwsCFUxiYxkLBpzkmuyU1Cn9CGUVNkpBu1g7';
@@ -65,6 +68,47 @@ async function makeTab(adapter: VaultAdapter): Promise<TabInternalsView> {
   return tab as TabInternalsView;
 }
 
+function makeFakeV2Adapter() {
+  const sessionPublicKey = new Uint8Array(32).fill(7);
+  const authorizeSession = vi.fn(async (scope: Parameters<VaultAdapter['authorizeSession']>[0]) => {
+    const registration = sessionRegisterMessage({
+      programId: DEXTER_VAULT_PROGRAM_ID,
+      vaultPda: new PublicKey(VAULT_PUBKEY),
+      sessionPubkey: sessionPublicKey,
+      maxAmount: BigInt(scope.maxAmountAtomic),
+      expiresAt: BigInt(scope.expiresAtUnix),
+      allowedCounterparty: new PublicKey(scope.allowedCounterparty),
+      nonce: 0x8000_0007,
+      maxRevolvingCapacity: BigInt(scope.revolvingCapacityAtomic!),
+    });
+    return {
+      publicKey: sessionPublicKey,
+      privateKey: new Uint8Array(64).fill(9),
+      scope,
+      registration,
+    };
+  });
+  const adapter: VaultAdapter = {
+    network: 'solana:mainnet',
+    sessionVoucherVersion: 2,
+    swigAddress: VAULT_PUBKEY,
+    vaultPda: VAULT_PUBKEY,
+    authorizeSession,
+    signWithSession: async (session, payload) => ({
+      payload: {
+        ...payload,
+        sequenceNumber: (payload.sequenceNumber | 0x8000_0000) >>> 0,
+      },
+      sessionPublicKey: session.publicKey,
+      sessionRegistration: session.registration,
+      sessionSignature: new Uint8Array(64).fill(3),
+    }),
+    signOpenTab: async () => new Uint8Array(0),
+    signCloseTab: async () => new Uint8Array(0),
+  };
+  return { adapter, authorizeSession };
+}
+
 // armTabOpen is called by openTab after authorizeSession. Stub fetch to return
 // a successful /tab/open arm response so tests that don't care about fetch
 // (no settle, no external calls) still run cleanly.
@@ -79,6 +123,74 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('Tab.signNextVoucher — commit only after signing', () => {
+  it('requires the V2 reservation fence before creating an on-chain session', async () => {
+    const { adapter, authorizeSession } = makeFakeV2Adapter();
+    await expect(makeTab(adapter)).rejects.toThrow(
+      /native_tab_v2_reservation_fence_required/,
+    );
+    expect(authorizeSession).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('releases a V2 FINAL voucher only after the exact reservation callback', async () => {
+    const { adapter } = makeFakeV2Adapter();
+    const reserveFinalVoucherV2 = vi.fn(async () => ({ armed: true as const }));
+    const tab = await openTab({
+      vault: adapter,
+      network: 'solana:mainnet',
+      seller: SELLER_PUBKEY,
+      perUnitCap: '0.005',
+      totalCap: '5',
+      reserveFinalVoucherV2,
+    }) as TabInternalsView;
+    expect(fetch).not.toHaveBeenCalled();
+
+    const voucher = await tab.signNextVoucher('5000');
+    expect(voucher.payload.sequenceNumber).toBe(0x8000_0001);
+    expect(reserveFinalVoucherV2).toHaveBeenCalledWith(expect.objectContaining({
+      buyerSwigAddress: VAULT_PUBKEY,
+      vaultPda: VAULT_PUBKEY,
+      seller: SELLER_PUBKEY,
+      sessionNonce: 0x8000_0007,
+      reservationAmountAtomic: '5000',
+      previousCumulativeAtomic: '0',
+      voucher,
+    }));
+    expect(tab.rollbackVoucher(voucher)).toBe(false);
+  });
+
+  it('rejects a V2 adapter registration that substitutes the buyer vault identity', async () => {
+    const { adapter } = makeFakeV2Adapter();
+    adapter.authorizeSession = async scope => {
+      const sessionPublicKey = new Uint8Array(32).fill(7);
+      return {
+        publicKey: sessionPublicKey,
+        privateKey: new Uint8Array(64).fill(9),
+        scope,
+        registration: sessionRegisterMessage({
+          programId: DEXTER_VAULT_PROGRAM_ID,
+          vaultPda: new PublicKey(SELLER_PUBKEY),
+          sessionPubkey: sessionPublicKey,
+          maxAmount: BigInt(scope.maxAmountAtomic),
+          expiresAt: BigInt(scope.expiresAtUnix),
+          allowedCounterparty: new PublicKey(scope.allowedCounterparty),
+          nonce: 0x8000_0007,
+          maxRevolvingCapacity: BigInt(scope.revolvingCapacityAtomic!),
+        }),
+      };
+    };
+
+    await expect(openTab({
+      vault: adapter,
+      network: 'solana:mainnet',
+      seller: SELLER_PUBKEY,
+      perUnitCap: '0.005',
+      totalCap: '5',
+      reserveFinalVoucherV2: async () => ({ armed: true }),
+    })).rejects.toThrow('native_tab_v2_registration_identity_mismatch');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('leaves the counter unchanged when signWithSession rejects, and the next attempt reproduces the same voucher', async () => {
     const sign = vi
       .fn<VaultAdapter['signWithSession']>()

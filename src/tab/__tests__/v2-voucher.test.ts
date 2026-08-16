@@ -78,11 +78,17 @@ describe('Native Tab V2 x402 signer and seller verifier', () => {
   });
 
   it('rejects context drift and the legacy signer on a V2 registration', () => {
+    const otherVault = Keypair.generate().publicKey;
+    const [otherSessionPda] = deriveSessionPda(
+      otherVault,
+      SELLER,
+      DEXTER_VAULT_PROGRAM_ID,
+    );
     expect(() =>
       signContextBoundFinalVoucherV2({
         programId: DEXTER_VAULT_PROGRAM_ID.toBase58(),
-        vaultPda: Keypair.generate().publicKey.toBase58(),
-        sessionPda: SESSION_PDA.toBase58(),
+        vaultPda: otherVault.toBase58(),
+        sessionPda: otherSessionPda.toBase58(),
         seller: SELLER.toBase58(),
         sessionNonce: NONCE,
         channelId: CHANNEL,

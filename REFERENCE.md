@@ -90,7 +90,7 @@ Builds the `vault` adapter the buyer calls drive through.
 | `passkeySigner` | `PasskeySignerWithPublicKey` | A `signOperation(operationMessage)` signer (see below) |
 | `feePayer` | `Signer` | Lamport fee payer |
 
-The `passkeySigner` is vault 0.19's canonical shape: `{ credentialId, publicKey, signOperation(operationMessage) }`. The signer hashes the operation message internally (`challenge = sha256(op)`, the on-chain `webauthn.rs` law) and the adapter owns only the precompile assembly.
+The `passkeySigner` uses Vault 0.42.2's canonical shape: `{ credentialId, publicKey, signOperation(operationMessage) }`. The adapter passes the raw operation bytes. The signer obtains the canonical V7 200-byte challenge binding the fixed program, exact vault, current monotonic authorization nonce, operation hash, and fresh ceremony entropy; the adapter owns only the precompile assembly. Do not substitute a bare `sha256(operationMessage)` challenge for V7 operations.
 
 - **Browser:** vault's `DexterApiBrowserPasskeySigner` — drops in with no shim.
 - **CLI / server agent:** `passkeySignerFromP256Keypair(kp)` from `@dexterai/x402/tab/adapters/solana`, wrapping a locally-held P-256 keypair.
@@ -241,7 +241,7 @@ Endpoints paid through the facilitator are auto-discovered, named, and quality-t
 Two changes, both about packaging and the passkey signer — the payment path itself is unchanged.
 
 1. **`@dexterai/vault` is now a peer dependency** (`>=0.19`), not bundled. The tab adapter and your app share ONE vault instance, so there are no duplicate copies and no `instanceof`/type mismatches across packages. Install it alongside: `npm install @dexterai/x402 @dexterai/vault`.
-2. **The passkey signer contract is `signOperation(operationMessage)`**, replacing the old `sign(challenge)`. The adapter now hands the signer the RAW operation message and the signer hashes it internally (`challenge = sha256(op)`, the on-chain `webauthn.rs` law). If you wrote a custom signer against `sign(challenge)`, rename the method to `signOperation` and delete your pre-hash — pass the message straight through. Vault's `DexterApiBrowserPasskeySigner` (browser) and this package's `passkeySignerFromP256Keypair` (node/agent) already conform.
+2. **The passkey signer contract is `signOperation(operationMessage)`**, replacing the old `sign(challenge)`. The adapter hands the signer the RAW operation message. A V7 signer must resolve the authoritative vault authorization nonce and build the canonical 200-byte challenge; bare `sha256(op)` is legacy-only and fails closed on V7. If you wrote a custom signer against `sign(challenge)`, pass the raw operation into Dexter's canonical challenge policy instead of accepting a caller-supplied challenge. Vault's browser signer and this package's `passkeySignerFromP256Keypair` node/agent signer already conform for the supported session operations.
 
 To pin the old surface, stay on `@dexterai/x402@^4`.
 

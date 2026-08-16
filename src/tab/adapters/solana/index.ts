@@ -51,12 +51,15 @@ import {
 
 import {
   sessionRegisterMessage,
+  sessionReplaceV1Message,
   sessionRevokeMessage,
+  sessionVoucherV2Nonce,
 } from '../../messages';
 
 import {
   generateSessionKeypair,
   makeSessionKey,
+  signContextBoundFinalVoucherV2,
   signVoucher,
   parseAtomic,
   deriveChannelId,
@@ -68,13 +71,18 @@ import {
 import {
   fetchVaultSessionAccounts,
   fetchSessionAccount,
+  deriveSessionPda,
   isSessionLive,
   sessionPdasOf,
   waitForSession,
   resolveVaultUsdcAta,
   composeRevokeThenRegister,
 } from '@dexterai/vault/session';
-import type { SessionAccountState } from '@dexterai/vault/types';
+import {
+  fetchPasskeyAuthorizationState,
+  validatePasskeyAuthorizationClientData,
+} from '@dexterai/vault';
+import { parseRegistration } from '../../seller/verify';
 
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';
@@ -84,13 +92,14 @@ import type { TransactionInstruction } from '@solana/web3.js';
 
 // ── Passkey signer abstraction (unified with @dexterai/vault) ───────────
 //
-// The adapter consumes vault 0.19's canonical signer shape: a 33-byte SEC1
+// The adapter consumes Vault 0.42.2's canonical signer shape: a 33-byte SEC1
 // publicKey + signOperation(operationMessage). Both paths conform — node via
 // passkeySignerFromP256Keypair, browser via vault's
 // DexterApiBrowserPasskeySigner — with NO bridge shim, sharing ONE vault
-// (vault is a peerDependency, never bundled). The SIGNER owns the hashing
-// locus (challenge = sha256(op), internal); the adapter hands it the RAW
-// operation message and only owns the precompile assembly
+// (vault is an exact peerDependency, never bundled). The SIGNER owns the
+// canonical V7 challenge policy (program, vault, monotonic guard nonce,
+// operation hash, and fresh entropy); the adapter hands it the RAW operation
+// message and only owns the precompile assembly
 // (precompileMessage = authenticatorData ‖ sha256(clientDataJSON)).
 
 import type { PasskeySignerWithPublicKey as PasskeySigner } from '@dexterai/vault/signers';
@@ -132,10 +141,11 @@ export interface CreateSolanaVaultAdapterOptions {
 export interface SolanaAdapterSeams {
   fetchSession?: typeof fetchSessionAccount;
   fetchSessions?: typeof fetchVaultSessionAccounts;
+  fetchPasskeyAuthorization?: typeof fetchPasskeyAuthorizationState;
   resolveUsdcAta?: typeof resolveVaultUsdcAta;
   waitForSession?: typeof waitForSession;
   /** Atomic-compose transport override: receives the FULL composed
-   *  instruction list ([secp(revoke), revoke, secp(register), register]),
+   *  instruction list ([secp(replace), replace] for a live V7 target),
    *  must send + confirm ATOMICALLY in one transaction. Production default:
    *  `createSelfPayingComposeSend` (v0+ALT — the compose does NOT fit a
    *  legacy transaction, K-T4a). */
@@ -198,6 +208,7 @@ export function buildAdapterRegisterInstruction(p: AdapterRegisterIxParams) {
 
 class SolanaVaultAdapter implements VaultAdapter {
   readonly network: TabNetworkId = 'solana:mainnet';
+  readonly sessionVoucherVersion = 2 as const;
   readonly swigAddress: string;
   readonly vaultPda: string;
 
@@ -224,9 +235,9 @@ class SolanaVaultAdapter implements VaultAdapter {
   }
 
   /**
-   * Authorize a session key on chain. ONE passkey ceremony on the fresh
-   * path (register only); TWO when atomically replacing a live session
-   * (revoke ceremony + register ceremony). Returns a SessionKey the caller
+   * Authorize a session key on chain. Exactly ONE passkey ceremony on either
+   * the fresh register path or the context-bound live replacement path.
+   * Returns a SessionKey the caller
    * passes to `signWithSession` for every voucher.
    *
    * K-T4e — the live-target fork. The session PDA is keyed by
@@ -241,7 +252,7 @@ class SolanaVaultAdapter implements VaultAdapter {
    *  - LIVE + default policy → LiveSessionExistsError (stranding guard;
    *    thrown BEFORE any passkey ceremony is burned);
    *  - LIVE + onLiveSession:'replace' → ONE atomic transaction
-   *    [secp(revoke), revoke, secp(register), register] composed via
+   *    [secp(replace), replace_session_key_v1] composed via
    *    @dexterai/vault's composeRevokeThenRegister and sent v0+ALT (the
    *    compose overflows a legacy tx even at zero siblings — K-T4a).
    */
@@ -280,17 +291,34 @@ class SolanaVaultAdapter implements VaultAdapter {
       });
     }
 
-    // 1. Generate the in-memory session keypair (ed25519). The PUBLIC key
+    // 1. Read the permanent per-vault authorization guard before constructing
+    //    any operation bytes. V7 session nonces are not random: the high bit
+    //    marks context-bound V2 and the low 31 bits MUST equal this exact
+    //    guard generation. Missing/malformed guard state cannot be guessed.
+    const fetchAuthorization =
+      this.seams.fetchPasskeyAuthorization ?? fetchPasskeyAuthorizationState;
+    const authorization = await fetchAuthorization(
+      this.connection,
+      this.vaultPdaKey,
+      DEXTER_VAULT_PROGRAM_ID,
+    );
+    if (
+      authorization === null
+      || authorization.version !== 1
+      || !authorization.vault.equals(this.vaultPdaKey)
+    ) {
+      throw new Error('passkey_authorization_guard_unavailable');
+    }
+
+    // 2. Generate the in-memory session keypair (ed25519). The PUBLIC key
     //    is what the passkey endorses; the private key never leaves this
     //    process.
     const kp = generateSessionKeypair();
 
-    // 2. Build the canonical 188-byte registration message. The on-chain
-    //    program reconstructs this byte-for-byte from its args and
-    //    cross-checks against what the precompile verified.
-    //    The nonce is an implementation detail of the registration
-    //    ceremony, not part of the user-facing scope.
-    const nonce = deriveNonce();
+    // 3. Build the canonical V2 registration. A live replacement signs the
+    //    complete current SessionAccount snapshot plus the exact guard nonce;
+    //    the program preserves its accepted meters instead of clearing them.
+    const nonce = sessionVoucherV2Nonce(authorization.nonce);
     const message = sessionRegisterMessage({
       programId: DEXTER_VAULT_PROGRAM_ID,
       vaultPda: this.vaultPdaKey,
@@ -301,15 +329,63 @@ class SolanaVaultAdapter implements VaultAdapter {
       allowedCounterparty: counterparty,
       nonce,
     });
+    const operationMessage = live
+      ? sessionReplaceV1Message({
+          programId: DEXTER_VAULT_PROGRAM_ID,
+          vaultPda: this.vaultPdaKey,
+          sessionPda: new PublicKey(existing.address),
+          authorizationNonce: authorization.nonce,
+          retired: {
+            sessionPubkey: existing.session.sessionPubkey,
+            maxAmount: existing.session.maxAmount,
+            expiresAt: BigInt(existing.session.expiresAt),
+            allowedCounterparty: new PublicKey(
+              existing.session.allowedCounterparty,
+            ),
+            nonce: existing.session.nonce,
+            spent: existing.session.spent,
+            currentOutstanding: existing.session.currentOutstanding,
+            maxRevolvingCapacity:
+              existing.session.maxRevolvingCapacity,
+            crystallizedCumulative:
+              existing.session.crystallizedCumulative,
+            lastLockedSequence: existing.session.lastLockedSequence,
+          },
+          replacement: {
+            sessionPubkey: kp.publicKey,
+            maxAmount: parseAtomic(scope.maxAmountAtomic),
+            expiresAt: BigInt(scope.expiresAtUnix),
+            allowedCounterparty: counterparty,
+            nonce,
+            maxRevolvingCapacity,
+          },
+        })
+      : message;
 
-    // 3. Have the passkey sign it. The signer hashes internally
-    //    (challenge = sha256(operationMessage)); the adapter owns only the
-    //    precompile assembly.
-    const registerCeremony = await this.passkey.signOperation(message);
+    // 4. One passkey ceremony binds the complete operation. The browser
+    //    signer obtains the canonical 200-byte challenge from Dexter policy;
+    //    the compose independently re-reads and validates the live snapshot.
+    const registerCeremony = await this.passkey.signOperation(operationMessage);
 
     if (live) {
-      await this.sendAtomicReplace(existing, scope, counterparty, kp.publicKey, nonce, maxRevolvingCapacity, registerCeremony);
+      await this.sendAtomicReplace(
+        scope,
+        counterparty,
+        kp.publicKey,
+        nonce,
+        maxRevolvingCapacity,
+        registerCeremony,
+      );
     } else {
+      const signedAuthorization = validatePasskeyAuthorizationClientData({
+        clientDataJSON: registerCeremony.clientDataJSON,
+        operationMessage,
+        expectedVault: this.vaultPdaKey,
+        expectedProgramId: DEXTER_VAULT_PROGRAM_ID,
+      });
+      if (signedAuthorization.nonce !== authorization.nonce) {
+        throw new Error('passkey_authorization_guard_changed');
+      }
       await this.sendBareRegister(scope, counterparty, kp.publicKey, nonce, maxRevolvingCapacity, registerCeremony);
     }
 
@@ -408,23 +484,12 @@ class SolanaVaultAdapter implements VaultAdapter {
   }
 
   /**
-   * The LIVE path: ONE atomic transaction
-   * [secp(revoke), revoke_session_key, secp(register), register_session_key]
-   * via @dexterai/vault's composeRevokeThenRegister — the buyer is never
-   * left sessionless mid-flow, and `live_session_count` is conserved across
-   * the pair. Costs a SECOND passkey ceremony (the revoke, bound to the
-   * CURRENT live session pubkey — compose re-validates the binding and
-   * throws RevokeCeremonyMismatchError if the session rotated since our
-   * read, rather than burning the tx on-chain).
-   *
-   * Transport: v0 + ephemeral ALT (createSelfPayingComposeSend) — the
-   * compose measures 1347 B legacy at ZERO siblings, past the 1232 B wire
-   * cap (K-T4a). The adapter's feePayer both pays and owns the ALT: the
-   * loop's self-paying path and a sponsored path differ only in WHOSE
-   * Signer was handed to the adapter.
+   * The LIVE path: ONE atomic [secp(replace), replace_session_key_v1]
+   * transaction via @dexterai/vault's compatibility-named
+   * composeRevokeThenRegister. The buyer is never left sessionless, accepted
+   * meters survive, and a session/guard race fails before transport.
    */
   private async sendAtomicReplace(
-    existing: SessionAccountState,
     scope: SessionScope,
     counterparty: PublicKey,
     sessionPubkey: Uint8Array,
@@ -432,17 +497,6 @@ class SolanaVaultAdapter implements VaultAdapter {
     maxRevolvingCapacity: bigint,
     registerCeremony: { signature: Uint8Array; clientDataJSON: Uint8Array; authenticatorData: Uint8Array },
   ): Promise<void> {
-    // The revoke ceremony binds to the LIVE session pubkey (the handler
-    // rebuilds this message from the PDA's current session_pubkey — a
-    // rotated-away pubkey can only revert on-chain, and compose fails fast
-    // on the mismatch before submitting).
-    const revokeMessage = sessionRevokeMessage({
-      programId: DEXTER_VAULT_PROGRAM_ID,
-      vaultPda: this.vaultPdaKey,
-      sessionPubkey: existing.session.sessionPubkey,
-    });
-    const revokeCeremony = await this.passkey.signOperation(revokeMessage);
-
     const resolveAta = this.seams.resolveUsdcAta ?? resolveVaultUsdcAta;
     const vaultUsdcAta = await resolveAta(this.connection, new PublicKey(this.swigAddress));
 
@@ -474,15 +528,11 @@ class SolanaVaultAdapter implements VaultAdapter {
           authenticatorData: registerCeremony.authenticatorData,
           signature: registerCeremony.signature,
         },
-        revokeCeremony: {
-          clientDataJSON: revokeCeremony.clientDataJSON,
-          authenticatorData: revokeCeremony.authenticatorData,
-          signature: revokeCeremony.signature,
-        },
         credentialPublicKey: this.passkey.publicKey,
         send: transport.send,
         fetchSession: this.seams.fetchSession,
         fetchSessions: this.seams.fetchSessions,
+        fetchPasskeyAuthorization: this.seams.fetchPasskeyAuthorization,
       });
     } finally {
       // Cleanup never gates (or fails) the money op.
@@ -505,11 +555,48 @@ class SolanaVaultAdapter implements VaultAdapter {
     // string id — Phase 3 will tighten the contract to require the
     // raw 32 bytes flow through unchanged.
     const channelIdBytes = await hashChannelId(payload.channelId);
+    const registration = parseRegistration(session.registration);
+    if ((registration.nonce & 0x8000_0000) !== 0) {
+      const [sessionPda] = deriveSessionPda(
+        registration.vaultPda,
+        registration.allowedCounterparty,
+        registration.programId,
+      );
+      const signed = signContextBoundFinalVoucherV2({
+        programId: registration.programId.toBase58(),
+        vaultPda: registration.vaultPda.toBase58(),
+        sessionPda: sessionPda.toBase58(),
+        seller: registration.allowedCounterparty.toBase58(),
+        sessionNonce: registration.nonce,
+        channelId: bytesToHex(channelIdBytes),
+        cumulativeAmountAtomic: payload.cumulativeAmount,
+        sequenceOrdinal: payload.sequenceNumber,
+        sessionPrivateKey: session.privateKey,
+        sessionPublicKey: session.publicKey,
+        sessionRegistration: session.registration,
+      });
+      return {
+        payload: {
+          channelId: signed.channelId,
+          cumulativeAmount: signed.cumulativeAmount,
+          sequenceNumber: signed.sequenceNumber,
+        },
+        sessionPublicKey: Uint8Array.from(
+          Buffer.from(signed.sessionPublicKey, 'hex'),
+        ),
+        sessionSignature: Uint8Array.from(
+          Buffer.from(signed.sessionSignature, 'hex'),
+        ),
+        sessionRegistration: Uint8Array.from(
+          Buffer.from(signed.sessionRegistration, 'hex'),
+        ),
+      };
+    }
     return signVoucher(session, payload, channelIdBytes);
   }
 
   /**
-   * Open-tab on-chain signature. Returns the canonical 180-byte
+   * Open-tab on-chain signature. Returns the canonical 188-byte V2
    * registration message — the same bytes the seller verifies the
    * passkey signed (and the same bytes the facilitator decodes to
    * recover the vault PDA in `POST /tab/settle`). The on-chain
@@ -526,7 +613,7 @@ class SolanaVaultAdapter implements VaultAdapter {
   }
 
   /**
-   * Close-tab on-chain signature. Returns the canonical 128-byte
+   * Close-tab on-chain signature. Returns the canonical versioned
    * revocation message + submits the revoke_session_key tx on chain.
    *
    * The on-chain settle that actually moves USDC (vault.settle_tab_voucher
@@ -540,16 +627,37 @@ class SolanaVaultAdapter implements VaultAdapter {
     _channelId: string,
     _cumulativeAmount: AtomicAmount,
   ): Promise<Uint8Array> {
-    // 1. Build the 128-byte revocation message. The on-chain handler
-    //    rejects this if session_pubkey doesn't match active_session.
+    // 1. Re-parse the exact 188-byte registration and bind every field the
+    //    current V7 revoke handler authenticates. The message builder also
+    //    re-derives the session PDA from vault + counterparty.
+    const registration = parseRegistration(session.registration);
+    if (
+      !registration.vaultPda.equals(this.vaultPdaKey)
+      || !Buffer.from(registration.sessionPubkey)
+        .equals(Buffer.from(session.publicKey))
+    ) {
+      throw new Error('session registration identity mismatch');
+    }
+    const [sessionPda] = deriveSessionPda(
+      this.vaultPdaKey,
+      registration.allowedCounterparty,
+      DEXTER_VAULT_PROGRAM_ID,
+    );
     const message = sessionRevokeMessage({
       programId: DEXTER_VAULT_PROGRAM_ID,
       vaultPda: this.vaultPdaKey,
-      sessionPubkey: session.publicKey,
+      sessionPda,
+      sessionPubkey: registration.sessionPubkey,
+      maxAmount: registration.maxAmount,
+      expiresAt: registration.expiresAt,
+      allowedCounterparty: registration.allowedCounterparty,
+      nonce: registration.nonce,
+      maxRevolvingCapacity:
+        registration.maxRevolvingCapacity,
     });
 
     // 2. Passkey-sign the revocation. ONE more prompt at tab close. The
-    //    signer hashes the message internally (challenge = sha256(message)).
+    //    signer binds it through the canonical V7 authorization challenge.
     const { signature, clientDataJSON, authenticatorData } = await this.passkey.signOperation(message);
     const precompileMessage = concatBytes(authenticatorData, sha256(clientDataJSON));
 
@@ -603,16 +711,6 @@ function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
   out.set(a, 0);
   out.set(b, a.length);
   return out;
-}
-
-function deriveNonce(): number {
-  // Process-local monotonic-ish nonce. The on-chain program doesn't
-  // enforce monotonicity (non-monotonic nonce is a caller footgun, per
-  // the Rust comment on RegisterSessionKeyArgs.nonce). We just want
-  // uniqueness within a session.
-  // NOTE: avoids Date.now() to stay safe under deterministic-resume
-  // harnesses; uses Math.random instead.
-  return Math.floor(Math.random() * 0xffffffff) >>> 0;
 }
 
 async function hashChannelId(channelId: string): Promise<Uint8Array> {
