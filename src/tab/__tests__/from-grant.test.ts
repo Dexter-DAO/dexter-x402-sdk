@@ -745,6 +745,7 @@ describe('tabFromGrant — settle-only close', () => {
     const settle = calls.find((c) => c.url === `${FAC}/tab/settle`);
     expect(settle).toBeDefined();
     expect(settle!.body).toMatchObject({
+      attemptedAmount: '5000',
       channelId: v.payload.channelId,
       cumulativeAmount: '255000',
       sequenceNumber: 0x8000_0001,
@@ -758,6 +759,43 @@ describe('tabFromGrant — settle-only close', () => {
     expect(result.settleTx).toBe('SETTLE_TX');
     expect(result.sessionRevoked).toBe(false); // honest: NO on-chain revoke happened
     await expect(tab.signNextVoucher('5000')).rejects.toThrow(/closed/i);
+  });
+
+  it('close() sends the final V2 voucher reservation increment, not the cumulative local span', async () => {
+    const { calls } = stubFetchRouter();
+    const kp = nacl.sign.keyPair();
+    const params = grantParams(kp);
+    const conn = connFor(params, sessionAccountData({ params, spent: 250000n }));
+    const reserved: Array<import('../types').FinalVoucherV2ReservationInput> = [];
+
+    const tab = await tabFromGrant({
+      ...baseOptions(kp, params, conn),
+      reserveFinalVoucherV2: async input => {
+        // A real second reservation only succeeds after the first reservation
+        // has terminaled and cleared current_outstanding. This unit callback
+        // represents that accepted sequential lifecycle.
+        reserved.push(input);
+        return finalizedReservationReceipt(input);
+      },
+    });
+    await tab.signNextVoucher('5000');
+    const finalVoucher = await tab.signNextVoucher('4000');
+    await tab.close();
+
+    expect(reserved.map(input => ({
+      amount: input.reservationAmountAtomic,
+      previous: input.previousCumulativeAtomic,
+      cumulative: input.voucher.payload.cumulativeAmount,
+    }))).toEqual([
+      { amount: '5000', previous: '250000', cumulative: '255000' },
+      { amount: '4000', previous: '255000', cumulative: '259000' },
+    ]);
+    const settle = calls.find((c) => c.url === `${FAC}/tab/settle`);
+    expect(settle!.body).toMatchObject({
+      attemptedAmount: '4000',
+      cumulativeAmount: '259000',
+      sequenceNumber: finalVoucher.payload.sequenceNumber,
+    });
   });
 
   it('close() with zero vouchers signed settles nothing and still closes', async () => {

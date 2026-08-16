@@ -57,7 +57,10 @@ function jsonResponse(body: unknown, status = 200): Response {
  * already-issued historical tab; v6 public open/recovery does not arm V1.
  */
 function makeRoutingFetch(settleResponse: () => Response) {
-  return vi.fn(async (_input: string | URL | Request) => settleResponse());
+  return vi.fn(async (
+    _input: string | URL | Request,
+    _init?: RequestInit,
+  ) => settleResponse());
 }
 
 /** Build an already-issued V1 tab and sign one voucher for close coverage. */
@@ -121,6 +124,10 @@ describe('Tab.close() — facilitator fee fields', () => {
     );
     expect(settleCalls).toHaveLength(1);
     expect(String(settleCalls[0]![0])).toBe(`${FACILITATOR_URL}/tab/settle`);
+    expect(JSON.parse(String(settleCalls[0]![1]?.body))).toMatchObject({
+      attemptedAmount: '10000',
+      cumulativeAmount: '10000',
+    });
   });
 
   it('leaves the fee fields undefined when an old facilitator omits them', async () => {
@@ -139,6 +146,51 @@ describe('Tab.close() — facilitator fee fields', () => {
     expect(result.grossAmount).toBeUndefined();
     expect(result.feeAmount).toBeUndefined();
     expect(result.netAmount).toBeUndefined();
+  });
+
+  it('settles the full cumulative span of a grandfathered multi-voucher V1 tab', async () => {
+    const mockFetch = makeRoutingFetch(() =>
+      jsonResponse({
+        settleTx: 'sig',
+        cumulativeAmount: '8000',
+        transferAmount: '8000',
+      }),
+    );
+    vi.stubGlobal('fetch', mockFetch);
+    const vault = makeFakeAdapter();
+    const expiresAtUnix = Math.floor(Date.now() / 1000) + 3600;
+    const channelIdHex = '22'.repeat(32);
+    const session = await vault.authorizeSession({
+      channelId: channelIdHex,
+      maxAmountAtomic: '5000000',
+      revolvingCapacityAtomic: '5000000',
+      expiresAtUnix,
+      allowedCounterparty: SELLER_PUBKEY,
+    });
+    const tab = new TabImpl({
+      vault,
+      network: 'solana:mainnet',
+      seller: SELLER_PUBKEY,
+      counterparty: SELLER_PUBKEY,
+      session,
+      channelIdHex,
+      channelIdBytes: Uint8Array.from(Buffer.from(channelIdHex, 'hex')),
+      perUnitCapAtomic: 10000n,
+      totalCapAtomic: 5000000n,
+      expiresAtUnix,
+      facilitatorUrl: FACILITATOR_URL,
+    });
+    await tab.signNextVoucher('3000');
+    await tab.signNextVoucher('5000');
+    await tab.close();
+
+    const settleCall = mockFetch.mock.calls.find(([url]) =>
+      String(url).endsWith('/tab/settle'),
+    );
+    expect(JSON.parse(String(settleCall?.[1]?.body))).toMatchObject({
+      attemptedAmount: '8000',
+      cumulativeAmount: '8000',
+    });
   });
 
   it('ignores non-string fee field values rather than coercing them', async () => {

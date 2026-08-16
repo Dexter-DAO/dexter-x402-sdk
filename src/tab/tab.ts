@@ -168,11 +168,17 @@ class TabImpl implements Tab {
    *  it back to us. Null if no voucher was signed in this tab's lifetime
    *  (close-without-stream → nothing to settle). */
   private lastSignedVoucher: SignedVoucher | null = null;
+  /** Exact economic increment bound to `lastSignedVoucher`. In Native Tab V2
+   *  this is also the immutable reservation amount, and `/tab/settle` must
+   *  send this value rather than reconstructing it from lifetime cumulative. */
+  private lastSignedVoucherIncrementAtomic: bigint | null = null;
   /** One level of voucher history: the voucher that was `lastSignedVoucher`
    *  immediately before the current one. Retained so `rollbackVoucher` can
    *  restore the pre-refusal voucher when a seller honestly refuses the
    *  most recent one. Set at commit time inside `signNextVoucher`. */
   private previousSignedVoucher: SignedVoucher | null = null;
+  /** Increment paired with `previousSignedVoucher`, retained for V1 rollback. */
+  private previousSignedVoucherIncrementAtomic: bigint | null = null;
 
   constructor(internals: TabInternals) {
     this.internals = internals;
@@ -292,7 +298,10 @@ class TabImpl implements Tab {
 
     // Commit: counters, one level of history, and the new last voucher.
     this.previousSignedVoucher = this.lastSignedVoucher;
+    this.previousSignedVoucherIncrementAtomic =
+      this.lastSignedVoucherIncrementAtomic;
     this.lastSignedVoucher = signed;
+    this.lastSignedVoucherIncrementAtomic = incBig;
     this.sequenceNumber = nextSequence;
     this.cumulativeAtomic = newCumulative;
     return signed;
@@ -371,9 +380,12 @@ class TabImpl implements Tab {
 
     const prev = this.previousSignedVoucher;
     if (prev) {
+      const prevIncrement = this.previousSignedVoucherIncrementAtomic;
+      if (prevIncrement === null) return false;
       this.sequenceNumber = prev.payload.sequenceNumber;
       this.cumulativeAtomic = BigInt(prev.payload.cumulativeAmount);
       this.lastSignedVoucher = prev;
+      this.lastSignedVoucherIncrementAtomic = prevIncrement;
     } else if (last.payload.sequenceNumber === 1) {
       // The refused voucher was the tab's first — revert to the pristine
       // state: the odometer FLOOR this tab was constructed at (0n for
@@ -381,11 +393,13 @@ class TabImpl implements Tab {
       this.sequenceNumber = 0;
       this.cumulativeAtomic = this.initialCumulativeAtomic;
       this.lastSignedVoucher = null;
+      this.lastSignedVoucherIncrementAtomic = null;
     } else {
       // History exhausted (only one level retained) — refuse rather than guess.
       return false;
     }
     this.previousSignedVoucher = null;
+    this.previousSignedVoucherIncrementAtomic = null;
     return true;
   }
 
@@ -460,10 +474,21 @@ class TabImpl implements Tab {
 
       let settled: SettleResult = { settleTx: '' };
       if (this.lastSignedVoucher && this.cumulativeAtomic > 0n) {
+        // Native Tab V2 reserves one exact obligation at a time, so close
+        // declares the FINAL voucher's immutable reservation increment.
+        // Grandfathered V1 tabs instead accumulate several vouchers before
+        // one terminal settle and therefore declare the complete local span.
+        const attemptedAmount = this.isFinalV2
+          ? this.lastSignedVoucherIncrementAtomic
+          : this.cumulativeAtomic - this.initialCumulativeAtomic;
+        if (attemptedAmount === null || attemptedAmount <= 0n) {
+          throw new Error('tab_settle_attempted_amount_missing');
+        }
         settled = await postSettle(
           this.internals.facilitatorUrl,
           this.lastSignedVoucher,
           this.internals.network,
+          attemptedAmount.toString(),
         );
       }
 
@@ -605,9 +630,11 @@ async function postSettle(
   facilitatorUrl: string,
   voucher: SignedVoucher,
   network: TabNetworkId,
+  attemptedAmount: AtomicAmount,
 ): Promise<SettleResult> {
   const url = `${facilitatorUrl.replace(/\/$/, '')}/tab/settle`;
   const body = {
+    attemptedAmount,
     channelId: voucher.payload.channelId,
     cumulativeAmount: voucher.payload.cumulativeAmount,
     sequenceNumber: voucher.payload.sequenceNumber,
