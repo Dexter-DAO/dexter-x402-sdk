@@ -7,7 +7,7 @@
  * the loop buys another round until totalCap or until the user hits
  * Ctrl+C.
  *
- * On SIGINT, closes the tab. Since `@dexterai/x402@3.10.0`, `tab.close()`
+ * On SIGINT, closes the tab. `tab.close()`
  * POSTs the final session-signed voucher to the facilitator's
  * `POST /tab/settle` endpoint — the on-chain settle (USDC swig → seller
  * ATA + `vault.active_session.spent` advance + `pending_voucher_count`
@@ -17,13 +17,16 @@
 
 import 'dotenv/config';
 import { readFileSync } from 'node:fs';
-import { Connection, Keypair } from '@solana/web3.js';
+import { Connection, Keypair, PublicKey } from '@solana/web3.js';
+import { fetchPasskeyAuthorizationState } from '@dexterai/vault';
+import { DEXTER_VAULT_PROGRAM_ID } from '@dexterai/vault/constants';
 
 import { openTab } from '@dexterai/x402/tab';
 import {
   createSolanaVaultAdapter,
   passkeySignerFromP256Keypair,
 } from '@dexterai/x402/tab/adapters/solana';
+import { createManagedReservationProvider } from './native-tab-v2.js';
 
 // Mirror of the SDK's internal P256Keypair shape.
 interface P256Keypair {
@@ -67,7 +70,20 @@ const passkeyKp: P256Keypair = {
   publicKey: Uint8Array.from(Buffer.from(credential.passkeyPublicKeyBase64, 'base64')),
   privateKey: Uint8Array.from(Buffer.from(credential.passkeyPrivateKeyBase64, 'base64')),
 };
-const passkeySigner = passkeySignerFromP256Keypair(passkeyKp);
+const passkeySigner = passkeySignerFromP256Keypair(passkeyKp, {
+  resolveAuthorizationContext: async () => {
+    const authorization = await fetchPasskeyAuthorizationState(
+      connection,
+      new PublicKey(BUYER_VAULT_PDA),
+    );
+    if (!authorization) throw new Error('passkey authorization unavailable');
+    return {
+      programId: DEXTER_VAULT_PROGRAM_ID,
+      vault: authorization.vault,
+      nonce: authorization.nonce,
+    };
+  },
+});
 
 const feePayer = Keypair.fromSecretKey(
   Uint8Array.from(JSON.parse(readFileSync(FEE_PAYER_KEY_FILE, 'utf8'))),
@@ -80,6 +96,9 @@ const vault = createSolanaVaultAdapter({
   passkeySigner,
   feePayer,
 });
+const reserveFinalVoucherV2 = createManagedReservationProvider(
+  FACILITATOR_URL,
+);
 
 // ── Open the tab ───────────────────────────────────────────────────────
 
@@ -97,6 +116,7 @@ const tab = await openTab({
   seller: SELLER_PUBKEY,
   perUnitCap: PER_BATCH_CAP_USDC,
   totalCap: TOTAL_TAB_CAP_USDC,
+  reserveFinalVoucherV2,
   ...(FACILITATOR_URL ? { facilitatorUrl: FACILITATOR_URL } : {}),
 });
 

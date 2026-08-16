@@ -15,7 +15,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.92.0",
-    "@dexterai/x402": "^5.3.1",
+    "@dexterai/vault": "0.43.1",
+    "@dexterai/x402": "6.0.0-rc.0",
     "@solana/web3.js": "^1.98.0",
     "bs58": "^6.0.0",
     "dotenv": "^17.4.2",
