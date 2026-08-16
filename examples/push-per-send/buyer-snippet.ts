@@ -14,7 +14,9 @@
  * excited the agent gets, it cannot page past that cap.
  */
 import 'dotenv/config';
-import { Connection, Keypair } from '@solana/web3.js';
+import { Connection, Keypair, PublicKey } from '@solana/web3.js';
+import { fetchPasskeyAuthorizationState } from '@dexterai/vault';
+import { DEXTER_VAULT_PROGRAM_ID } from '@dexterai/vault/constants';
 import { createKeypairWallet, payAndFetch } from '@dexterai/x402/client';
 import type { PayResult } from '@dexterai/x402/client';
 import {
@@ -28,6 +30,7 @@ import {
   createSolanaVaultAdapter,
   passkeySignerFromP256Keypair,
 } from '@dexterai/x402/tab/adapters/solana';
+import { createManagedReservationProvider } from './native-tab-v2.js';
 
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:4880/send';
 const RPC_URL =
@@ -135,16 +138,31 @@ async function tabPath(): Promise<void> {
     return;
   }
 
+  const connection = new Connection(RPC_URL, 'confirmed');
   const vault = createSolanaVaultAdapter({
-    connection: new Connection(RPC_URL, 'confirmed'),
+    connection,
     swigAddress,
     vaultPda,
     passkeySigner: passkeySignerFromP256Keypair({
       publicKey: Uint8Array.from(Buffer.from(passkeyPub, 'base64')),
       privateKey: Uint8Array.from(Buffer.from(passkeyPriv, 'base64')),
+    }, {
+      resolveAuthorizationContext: async () => {
+        const authorization = await fetchPasskeyAuthorizationState(
+          connection,
+          new PublicKey(vaultPda),
+        );
+        if (!authorization) throw new Error('passkey authorization unavailable');
+        return {
+          programId: DEXTER_VAULT_PROGRAM_ID,
+          vault: authorization.vault,
+          nonce: authorization.nonce,
+        };
+      },
     }),
     feePayer,
   });
+  const reserveFinalVoucherV2 = createManagedReservationProvider();
 
   // The HARD CAP lives here: totalCap is the most this whole session can ever
   // spend, enforced on-chain — 25 pages at a penny each, then the tab is dry.
@@ -161,6 +179,7 @@ async function tabPath(): Promise<void> {
           totalCap: '0.25',
           sessionDuration: 900,
           tabs,
+          reserveFinalVoucherV2,
         },
       );
       tab = usedTab ?? tab;

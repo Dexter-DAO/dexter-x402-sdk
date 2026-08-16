@@ -20,7 +20,9 @@
 
 import 'dotenv/config';
 import { readFileSync } from 'node:fs';
-import { Connection, Keypair } from '@solana/web3.js';
+import { Connection, Keypair, PublicKey } from '@solana/web3.js';
+import { fetchPasskeyAuthorizationState } from '@dexterai/vault';
+import { DEXTER_VAULT_PROGRAM_ID } from '@dexterai/vault/constants';
 import bs58 from 'bs58';
 
 import { payAndFetch, createKeypairWallet } from '@dexterai/x402/client';
@@ -30,6 +32,7 @@ import {
   passkeySignerFromP256Keypair,
 } from '@dexterai/x402/tab/adapters/solana';
 import { decodeFrame } from './sse-frame.js';
+import { createManagedReservationProvider } from './native-tab-v2.js';
 
 const SERVER_URL = process.env.SERVER_URL ?? 'http://localhost:4021';
 const COMPLETE_URL = `${SERVER_URL}/v1/complete`;
@@ -153,9 +156,23 @@ async function tabStream(): Promise<void> {
     connection,
     swigAddress: BUYER_SWIG,
     vaultPda: BUYER_VAULT_PDA,
-    passkeySigner: passkeySignerFromP256Keypair(passkeyKp),
+    passkeySigner: passkeySignerFromP256Keypair(passkeyKp, {
+      resolveAuthorizationContext: async () => {
+        const authorization = await fetchPasskeyAuthorizationState(
+          connection,
+          new PublicKey(BUYER_VAULT_PDA),
+        );
+        if (!authorization) throw new Error('passkey authorization unavailable');
+        return {
+          programId: DEXTER_VAULT_PROGRAM_ID,
+          vault: authorization.vault,
+          nonce: authorization.nonce,
+        };
+      },
+    }),
     feePayer,
   });
+  const reserveFinalVoucherV2 = createManagedReservationProvider();
 
   // Discover the seller from the 402 itself — never hardcode accepts[0]
   // assumptions; resolveTabOffer picks the tab-scheme entry.
@@ -171,6 +188,7 @@ async function tabStream(): Promise<void> {
     seller: offer.offer.payTo,
     perUnitCap: PER_REQUEST_CAP_USDC, // budget signed per stream() call
     totalCap: TOTAL_TAB_CAP_USDC,
+    reserveFinalVoucherV2,
     // facilitatorUrl omitted -> https://x402.dexter.cash
   });
   console.log('tab open. channel:', tab.channelId);
