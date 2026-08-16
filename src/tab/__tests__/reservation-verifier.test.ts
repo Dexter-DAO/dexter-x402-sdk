@@ -62,6 +62,7 @@ interface Fixture {
   vaultData: Buffer;
   sessionData: Buffer;
   bindingData: Buffer;
+  getSignatureStatuses: ReturnType<typeof vi.fn>;
   getTransaction: ReturnType<typeof vi.fn>;
   getMultipleAccountsInfoAndContext: ReturnType<typeof vi.fn>;
 }
@@ -197,7 +198,7 @@ function makeFixture(): Fixture {
     callerOperationId: input.idempotencyKey,
     network: input.network,
     transaction: TRANSACTION_SIGNATURE,
-    commitment: 'finalized',
+    commitment: 'confirmed',
     confirmationSlot: CONFIRMATION_SLOT,
     postStateSlot: POST_STATE_SLOT,
     buyerSwigAddress: input.buyerSwigAddress,
@@ -272,6 +273,14 @@ function makeFixture(): Fixture {
     bump: sessionBump,
   });
   const bindingBytes = bindingData({ swig, vault, bump: bindingBump });
+  const getSignatureStatuses = vi.fn(async () => ({
+    value: [{
+      err: null,
+      confirmationStatus: 'confirmed' as const,
+      slot: CONFIRMATION_SLOT,
+      confirmations: 1,
+    }],
+  }));
   const getTransaction = vi.fn(async () => transaction);
   const getMultipleAccountsInfoAndContext = vi.fn(async () => ({
     context: { apiVersion: '1.18.0', slot: POST_STATE_SLOT },
@@ -282,6 +291,7 @@ function makeFixture(): Fixture {
     ],
   }));
   const connection = {
+    getSignatureStatuses,
     getTransaction,
     getMultipleAccountsInfoAndContext,
   } as unknown as Connection;
@@ -302,6 +312,7 @@ function makeFixture(): Fixture {
     vaultData: vaultBytes,
     sessionData: sessionBytes,
     bindingData: bindingBytes,
+    getSignatureStatuses,
     getTransaction,
     getMultipleAccountsInfoAndContext,
   };
@@ -324,13 +335,14 @@ describe('Solana FINAL V2 reservation verifier', () => {
       fixture.receipt,
     )).resolves.toBeUndefined();
 
+    expect(fixture.getSignatureStatuses).toHaveBeenCalledOnce();
     expect(fixture.getTransaction).toHaveBeenCalledWith(
       fixture.receipt.transaction,
-      { commitment: 'finalized', maxSupportedTransactionVersion: 0 },
+      { commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
     );
     expect(fixture.getMultipleAccountsInfoAndContext).toHaveBeenCalledTimes(1);
     expect(fixture.getMultipleAccountsInfoAndContext.mock.calls[0][1]).toEqual({
-      commitment: 'finalized',
+      commitment: 'confirmed',
       minContextSlot: CONFIRMATION_SLOT,
     });
   });
@@ -346,15 +358,45 @@ describe('Solana FINAL V2 reservation verifier', () => {
     )).resolves.toBeUndefined();
 
     expect(fixture.getMultipleAccountsInfoAndContext.mock.calls[0][1]).toEqual({
-      commitment: 'finalized',
+      commitment: 'confirmed',
       minContextSlot: CONFIRMATION_SLOT,
     });
   });
 
-  it('rejects a reservation transaction visible only at confirmed commitment', async () => {
+  it('admits confirmed without polling finalized transaction or post-state', async () => {
     const fixture = makeFixture();
     fixture.getTransaction.mockImplementation(async (_signature, options) =>
       options.commitment === 'confirmed' ? fixture.transaction : null);
+
+    await expect(verifySolanaFinalVoucherV2Reservation(
+      fixture.connection,
+      fixture.input,
+      fixture.receipt,
+    )).resolves.toBeUndefined();
+    expect(fixture.getTransaction).toHaveBeenCalledWith(
+      fixture.receipt.transaction,
+      { commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
+    );
+    expect(fixture.getTransaction).not.toHaveBeenCalledWith(
+      fixture.receipt.transaction,
+      { commitment: 'finalized', maxSupportedTransactionVersion: 0 },
+    );
+    expect(fixture.getMultipleAccountsInfoAndContext).toHaveBeenCalledWith(
+      expect.any(Array),
+      { commitment: 'confirmed', minContextSlot: CONFIRMATION_SLOT },
+    );
+  });
+
+  it('rejects processed-only status before fetching transaction or post-state', async () => {
+    const fixture = makeFixture();
+    fixture.getSignatureStatuses.mockResolvedValue({
+      value: [{
+        err: null,
+        confirmationStatus: 'processed',
+        slot: CONFIRMATION_SLOT,
+        confirmations: 3,
+      }],
+    });
 
     await expectCode(
       verifySolanaFinalVoucherV2Reservation(
@@ -362,11 +404,65 @@ describe('Solana FINAL V2 reservation verifier', () => {
         fixture.input,
         fixture.receipt,
       ),
-      'transaction_missing',
+      'transaction_commitment',
     );
-    expect(fixture.getTransaction).toHaveBeenCalledWith(
+    expect(fixture.getTransaction).not.toHaveBeenCalled();
+    expect(fixture.getMultipleAccountsInfoAndContext).not.toHaveBeenCalled();
+  });
+
+  it('rejects status and transaction observations that disagree on the landed slot', async () => {
+    const fixture = makeFixture();
+    fixture.getSignatureStatuses.mockResolvedValue({
+      value: [{
+        err: null,
+        confirmationStatus: 'confirmed',
+        slot: CONFIRMATION_SLOT + 1,
+        confirmations: 1,
+      }],
+    });
+
+    await expectCode(
+      verifySolanaFinalVoucherV2Reservation(
+        fixture.connection,
+        fixture.input,
+        fixture.receipt,
+      ),
+      'transaction_status_slot',
+    );
+    expect(fixture.getMultipleAccountsInfoAndContext).not.toHaveBeenCalled();
+  });
+
+  it('replays the same confirmed receipt bytes after later finalization without changing the read floor', async () => {
+    const fixture = makeFixture();
+    const confirmedReceiptBytes = JSON.stringify(fixture.receipt);
+
+    await expect(verifySolanaFinalVoucherV2Reservation(
+      fixture.connection,
+      fixture.input,
+      fixture.receipt,
+    )).resolves.toBeUndefined();
+
+    fixture.getSignatureStatuses.mockResolvedValue({
+      value: [{
+        err: null,
+        confirmationStatus: 'finalized',
+        slot: CONFIRMATION_SLOT,
+        confirmations: null,
+      }],
+    });
+
+    await expect(verifySolanaFinalVoucherV2Reservation(
+      fixture.connection,
+      fixture.input,
+      fixture.receipt,
+    )).resolves.toBeUndefined();
+    expect(JSON.stringify(fixture.receipt)).toBe(confirmedReceiptBytes);
+    expect(fixture.getSignatureStatuses).toHaveBeenCalledTimes(2);
+    expect(fixture.getTransaction).toHaveBeenCalledTimes(2);
+    expect(fixture.getTransaction).toHaveBeenNthCalledWith(
+      2,
       fixture.receipt.transaction,
-      { commitment: 'finalized', maxSupportedTransactionVersion: 0 },
+      { commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
     );
   });
 

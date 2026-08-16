@@ -113,6 +113,7 @@ export type { PasskeySignerWithPublicKey as PasskeySigner } from '@dexterai/vaul
 export { passkeySignerFromP256Keypair } from './passkey-noble';
 export {
   createSolanaFinalVoucherV2ReservationVerifier,
+  inspectSolanaFinalVoucherV2Reservation,
   verifySolanaFinalVoucherV2Reservation,
   SolanaFinalVoucherV2ReservationError,
   SOLANA_FINAL_VOUCHER_V2_MEMO_PROGRAM_ID,
@@ -120,6 +121,7 @@ export {
   type SolanaReservationPostStateEvidence,
   type SolanaReservationTransactionEvidence,
   type SolanaReservationVerifierSeams,
+  type SolanaFinalVoucherV2ReservationVerification,
 } from './reservation-verifier';
 
 // ── Adapter options ────────────────────────────────────────────────────

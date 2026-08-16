@@ -10,18 +10,22 @@
  *      for passkey verification.
  *
  *   2. verifyRegistrationOnChain(connection, registration, programId)
- *      Reads the authoritative SessionAccount and verifies that the complete
- *      registration still matches it. Historical V1 sellers may cache this;
- *      Native Tab V2 sellers must repeat it for every reserved voucher because
- *      currentOutstanding is the per-voucher delivery fence.
+ *      Historical V1 only: reads the authoritative finalized SessionAccount
+ *      and verifies that the complete registration still matches it. V1 may
+ *      cache this result for the session.
  *
- *   3. verifyVoucherSignature(voucher, sessionPublicKey, channelIdBytes)
+ *   3. inspectSolanaFinalVoucherV2Reservation(...) in the Solana adapter
+ *      Native Tab V2: independently proves the exact reservation transaction
+ *      and coherent SessionAccount post-state at least confirmed. This runs
+ *      for every V2 voucher before delivery.
+ *
+ *   4. verifyVoucherSignature(voucher, sessionPublicKey, channelIdBytes)
  *      Verifies the session-key signature over the 44-byte voucher payload.
  *      Synchronous, no I/O, microsecond latency. This is what runs PER
  *      CHUNK during streaming.
  *
- * The seller's per-chunk hot path is (3) only. (1) and (2) run once per
- * session.
+ * Historical V1's per-chunk hot path is (4) after its one-time (1)/(2).
+ * Native Tab V2 repeats (1), (3), and (4) for every admitted voucher.
  */
 
 import nacl from 'tweetnacl';
@@ -215,8 +219,9 @@ export interface OnChainSessionFrontier {
  * the secp256r1 precompile inside that tx — the seller just confirms the
  * on-chain witness still holds.
  *
- * The seller reads the exact derived SessionAccount PDA at `finalized`; a
- * confirmed-only reservation is intentionally insufficient for delivery.
+ * Historical V1 admission reads the exact derived SessionAccount PDA at
+ * `finalized`. V2 delivery uses the voucher-bound reservation verifier, which
+ * independently checks the transaction and coherent post-state at `confirmed`.
  */
 export async function verifyRegistrationOnChain(
   connection: Connection,
@@ -228,8 +233,7 @@ export async function verifyRegistrationOnChain(
     registration.programId,
   );
   // Vault 0.43.2's fetchSessionAccount hardcodes `confirmed`. Do not use it
-  // here: seller delivery is irreversible and V2 reservation admission must
-  // be rooted in finalized state.
+  // here: this legacy V1 check retains its finalized admission boundary.
   const account = await connection.getAccountInfo(
     expectedSessionPda,
     'finalized',
@@ -238,7 +242,7 @@ export async function verifyRegistrationOnChain(
   if (!account) {
     throw new OnChainVerificationError(
       'session_not_active',
-      'no finalized SessionAccount PDA for this (vault, counterparty) — reservation may be confirmed-only, revoked, expiry-swept, or never registered',
+      'no finalized SessionAccount PDA for this (vault, counterparty) — registration may be confirmed-only, revoked, expiry-swept, or never registered',
     );
   }
   if (!account.owner.equals(registration.programId)) {

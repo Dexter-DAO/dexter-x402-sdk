@@ -5,7 +5,8 @@ import type {
   FinalVoucherV2ReservationReceipt,
 } from '../types';
 
-/** Complete deterministic receipt for buyer-runtime unit tests. */
+/** Complete deterministic confirmed receipt for buyer-runtime unit tests.
+ * The historical helper name refers to a FINAL voucher, not Solana finality. */
 export function finalizedReservationReceipt(
   input: FinalVoucherV2ReservationInput,
 ): FinalVoucherV2ReservationReceipt {
@@ -15,7 +16,7 @@ export function finalizedReservationReceipt(
     callerOperationId: input.idempotencyKey,
     network: input.network,
     transaction: '5'.repeat(88),
-    commitment: 'finalized',
+    commitment: 'confirmed',
     confirmationSlot: 100,
     postStateSlot: 101,
     buyerSwigAddress: input.buyerSwigAddress,

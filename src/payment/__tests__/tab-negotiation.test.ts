@@ -522,7 +522,7 @@ describe('v2Strategy.pay — tab negotiation', () => {
     expect(refused.reservationReceipt).toMatchObject({
       contract: 'dexter-native-tab-open-receipt/v1',
       transaction: '5'.repeat(88),
-      commitment: 'finalized',
+      commitment: 'confirmed',
       seller: SELLER_PUBKEY,
       channelId: refused.payload.channelId,
       sessionPublicKey: refused.sessionPublicKey,

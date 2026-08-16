@@ -215,7 +215,7 @@ describe('FINAL V2 reservation identity and provider receipt', () => {
       { callerOperationId: 'other' },
       { network: 'solana:devnet' },
       { transaction: 'not-base58' },
-      { commitment: 'confirmed' as never },
+      { commitment: 'processed' as never },
       { confirmationSlot: 0 },
       { postStateSlot: 99 },
       { buyerSwigAddress: SELLER },
@@ -240,6 +240,19 @@ describe('FINAL V2 reservation identity and provider receipt', () => {
         { ...base, ...mutation },
       )).toThrow(/native_tab_v2_reservation_receipt_invalid/);
     }
+  });
+
+  it('accepts confirmed admission and a finalized observation as stronger evidence', () => {
+    const input = inputFor();
+    const confirmed = finalizedReservationReceipt(input);
+    expect(() => assertFinalVoucherV2ReservationReceipt(
+      input,
+      confirmed,
+    )).not.toThrow();
+    expect(() => assertFinalVoucherV2ReservationReceipt(
+      input,
+      { ...confirmed, commitment: 'finalized' },
+    )).not.toThrow();
   });
 
   it('rejects a mismatched delta or non-FINAL voucher before inspecting receipt', () => {
