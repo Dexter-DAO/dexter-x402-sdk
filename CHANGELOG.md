@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - V2 reservation callbacks now return the full `FinalVoucherV2ReservationReceipt`; boolean acknowledgements are invalid.
 - V2 adapters must implement `verifyFinalVoucherV2Reservation`.
+- Node.js 22 or newer is required. Node 18 and Node 20 are end-of-life, and the current Solana dependency graph relies on modern ESM loading unavailable on Node 18.
 - This release is a major-version candidate because its reservation, revocation, and adapter contracts are intentionally incompatible with the abandoned 5.4.3 candidate.
 
 ### Compatibility notice
