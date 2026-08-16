@@ -98,7 +98,7 @@ import type { TransactionInstruction } from '@solana/web3.js';
 
 // ── Passkey signer abstraction (unified with @dexterai/vault) ───────────
 //
-// The adapter consumes Vault 0.43.1's canonical signer shape: a 33-byte SEC1
+// The adapter consumes Vault 0.43.2's canonical signer shape: a 33-byte SEC1
 // publicKey + signOperation(operationMessage). Both paths conform — node via
 // passkeySignerFromP256Keypair, browser via vault's
 // DexterApiBrowserPasskeySigner — with NO bridge shim, sharing ONE vault

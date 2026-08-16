@@ -181,7 +181,7 @@ export function signOperationWithPasskey(
  * assemble `precompileMessage` — that's x402-protocol assembly the adapter
  * rebuilds itself, identical on both the node and browser paths.
  *
- * `passkeySignerFromP256Keypair` wraps this with Vault 0.43.1's canonical
+ * `passkeySignerFromP256Keypair` wraps this with Vault 0.43.2's canonical
  * V7 challenge construction for supported session operations.
  */
 export function signChallenge(
@@ -208,7 +208,7 @@ export function signChallenge(
 }
 
 /**
- * Build a unified `PasskeySignerWithPublicKey` (Vault 0.43.1's canonical shape)
+ * Build a unified `PasskeySignerWithPublicKey` (Vault 0.43.2's canonical shape)
  * from a locally-held P-256 keypair — the node/CLI path. Returns
  * `{ credentialId, publicKey, signOperation(operationMessage) }`. The signer
  * owns canonical challenge construction for recognized V7 session operations,

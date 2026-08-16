@@ -36,4 +36,7 @@ export default defineConfig({
     '@x402/core',
     '@x402/evm',
   ],
+  // The ads-types package is ESM-only. Bundle its one runtime constant so the
+  // documented CommonJS server entrypoint remains require()-able.
+  noExternal: ['@dexterai/x402-ads-types'],
 });
