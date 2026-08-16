@@ -13,7 +13,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { PublicKey } from '@solana/web3.js';
-import { openTab, TabImpl } from '../tab';
+import { openTab, TabImpl, voucherToHeader } from '../tab';
 import type { Tab, VaultAdapter, SignedVoucher, VoucherPayload } from '../types';
 import { sessionRegisterMessage } from '@dexterai/vault/messages';
 import { DEXTER_VAULT_PROGRAM_ID } from '../instructions';
@@ -257,9 +257,62 @@ describe('Tab.signNextVoucher — commit only after signing', () => {
       sessionNonce: 0x8000_0007,
       reservationAmountAtomic: '5000',
       previousCumulativeAtomic: '0',
-      voucher,
+      voucher: expect.objectContaining({ payload: voucher.payload }),
     }));
+    expect(voucher.reservationReceipt).toEqual(
+      finalizedReservationReceipt(reserveFinalVoucherV2.mock.calls[0][0]),
+    );
     expect(tab.rollbackVoucher(voucher)).toBe(false);
+  });
+
+  it('carries the complete verified receipt through stream() in X-Tab-Voucher', async () => {
+    const { adapter } = makeFakeV2Adapter();
+    const reserveFinalVoucherV2 = vi.fn(async input =>
+      finalizedReservationReceipt(input));
+    const tab = await openTab({
+      vault: adapter,
+      network: 'solana:mainnet',
+      seller: SELLER_PUBKEY,
+      perUnitCap: '0.005',
+      totalCap: '5',
+      reserveFinalVoucherV2,
+    });
+    let header: string | null = null;
+    vi.stubGlobal('fetch', vi.fn(async (_input, init?: RequestInit) => {
+      header = new Headers(init?.headers).get('X-Tab-Voucher');
+      return new Response('data: paid\n\n', { status: 200 });
+    }));
+
+    await tab.stream('https://seller.test/stream');
+
+    expect(header).not.toBeNull();
+    const decoded = JSON.parse(
+      Buffer.from(header!, 'base64').toString('utf8'),
+    );
+    expect(decoded.reservationReceipt).toEqual(
+      finalizedReservationReceipt(reserveFinalVoucherV2.mock.calls[0][0]),
+    );
+  });
+
+  it('refuses to serialize a raw V2 voucher without its reservation receipt', async () => {
+    const { adapter } = makeFakeV2Adapter();
+    const scope = {
+      channelId: '22'.repeat(32),
+      maxAmountAtomic: '5000',
+      revolvingCapacityAtomic: '5000',
+      expiresAtUnix: Math.floor(Date.now() / 1_000) + 3_600,
+      allowedCounterparty: SELLER_PUBKEY,
+    };
+    const session = await adapter.authorizeSession(scope);
+    const raw = await adapter.signWithSession(session, {
+      channelId: scope.channelId,
+      cumulativeAmount: '5000',
+      sequenceNumber: 1,
+    });
+
+    expect(() => voucherToHeader(raw)).toThrow(
+      'native_tab_v2_reservation_receipt_required',
+    );
   });
 
   it('rejects a V2 adapter registration that substitutes the buyer vault identity', async () => {

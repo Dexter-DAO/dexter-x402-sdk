@@ -5,15 +5,15 @@
  * Vault `settle_voucher(increment=true)` reservation followed by an SPL Memo
  * carrying the domain-separated digest of the complete FINAL voucher and its
  * reservation identity. The Vault's recorded Dexter authority must sign both
- * instruction accounts. The provider receipt is still checked as durable
- * lifecycle evidence, but it is no longer the only voucher-to-transaction
- * binding.
+ * instruction accounts. Provider-local lifecycle identifiers are only checked
+ * for receipt shape/consistency: economic authority comes from the finalized
+ * transaction, exact Memo, and one coherent post-state read fenced by the
+ * independently fetched transaction slot.
  */
 
 import {
   Connection,
   PublicKey,
-  type Commitment,
 } from '@solana/web3.js';
 import { bytesToHex } from '@noble/hashes/utils';
 import {
@@ -150,7 +150,9 @@ interface ReadTransactionArgs {
 interface ReadPostStateArgs {
   connection: Connection;
   input: FinalVoucherV2ReservationInput;
-  receipt: FinalVoucherV2ReservationReceipt;
+  /** Independently observed finalized reservation-transaction slot. Never a
+   * provider/buyer supplied postStateSlot. */
+  minimumSlot: number;
 }
 
 export interface SolanaReservationVerifierSeams {
@@ -247,8 +249,8 @@ async function readPostState(
   const response = await args.connection.getMultipleAccountsInfoAndContext(
     [bindingPda, vaultPda, sessionPda],
     {
-      commitment: args.receipt.commitment as Commitment,
-      minContextSlot: args.receipt.postStateSlot,
+      commitment: 'finalized',
+      minContextSlot: args.minimumSlot,
     },
   );
   const [bindingAccount, vaultAccount, sessionAccount] = response.value;
@@ -462,7 +464,7 @@ function inspectReservationTransaction(
 
 function inspectPostState(
   input: FinalVoucherV2ReservationInput,
-  receipt: FinalVoucherV2ReservationReceipt,
+  minimumSlot: number,
   authority: string,
   state: SolanaReservationPostStateEvidence,
 ): void {
@@ -475,8 +477,7 @@ function inspectPostState(
 
   if (
     !Number.isSafeInteger(state.contextSlot)
-    || state.contextSlot < receipt.postStateSlot
-    || state.contextSlot < receipt.confirmationSlot
+    || state.contextSlot < minimumSlot
   ) {
     invalid('post_state_slot');
   }
@@ -567,9 +568,9 @@ export async function verifySolanaFinalVoucherV2Reservation(
   const state = await (seams.readPostState ?? readPostState)({
     connection,
     input,
-    receipt,
+    minimumSlot: transaction.slot,
   });
-  inspectPostState(input, receipt, authority, state);
+  inspectPostState(input, transaction.slot, authority, state);
 }
 
 export function createSolanaFinalVoucherV2ReservationVerifier(

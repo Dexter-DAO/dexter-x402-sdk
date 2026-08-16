@@ -448,6 +448,7 @@ export async function tabFromGrant(options: TabFromGrantOptions): Promise<Tab> {
           const receipt = await options.reserveFinalVoucherV2!(input);
           assertFinalVoucherV2ReservationReceipt(input, receipt);
           await vault.verifyFinalVoucherV2Reservation!(input, receipt);
+          return receipt;
         }
       : undefined,
     closeMode: 'settle-only',

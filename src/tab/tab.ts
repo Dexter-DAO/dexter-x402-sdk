@@ -30,6 +30,8 @@ import type {
   VaultAdapter,
   VoucherPayload,
   SignedVoucher,
+  TabSignedVoucher,
+  FinalVoucherV2ReservationReceipt,
 } from './types';
 import {
   TabClosedError,
@@ -125,7 +127,7 @@ interface TabInternals {
     voucher: SignedVoucher;
     incrementAtomic: AtomicAmount;
     previousCumulativeAtomic: AtomicAmount;
-  }) => Promise<void>;
+  }) => Promise<FinalVoucherV2ReservationReceipt>;
   /**
    * What `close()` does after posting the final voucher to `/tab/settle`:
    *  - 'revoke' (default, openTab): passkey-sign + submit the on-chain session
@@ -167,7 +169,7 @@ class TabImpl implements Tab {
    *  facilitator for on-chain settle without needing the seller to round-trip
    *  it back to us. Null if no voucher was signed in this tab's lifetime
    *  (close-without-stream → nothing to settle). */
-  private lastSignedVoucher: SignedVoucher | null = null;
+  private lastSignedVoucher: TabSignedVoucher | null = null;
   /** Exact economic increment bound to `lastSignedVoucher`. In Native Tab V2
    *  this is also the immutable reservation amount, and `/tab/settle` must
    *  send this value rather than reconstructing it from lifetime cumulative. */
@@ -176,7 +178,7 @@ class TabImpl implements Tab {
    *  immediately before the current one. Retained so `rollbackVoucher` can
    *  restore the pre-refusal voucher when a seller honestly refuses the
    *  most recent one. Set at commit time inside `signNextVoucher`. */
-  private previousSignedVoucher: SignedVoucher | null = null;
+  private previousSignedVoucher: TabSignedVoucher | null = null;
   /** Increment paired with `previousSignedVoucher`, retained for V1 rollback. */
   private previousSignedVoucherIncrementAtomic: bigint | null = null;
 
@@ -219,7 +221,7 @@ class TabImpl implements Tab {
    * The seller MUST verify before delivering. The SDK only protects the
    * buyer from over-signing (cap, expiry, perUnitCap).
    */
-  async signNextVoucher(incrementAtomic: AtomicAmount): Promise<SignedVoucher> {
+  async signNextVoucher(incrementAtomic: AtomicAmount): Promise<TabSignedVoucher> {
     this.beginOperation('voucher');
     try {
       return await this.signNextVoucherExclusive(incrementAtomic);
@@ -230,7 +232,7 @@ class TabImpl implements Tab {
 
   private async signNextVoucherExclusive(
     incrementAtomic: AtomicAmount,
-  ): Promise<SignedVoucher> {
+  ): Promise<TabSignedVoucher> {
     if (this.closed) throw new TabClosedError(this.channelId);
 
     const incBig = BigInt(incrementAtomic);
@@ -288,23 +290,28 @@ class TabImpl implements Tab {
     // the voucher can be returned to a merchant-facing caller. If it times
     // out, counters stay unchanged and the next retry reproduces the same
     // exact bytes for idempotent reconciliation.
+    let reservationReceipt: FinalVoucherV2ReservationReceipt | undefined;
     if (this.internals.beforeVoucherRelease) {
-      await this.internals.beforeVoucherRelease({
+      reservationReceipt = await this.internals.beforeVoucherRelease({
         voucher: signed,
         incrementAtomic: incBig.toString(),
         previousCumulativeAtomic: this.cumulativeAtomic.toString(),
       });
     }
 
+    const released: TabSignedVoucher = reservationReceipt
+      ? { ...signed, reservationReceipt }
+      : signed;
+
     // Commit: counters, one level of history, and the new last voucher.
     this.previousSignedVoucher = this.lastSignedVoucher;
     this.previousSignedVoucherIncrementAtomic =
       this.lastSignedVoucherIncrementAtomic;
-    this.lastSignedVoucher = signed;
+    this.lastSignedVoucher = released;
     this.lastSignedVoucherIncrementAtomic = incBig;
     this.sequenceNumber = nextSequence;
     this.cumulativeAtomic = newCumulative;
-    return signed;
+    return released;
   }
 
   private beginOperation(operation: 'voucher' | 'close' | 'rollback'): void {
@@ -531,18 +538,32 @@ function isContextBoundV2Session(session: SessionKey): boolean {
 
 /**
  * Serialize a signed voucher to the `X-Tab-Voucher` header value:
- * base64-encoded JSON with hex-encoded byte fields. This is THE wire
- * encoding the seller middleware and the facilitator's `/tab/settle`
- * endpoint both parse — `stream()` uses it, and `payAndFetch` uses it to
- * pay a `tab`-scheme accepts entry directly.
+ * base64-encoded JSON with hex-encoded byte fields. V2 additionally carries
+ * the complete reservation receipt that was independently verified before the
+ * voucher left the buyer. The receipt is an untrusted transaction locator at
+ * the seller; it never replaces the seller's own finalized chain proof.
+ *
+ * This is THE wire encoding the seller middleware and the facilitator's
+ * `/tab/settle` endpoint both parse — `stream()` uses it, and `payAndFetch`
+ * uses it to pay a `tab`-scheme accepts entry directly.
  */
-export function voucherToHeader(signed: SignedVoucher): string {
+export function voucherToHeader(
+  signed: SignedVoucher | TabSignedVoucher,
+  reservationReceipt?: FinalVoucherV2ReservationReceipt,
+): string {
+  const carriedReceipt = reservationReceipt
+    ?? (signed as TabSignedVoucher).reservationReceipt;
+  const isV2 = (signed.payload.sequenceNumber & 0x8000_0000) !== 0;
+  if (isV2 && !carriedReceipt) {
+    throw new Error('native_tab_v2_reservation_receipt_required');
+  }
   return Buffer.from(
     JSON.stringify({
       payload: signed.payload,
       sessionPublicKey: bytesToHex(signed.sessionPublicKey),
       sessionRegistration: bytesToHex(signed.sessionRegistration),
       sessionSignature: bytesToHex(signed.sessionSignature),
+      ...(carriedReceipt ? { reservationReceipt: carriedReceipt } : {}),
     }),
     'utf8',
   ).toString('base64');
@@ -897,6 +918,7 @@ export async function openTab(options: OpenTabOptions): Promise<Tab> {
       const receipt = await options.reserveFinalVoucherV2!(input);
       assertFinalVoucherV2ReservationReceipt(input, receipt);
       await options.vault.verifyFinalVoucherV2Reservation!(input, receipt);
+      return receipt;
     };
   }
 
