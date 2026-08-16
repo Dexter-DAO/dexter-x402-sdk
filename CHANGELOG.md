@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.0-rc.2] - 2026-08-16
+
+### Fixed
+
+- Native Tab V2 buyer and seller admission now completes at Solana `confirmed` after independently fetching the exact successful reservation transaction, verifying its Dexter-authority-signed voucher-binding Memo, and reading coherent Vault/SessionAccount state anchored to that transaction slot. Paid requests no longer wait for finalization; processed-only evidence still fails closed.
+- V2 seller channel binding can no longer be poisoned by a scope-rejected first request, a concurrent competing registration, lease refusal, or a downstream durable-ledger failure.
+
+### Unchanged safety boundaries
+
+- Rollback, failed-transaction retirement, blockhash-expiry adjudication, close, and revoke retain their finalized/background boundaries. A later finalization preserves the already-issued confirmed receipt byte-for-byte.
+
 ## [6.0.0-rc.1] - 2026-08-16
 
 ### Fixed
