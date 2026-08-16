@@ -173,7 +173,7 @@ describe('payUrlWithTab', () => {
     expect(decoded.reservationReceipt).toMatchObject({
       contract: 'dexter-native-tab-open-receipt/v1',
       transaction: '5'.repeat(88),
-      commitment: 'finalized',
+      commitment: 'confirmed',
       buyerSwigAddress: SELLER,
       vaultPda: SELLER,
       seller: SELLER,

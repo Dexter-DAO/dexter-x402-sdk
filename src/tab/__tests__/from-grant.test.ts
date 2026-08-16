@@ -27,8 +27,15 @@ import { DEXTER_VAULT_PROGRAM_ID } from '../instructions';
 import { sessionRegisterMessage } from '../messages';
 import { signVoucher } from '../sessions';
 import { finalizedReservationReceipt } from './reservation-fixture';
-import { verifySolanaFinalVoucherV2Reservation } from '../adapters/solana/reservation-verifier';
-import { parseRegistration, verifyVoucherSignature } from '../seller/verify';
+import {
+  inspectSolanaFinalVoucherV2Reservation,
+  verifySolanaFinalVoucherV2Reservation,
+} from '../adapters/solana/reservation-verifier';
+import {
+  parseRegistration,
+  verifyRegistrationOnChain,
+  verifyVoucherSignature,
+} from '../seller/verify';
 import { tabMiddleware } from '../seller/middleware';
 import type {
   Request as ExpressRequest,
@@ -36,9 +43,16 @@ import type {
   NextFunction,
 } from 'express';
 
-vi.mock('../adapters/solana/reservation-verifier', () => ({
-  verifySolanaFinalVoucherV2Reservation: vi.fn(async () => undefined),
-}));
+vi.mock('../adapters/solana/reservation-verifier', async () => {
+  const actual = await vi.importActual<
+    typeof import('../adapters/solana/reservation-verifier')
+  >('../adapters/solana/reservation-verifier');
+  return {
+    ...actual,
+    inspectSolanaFinalVoucherV2Reservation: vi.fn(),
+    verifySolanaFinalVoucherV2Reservation: vi.fn(async () => undefined),
+  };
+});
 
 // ── Fixtures ───────────────────────────────────────────────────────────
 
@@ -195,6 +209,24 @@ function baseOptions(
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.mocked(verifySolanaFinalVoucherV2Reservation).mockClear();
+  vi.mocked(inspectSolanaFinalVoucherV2Reservation)
+    .mockClear()
+    .mockImplementation(async (connection, input) => {
+      const registration = parseRegistration(
+        input.voucher.sessionRegistration,
+      );
+      const onChain = await verifyRegistrationOnChain(
+        connection,
+        registration,
+      );
+      return {
+        ...onChain,
+        commitment: 'confirmed',
+        confirmationSlot: 100,
+        postStateSlot: 101,
+        wireVersion: 2 as const,
+      };
+    });
 });
 
 // ── 1. Registration byte-exactness vs the grant ceremony's own output ──

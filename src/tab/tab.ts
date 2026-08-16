@@ -541,7 +541,7 @@ function isContextBoundV2Session(session: SessionKey): boolean {
  * base64-encoded JSON with hex-encoded byte fields. V2 additionally carries
  * the complete reservation receipt that was independently verified before the
  * voucher left the buyer. The receipt is an untrusted transaction locator at
- * the seller; it never replaces the seller's own finalized chain proof.
+ * the seller; it never replaces the seller's own at-least-confirmed chain proof.
  *
  * This is THE wire encoding the seller middleware and the facilitator's
  * `/tab/settle` endpoint both parse — `stream()` uses it, and `payAndFetch`

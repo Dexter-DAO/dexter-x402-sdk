@@ -153,10 +153,11 @@ export interface TabFromGrantOptions {
    * Required for every context-bound V2 grant. Called with the exact FINAL
    * voucher before it can be returned to merchant-facing code. The
    * implementation must durably persist and establish that voucher's exact
-   * on-chain reservation, be idempotent for identical bytes, and resolve only
-   * after authoritative finalization. Low-bit V1 grants are rejected before
-   * this seam or any external I/O because v6 cannot reconstruct their arming
-   * identity safely.
+   * on-chain reservation, be idempotent for identical bytes, and resolve after
+   * authoritative at-least-confirmed evidence. Already-finalized evidence is
+   * stronger and remains valid, but this interactive seam must not wait for
+   * finalization. Low-bit V1 grants are rejected before this seam or any
+   * external I/O because v6 cannot reconstruct their arming identity safely.
    */
   reserveFinalVoucherV2?: ReserveFinalVoucherV2;
 }

@@ -239,7 +239,10 @@ export function assertFinalVoucherV2ReservationReceipt(
   if (!HEX_32.test(receipt.operationId)) invalid('operation_id');
   if (!OPERATION_ID.test(receipt.callerOperationId)) invalid('caller_operation_id');
   if (!TRANSACTION_SIGNATURE.test(receipt.transaction)) invalid('transaction');
-  if (receipt.commitment !== 'finalized') {
+  if (
+    receipt.commitment !== 'confirmed'
+    && receipt.commitment !== 'finalized'
+  ) {
     invalid('commitment');
   }
   requireSafeNonnegativeInteger(receipt.confirmationSlot, 'confirmation_slot');

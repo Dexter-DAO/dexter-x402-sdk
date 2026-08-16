@@ -66,7 +66,7 @@ const { result, tab } = await payUrlWithTab(
 await tab?.close();                              // one on-chain settle pays the seller for everything
 ```
 
-That's the whole loop: one tap to open, unlimited calls under the cap, one settle to close. The seller's address comes off the wire from the URL's own `402` challenge — never from your code. The `vault` is built once from your passkey-rooted wallet; see [Setup](#setup). The reservation route belongs in your authenticated backend: it returns a voucher-bound receipt only after finality, and the SDK independently verifies the finalized Solana transaction, its Dexter-authority-signed voucher-binding Memo, and finalized Vault/SessionAccount state before releasing the FINAL voucher.
+That's the whole loop: one tap to open, unlimited calls under the cap, one settle to close. The seller's address comes off the wire from the URL's own `402` challenge — never from your code. The `vault` is built once from your passkey-rooted wallet; see [Setup](#setup). The reservation route belongs in your authenticated backend: it returns a voucher-bound receipt once the exact Solana transaction is confirmed. Buyer and seller each independently verify that transaction, its Dexter-authority-signed voucher-binding Memo, and coherent Vault/SessionAccount state anchored at the transaction slot. Processed-only evidence is rejected; finalized evidence is accepted when already present, but paid requests do not wait for finalization. Session close/revoke remains the finalized terminal step.
 
 ---
 

@@ -6,9 +6,9 @@
  * carrying the domain-separated digest of the complete FINAL voucher and its
  * reservation identity. The Vault's recorded Dexter authority must sign both
  * instruction accounts. Provider-local lifecycle identifiers are only checked
- * for receipt shape/consistency: economic authority comes from the finalized
- * transaction, exact Memo, and one coherent post-state read fenced by the
- * independently fetched transaction slot.
+ * for receipt shape/consistency: economic authority comes from the
+ * independently confirmed transaction, exact Memo, and one coherent post-state
+ * read fenced by the independently fetched transaction slot.
  */
 
 import {
@@ -100,6 +100,7 @@ interface TransactionInstructionEvidence {
 
 export interface SolanaReservationTransactionEvidence {
   slot: number;
+  confirmationStatus: 'confirmed' | 'finalized';
   err: unknown | null;
   signatures: string[];
   accountKeys: TransactionAccountEvidence[];
@@ -144,15 +145,16 @@ export interface SolanaReservationPostStateEvidence {
 interface ReadTransactionArgs {
   connection: Connection;
   signature: string;
-  commitment: 'finalized';
+  commitment: 'confirmed';
 }
 
 interface ReadPostStateArgs {
   connection: Connection;
   input: FinalVoucherV2ReservationInput;
-  /** Independently observed finalized reservation-transaction slot. Never a
+  /** Independently observed confirmed reservation-transaction slot. Never a
    * provider/buyer supplied postStateSlot. */
   minimumSlot: number;
+  commitment: 'confirmed';
 }
 
 export interface SolanaReservationVerifierSeams {
@@ -167,6 +169,20 @@ export interface SolanaReservationVerifierSeams {
 async function readTransaction(
   args: ReadTransactionArgs,
 ): Promise<SolanaReservationTransactionEvidence | null> {
+  const statuses = await args.connection.getSignatureStatuses(
+    [args.signature],
+    { searchTransactionHistory: true },
+  );
+  const status = statuses.value[0] ?? null;
+  if (!status) return null;
+  if (
+    status.confirmationStatus !== 'confirmed'
+    && status.confirmationStatus !== 'finalized'
+  ) {
+    invalid('transaction_commitment');
+  }
+  if (status.err !== null) invalid('transaction_failed');
+
   // Use the raw compiled message. `jsonParsed` may replace Memo bytes and
   // account indexes with an RPC-specific parsed shape, which is insufficient
   // for an exact transaction binding.
@@ -176,6 +192,7 @@ async function readTransaction(
   });
   if (!response) return null;
   if (!response.meta) invalid('transaction_meta_missing');
+  if (response.slot !== status.slot) invalid('transaction_status_slot');
 
   const message = response.transaction.message;
   const accountKeys = message.version === 0
@@ -191,6 +208,7 @@ async function readTransaction(
 
   return {
     slot: response.slot,
+    confirmationStatus: status.confirmationStatus,
     err: response.meta.err,
     signatures: [...response.transaction.signatures],
     accountKeys: Array.from({ length: accountKeys.length }, (_, index) => ({
@@ -249,7 +267,7 @@ async function readPostState(
   const response = await args.connection.getMultipleAccountsInfoAndContext(
     [bindingPda, vaultPda, sessionPda],
     {
-      commitment: 'finalized',
+      commitment: args.commitment,
       minContextSlot: args.minimumSlot,
     },
   );
@@ -467,7 +485,7 @@ function inspectPostState(
   minimumSlot: number,
   authority: string,
   state: SolanaReservationPostStateEvidence,
-): void {
+): SolanaFinalVoucherV2ReservationVerification {
   const programId = publicKey(input.programId, 'program_id');
   const swig = publicKey(input.buyerSwigAddress, 'buyer_swig');
   const vaultPda = publicKey(input.vaultPda, 'vault_pda');
@@ -536,14 +554,39 @@ function inspectPostState(
   if (frontier.toString() !== input.previousCumulativeAtomic) {
     invalid('session_frontier');
   }
+  return {
+    commitment: 'confirmed',
+    confirmationSlot: minimumSlot,
+    postStateSlot: state.contextSlot,
+    sessionAccountVersion: state.session.version,
+    wireVersion: 2,
+    frontierAtomic: frontier.toString(),
+    spentAtomic: state.session.spent.toString(),
+    currentOutstandingAtomic: state.session.currentOutstanding.toString(),
+    crystallizedCumulativeAtomic:
+      state.session.crystallizedCumulative.toString(),
+  };
 }
 
-export async function verifySolanaFinalVoucherV2Reservation(
+export interface SolanaFinalVoucherV2ReservationVerification {
+  /** Independently observed chain commitment; never copied from the receipt. */
+  commitment: 'confirmed' | 'finalized';
+  confirmationSlot: number;
+  postStateSlot: number;
+  sessionAccountVersion: number;
+  wireVersion: 2;
+  frontierAtomic: string;
+  spentAtomic: string;
+  currentOutstandingAtomic: string;
+  crystallizedCumulativeAtomic: string;
+}
+
+export async function inspectSolanaFinalVoucherV2Reservation(
   connection: Connection,
   input: FinalVoucherV2ReservationInput,
   receipt: FinalVoucherV2ReservationReceipt,
   seams: SolanaReservationVerifierSeams = {},
-): Promise<void> {
+): Promise<SolanaFinalVoucherV2ReservationVerification> {
   try {
     assertFinalVoucherV2ReservationReceipt(input, receipt);
   } catch (error) {
@@ -560,29 +603,55 @@ export async function verifySolanaFinalVoucherV2Reservation(
   const transaction = await (seams.readTransaction ?? readTransaction)({
     connection,
     signature: receipt.transaction,
-    commitment: receipt.commitment,
+    commitment: 'confirmed',
   });
   if (!transaction) invalid('transaction_missing');
+  if (
+    transaction.confirmationStatus !== 'confirmed'
+    && transaction.confirmationStatus !== 'finalized'
+  ) {
+    invalid('transaction_commitment');
+  }
   const authority = inspectReservationTransaction(input, receipt, transaction);
 
   const state = await (seams.readPostState ?? readPostState)({
     connection,
     input,
     minimumSlot: transaction.slot,
+    commitment: 'confirmed',
   });
-  inspectPostState(input, transaction.slot, authority, state);
+  return {
+    ...inspectPostState(input, transaction.slot, authority, state),
+    commitment: transaction.confirmationStatus,
+  };
+}
+
+export async function verifySolanaFinalVoucherV2Reservation(
+  connection: Connection,
+  input: FinalVoucherV2ReservationInput,
+  receipt: FinalVoucherV2ReservationReceipt,
+  seams: SolanaReservationVerifierSeams = {},
+): Promise<void> {
+  await inspectSolanaFinalVoucherV2Reservation(
+    connection,
+    input,
+    receipt,
+    seams,
+  );
 }
 
 export function createSolanaFinalVoucherV2ReservationVerifier(
   connection: Connection,
   seams: SolanaReservationVerifierSeams = {},
 ): VerifyFinalVoucherV2Reservation {
-  return (input, receipt) => verifySolanaFinalVoucherV2Reservation(
-    connection,
-    input,
-    receipt,
-    seams,
-  );
+  return async (input, receipt) => {
+    await inspectSolanaFinalVoucherV2Reservation(
+      connection,
+      input,
+      receipt,
+      seams,
+    );
+  };
 }
 
 /** Production program ID is exported here only as a caller-side convenience;

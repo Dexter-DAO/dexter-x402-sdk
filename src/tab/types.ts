@@ -94,8 +94,10 @@ export interface VaultAdapter {
   /**
    * V2-only independent postcondition check. The reservation provider returns
    * a voucher-bound receipt; the adapter must then prove the corresponding
-   * finalized on-chain reservation and authority-signed voucher-binding Memo
+   * confirmed on-chain reservation and authority-signed voucher-binding Memo
    * from its own chain connection before the voucher may leave this process.
+   * Finalized evidence is accepted when already available, but the interactive
+   * path never waits for finalization.
    * V1 adapters omit this method.
    */
   verifyFinalVoucherV2Reservation?: VerifyFinalVoucherV2Reservation;
@@ -123,7 +125,7 @@ export interface FinalVoucherV2ReservationInput {
 
 /**
  * Provider attestation returned only after its durable transaction lifecycle
- * has finalized the exact reservation and read back the exact post-state.
+ * has confirmed the exact reservation and read back the exact post-state.
  * The SDK validates every voucher/session field and the VaultAdapter proves
  * both the reservation and its authority-signed voucher-binding Memo from the
  * transaction itself; this is deliberately not a boolean ack.
@@ -136,10 +138,10 @@ export interface FinalVoucherV2ReservationReceipt {
   callerOperationId: string;
   network: string;
   transaction: string;
-  /** FINAL vouchers are released only after the exact reservation transaction
-   * reaches Solana finalized commitment. A merely confirmed fork is not a
-   * durable capacity guarantee. */
-  commitment: 'finalized';
+  /** Commitment the provider observed for the exact reservation transaction.
+   * The receipt is only a locator/evidence claim: buyer and seller independently
+   * require the transaction and slot at least `confirmed`. */
+  commitment: 'confirmed' | 'finalized';
   confirmationSlot: number;
   postStateSlot: number;
   buyerSwigAddress: string;
@@ -170,7 +172,7 @@ export interface FinalVoucherV2ReservationReceipt {
  * Voucher released by a live Tab handle. Historical V1 vouchers omit the
  * receipt. Every V2 voucher carries the complete provider receipt that the
  * buyer already verified before release; sellers still treat that receipt as
- * untrusted evidence and independently prove its finalized transaction.
+ * untrusted evidence and independently prove its transaction at least confirmed.
  *
  * This extends the existing SignedVoucher shape so existing callers that only
  * consume the four signed fields remain source-compatible.
