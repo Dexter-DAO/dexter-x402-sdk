@@ -69,6 +69,7 @@ export type {
   LiveSessionDetails,
   FinalVoucherV2ReservationInput,
   FinalVoucherV2ReservationReceipt,
+  TabSignedVoucher,
   ReserveFinalVoucherV2,
   VerifyFinalVoucherV2Reservation,
 } from './types';

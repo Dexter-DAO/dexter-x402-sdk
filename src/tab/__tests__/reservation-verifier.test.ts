@@ -331,8 +331,43 @@ describe('Solana FINAL V2 reservation verifier', () => {
     expect(fixture.getMultipleAccountsInfoAndContext).toHaveBeenCalledTimes(1);
     expect(fixture.getMultipleAccountsInfoAndContext.mock.calls[0][1]).toEqual({
       commitment: 'finalized',
-      minContextSlot: POST_STATE_SLOT,
+      minContextSlot: CONFIRMATION_SLOT,
     });
+  });
+
+  it('never lets an untrusted receipt postStateSlot control the RPC wait fence', async () => {
+    const fixture = makeFixture();
+    fixture.receipt.postStateSlot = Number.MAX_SAFE_INTEGER;
+
+    await expect(verifySolanaFinalVoucherV2Reservation(
+      fixture.connection,
+      fixture.input,
+      fixture.receipt,
+    )).resolves.toBeUndefined();
+
+    expect(fixture.getMultipleAccountsInfoAndContext.mock.calls[0][1]).toEqual({
+      commitment: 'finalized',
+      minContextSlot: CONFIRMATION_SLOT,
+    });
+  });
+
+  it('rejects a reservation transaction visible only at confirmed commitment', async () => {
+    const fixture = makeFixture();
+    fixture.getTransaction.mockImplementation(async (_signature, options) =>
+      options.commitment === 'confirmed' ? fixture.transaction : null);
+
+    await expectCode(
+      verifySolanaFinalVoucherV2Reservation(
+        fixture.connection,
+        fixture.input,
+        fixture.receipt,
+      ),
+      'transaction_missing',
+    );
+    expect(fixture.getTransaction).toHaveBeenCalledWith(
+      fixture.receipt.transaction,
+      { commitment: 'finalized', maxSupportedTransactionVersion: 0 },
+    );
   });
 
   it('rejects a landed transaction with a program error', async () => {
@@ -512,6 +547,34 @@ describe('Solana FINAL V2 reservation verifier', () => {
     );
   });
 
+  it('rejects voucher B with the same amount/outstanding against voucher A\'s transaction Memo', async () => {
+    const fixture = makeFixture();
+    const voucherB: SignedVoucher = {
+      ...fixture.input.voucher,
+      sessionSignature: new Uint8Array(64).fill(0x53),
+    };
+    const identityB = finalVoucherV2ReservationIdentity(voucherB);
+    const inputB: FinalVoucherV2ReservationInput = {
+      ...fixture.input,
+      ...identityB,
+      voucher: voucherB,
+    };
+    const receiptB: FinalVoucherV2ReservationReceipt = {
+      ...fixture.receipt,
+      callerOperationId: identityB.idempotencyKey,
+      voucherDigest: identityB.voucherDigest,
+    };
+
+    await expectCode(
+      verifySolanaFinalVoucherV2Reservation(
+        fixture.connection,
+        inputB,
+        receiptB,
+      ),
+      'reservation_memo_digest',
+    );
+  });
+
   it('rejects a Memo not naming the exact Dexter authority signer', async () => {
     const fixture = makeFixture();
     const settle = fixture.transaction.transaction.message
@@ -564,6 +627,24 @@ describe('Solana FINAL V2 reservation verifier', () => {
         fixture.receipt,
       ),
       'session_frontier',
+    );
+  });
+
+  it('rejects a reservation that was already consumed before seller admission', async () => {
+    const fixture = makeFixture();
+    fixture.sessionData.writeBigUInt64LE(
+      PREVIOUS_CUMULATIVE + RESERVATION_AMOUNT,
+      126,
+    );
+    fixture.sessionData.writeBigUInt64LE(0n, 134);
+
+    await expectCode(
+      verifySolanaFinalVoucherV2Reservation(
+        fixture.connection,
+        fixture.input,
+        fixture.receipt,
+      ),
+      'session_post_state',
     );
   });
 

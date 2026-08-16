@@ -146,6 +146,11 @@ export class InvalidVoucherError extends Error {
       | 'session_expired'
       | 'wrong_counterparty'
       | 'non_monotonic'
+      | 'wire_version_mismatch'
+      | 'reservation_mismatch'
+      | 'voucher_already_covered'
+      | 'reservation_proof_missing'
+      | 'reservation_proof_invalid'
       | 'channel_busy',
     detail?: string,
   ) {

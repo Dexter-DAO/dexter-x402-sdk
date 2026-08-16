@@ -519,6 +519,19 @@ describe('v2Strategy.pay — tab negotiation', () => {
     );
     expect(refused.payload.sequenceNumber).toBe(0x8000_0002);
     expect(refused.payload.cumulativeAmount).toBe('10000');
+    expect(refused.reservationReceipt).toMatchObject({
+      contract: 'dexter-native-tab-open-receipt/v1',
+      transaction: '5'.repeat(88),
+      commitment: 'finalized',
+      seller: SELLER_PUBKEY,
+      channelId: refused.payload.channelId,
+      sessionPublicKey: refused.sessionPublicKey,
+      cumulativeAmountAtomic: '10000',
+      sequenceNumber: 0x8000_0002,
+      reservationAmountAtomic: '5000',
+      currentOutstandingAfterAtomic: '5000',
+    });
+    expect(refused.reservationReceipt.voucherDigest).toMatch(/^[0-9a-f]{64}$/);
     expect(tab.lastSignedVoucher?.payload).toEqual(refused.payload);
     expect(tab.state.spent).toBe('0.01');
   });

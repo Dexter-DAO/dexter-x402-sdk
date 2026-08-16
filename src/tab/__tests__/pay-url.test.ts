@@ -170,6 +170,21 @@ describe('payUrlWithTab', () => {
     );
     expect(decoded.payload).toBeDefined();
     expect(decoded.sessionPublicKey).toBeDefined();
+    expect(decoded.reservationReceipt).toMatchObject({
+      contract: 'dexter-native-tab-open-receipt/v1',
+      transaction: '5'.repeat(88),
+      commitment: 'finalized',
+      buyerSwigAddress: SELLER,
+      vaultPda: SELLER,
+      seller: SELLER,
+      channelId: decoded.payload.channelId,
+      sessionPublicKey: decoded.sessionPublicKey,
+      cumulativeAmountAtomic: decoded.payload.cumulativeAmount,
+      sequenceNumber: decoded.payload.sequenceNumber,
+      reservationAmountAtomic: decoded.payload.cumulativeAmount,
+      currentOutstandingAfterAtomic: decoded.payload.cumulativeAmount,
+    });
+    expect(decoded.reservationReceipt.voucherDigest).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('2. free URL — 200 with no payment challenge returns paid:false, tab null', async () => {

@@ -10,10 +10,10 @@
  *      for passkey verification.
  *
  *   2. verifyRegistrationOnChain(connection, registration, programId)
- *      Reads the vault account on chain ONCE per session and verifies that
- *      the buyer's passkey would have produced the registration's signature.
- *      Cached after the first call; subsequent vouchers in the same session
- *      reuse the cached result.
+ *      Reads the authoritative SessionAccount and verifies that the complete
+ *      registration still matches it. Historical V1 sellers may cache this;
+ *      Native Tab V2 sellers must repeat it for every reserved voucher because
+ *      currentOutstanding is the per-voucher delivery fence.
  *
  *   3. verifyVoucherSignature(voucher, sessionPublicKey, channelIdBytes)
  *      Verifies the session-key signature over the 44-byte voucher payload.
@@ -34,8 +34,8 @@ import { voucherPayloadMessage } from '../messages';
 import { DEXTER_VAULT_PROGRAM_ID } from '../instructions';
 // V6: sessions live in their own per-counterparty PDA, not inline in the vault.
 import {
+  decodeSessionAccount,
   deriveSessionPda,
-  fetchSessionAccount,
   isSessionLive,
 } from '@dexterai/vault/session';
 import {
@@ -70,6 +70,16 @@ export interface ParsedRegistration {
   allowedCounterparty: PublicKey;
   nonce: number;
   maxRevolvingCapacity: bigint;     // u64 at [180..188)
+}
+
+export type NativeTabWireVersion = 1 | 2;
+
+/** Both the registration nonce and voucher sequence reserve their high bit as
+ * the Native Tab V2 wire marker. Keeping this conversion shared prevents the
+ * seller from interpreting a V1 registration with a V2 voucher (or vice
+ * versa) under different signature/settlement rules. */
+export function nativeTabWireVersion(taggedU32: number): NativeTabWireVersion {
+  return taggedU32 >= 0x8000_0000 ? 2 : 1;
 }
 
 export class InvalidRegistrationError extends Error {
@@ -168,6 +178,7 @@ export class OnChainVerificationError extends Error {
       | 'session_not_active'
       | 'session_pubkey_mismatch'
       | 'registration_state_mismatch'
+      | 'wire_version_mismatch'
       | 'wrong_program',
     detail?: string,
   ) {
@@ -176,20 +187,25 @@ export class OnChainVerificationError extends Error {
   }
 }
 
-/** The session's on-chain terminal odometers, read as a by-product of the
- *  first-voucher verification. `frontierAtomic` = max(spent, crystallized) —
- *  the floor below which no voucher can ever settle or lock again. The
- *  middleware seeds a FRESH channel's delivered baseline from it so a resumed
- *  session can't re-consume budget that already settled/crystallized. */
+/** The session's authoritative on-chain delivery evidence.
+ * `frontierAtomic` = max(spent, crystallized), the floor below which no voucher
+ * can ever settle or lock again. V2 additionally requires
+ * `currentOutstandingAtomic` to equal the voucher's uncovered delta. */
 export interface OnChainSessionFrontier {
+  /** Program account layout version. A live SessionAccount is currently 1. */
+  sessionAccountVersion: number;
+  /** V1/V2 authorization wire selected by the active registration nonce. */
+  wireVersion: NativeTabWireVersion;
   frontierAtomic: AtomicAmount;
   spentAtomic: AtomicAmount;
+  currentOutstandingAtomic: AtomicAmount;
   crystallizedCumulativeAtomic: AtomicAmount;
 }
 
 /**
  * Verify a registration against on-chain state. Throws on any mismatch;
- * on success returns the session's terminal odometers (frontier).
+ * on success returns the session's live version, terminal frontier, and exact
+ * outstanding reservation.
  *
  * V6: a session is its own PDA ([b"session", vault, allowed_counterparty]),
  * NOT an inline field on the vault. We read that SessionAccount and confirm it
@@ -199,25 +215,53 @@ export interface OnChainSessionFrontier {
  * the secp256r1 precompile inside that tx — the seller just confirms the
  * on-chain witness still holds.
  *
- * fetchSessionAccount reads at the connection's commitment; pass a connection
- * configured at the commitment the buyer's registration was confirmed to (the
- * adapter waits for visibility before openTab returns).
+ * The seller reads the exact derived SessionAccount PDA at `finalized`; a
+ * confirmed-only reservation is intentionally insufficient for delivery.
  */
 export async function verifyRegistrationOnChain(
   connection: Connection,
   registration: ParsedRegistration,
 ): Promise<OnChainSessionFrontier> {
-  const state = await fetchSessionAccount(
-    connection,
+  const [expectedSessionPda] = deriveSessionPda(
     registration.vaultPda,
     registration.allowedCounterparty,
     registration.programId,
   );
+  // Vault 0.43.1's fetchSessionAccount hardcodes `confirmed`. Do not use it
+  // here: seller delivery is irreversible and V2 reservation admission must
+  // be rooted in finalized state.
+  const account = await connection.getAccountInfo(
+    expectedSessionPda,
+    'finalized',
+  );
 
-  if (!state || state.version === 0) {
+  if (!account) {
     throw new OnChainVerificationError(
       'session_not_active',
-      'no live SessionAccount PDA for this (vault, counterparty) — revoked, expiry-swept, or never registered',
+      'no finalized SessionAccount PDA for this (vault, counterparty) — reservation may be confirmed-only, revoked, expiry-swept, or never registered',
+    );
+  }
+  if (!account.owner.equals(registration.programId)) {
+    throw new OnChainVerificationError(
+      'wrong_program',
+      `SessionAccount owner ${account.owner.toBase58()} != ${registration.programId.toBase58()}`,
+    );
+  }
+
+  let state: ReturnType<typeof decodeSessionAccount>;
+  try {
+    state = decodeSessionAccount(expectedSessionPda, account.data);
+  } catch (error) {
+    throw new OnChainVerificationError(
+      'registration_state_mismatch',
+      `finalized SessionAccount decode failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  if (state.version === 0) {
+    throw new OnChainVerificationError(
+      'session_not_active',
+      'finalized SessionAccount is cleared',
     );
   }
 
@@ -235,6 +279,15 @@ export async function verifyRegistrationOnChain(
     );
   }
 
+  const registrationWireVersion = nativeTabWireVersion(registration.nonce);
+  const activeWireVersion = nativeTabWireVersion(state.session.nonce);
+  if (activeWireVersion !== registrationWireVersion) {
+    throw new OnChainVerificationError(
+      'wire_version_mismatch',
+      `active SessionAccount is V${activeWireVersion}, voucher registration is V${registrationWireVersion}`,
+    );
+  }
+
   // The SessionAccount is the passkey-verified source of truth for EVERY
   // immutable field in the 188-byte registration, not merely the session
   // public key.  A caller can freely edit the registration bytes carried in a
@@ -245,11 +298,6 @@ export async function verifyRegistrationOnChain(
   // releases seller output.  Mutable meters (spent/outstanding/crystallized/
   // lastLockedSequence) are intentionally excluded because they advance after
   // registration.
-  const [expectedSessionPda] = deriveSessionPda(
-    registration.vaultPda,
-    registration.allowedCounterparty,
-    registration.programId,
-  );
   const expiryIsExact =
     Number.isSafeInteger(state.session.expiresAt)
     && BigInt(state.session.expiresAt) === registration.expiresAt;
@@ -278,8 +326,11 @@ export async function verifyRegistrationOnChain(
   const crystallized = state.session.crystallizedCumulative;
   const frontier = spent > crystallized ? spent : crystallized;
   return {
+    sessionAccountVersion: state.version,
+    wireVersion: activeWireVersion,
     frontierAtomic: frontier.toString(),
     spentAtomic: spent.toString(),
+    currentOutstandingAtomic: state.session.currentOutstanding.toString(),
     crystallizedCumulativeAtomic: crystallized.toString(),
   };
 }
@@ -325,6 +376,15 @@ export function verifyVoucherSignature(
     );
   }
   const v2 = registration.nonce >= 0x8000_0000;
+  const registrationWireVersion = nativeTabWireVersion(registration.nonce);
+  const voucherWireVersion = nativeTabWireVersion(
+    voucher.payload.sequenceNumber,
+  );
+  if (registrationWireVersion !== voucherWireVersion) {
+    throw new InvalidVoucherSignatureError(
+      `voucher wire V${voucherWireVersion} does not match registration wire V${registrationWireVersion}`,
+    );
+  }
   let message: Uint8Array;
   if (v2) {
     sessionVoucherV2AuthorizationNonce(registration.nonce);

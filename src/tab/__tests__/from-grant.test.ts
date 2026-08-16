@@ -109,11 +109,19 @@ function sessionPdaFor(params: ApprovedSpendGrantParams): PublicKey {
   return deriveSessionPda(VAULT, new PublicKey(params.counterparty))[0];
 }
 
-/** Minimal Connection double: serves getAccountInfo from a base58→Buffer map. */
-function fakeConnection(accounts: Map<string, Buffer>): Connection & { reads: string[] } {
+type MutableConnection = Connection & {
+  reads: string[];
+  setAccount: (address: PublicKey, data: Buffer) => void;
+};
+
+/** Minimal mutable Connection double: serves getAccountInfo from a base58→Buffer map. */
+function fakeConnection(accounts: Map<string, Buffer>): MutableConnection {
   const reads: string[] = [];
   return {
     reads,
+    setAccount: (address: PublicKey, data: Buffer) => {
+      accounts.set(address.toBase58(), data);
+    },
     getAccountInfo: async (pda: PublicKey) => {
       reads.push(pda.toBase58());
       const data = accounts.get(pda.toBase58());
@@ -127,7 +135,7 @@ function fakeConnection(accounts: Map<string, Buffer>): Connection & { reads: st
           }
         : null;
     },
-  } as unknown as Connection & { reads: string[] };
+  } as unknown as MutableConnection;
 }
 
 function connFor(params: ApprovedSpendGrantParams, data?: Buffer, extra?: Array<[string, Buffer]>) {
@@ -241,8 +249,11 @@ describe('tabFromGrant — registration rebuild', () => {
       sessionNonce: 0x8000_0000 + 42,
       reservationAmountAtomic: '5000',
       previousCumulativeAtomic: '0',
-      voucher,
+      voucher: expect.objectContaining({ payload: voucher.payload }),
     }));
+    expect(voucher.reservationReceipt).toEqual(
+      finalizedReservationReceipt(reserveFinalVoucherV2.mock.calls[0][0]),
+    );
     expect(calls.some((call) => call.url === `${FAC}/tab/open`)).toBe(false);
   });
 
@@ -285,10 +296,17 @@ describe('tabFromGrant — registration rebuild', () => {
     const voucher = await tab.signNextVoucher('5000');
     expect(voucher.payload.sequenceNumber).toBe(0x8000_0001);
     expect(reserved).toHaveLength(2);
-    expect(voucherToHeader(reserved[1].voucher)).toBe(
-      voucherToHeader(reserved[0].voucher),
+    expect(reserved[1].voucher).toEqual(reserved[0].voucher);
+    expect(voucher).toMatchObject(reserved[0].voucher);
+    expect(voucher.reservationReceipt).toEqual(
+      finalizedReservationReceipt(reserved[1]),
     );
-    expect(voucherToHeader(voucher)).toBe(voucherToHeader(reserved[0].voucher));
+    const decodedHeader = JSON.parse(
+      Buffer.from(voucherToHeader(voucher), 'base64').toString('utf8'),
+    );
+    expect(decodedHeader.reservationReceipt).toEqual(
+      voucher.reservationReceipt,
+    );
     expect((tab as any).rollbackVoucher(voucher)).toBe(false);
   });
 
@@ -556,7 +574,13 @@ describe('tabFromGrant — voucher satisfies the seller middleware (real oracle)
     const conn = connFor(params, sessionAccountData({ params }));
     const tab = await tabFromGrant({
       ...baseOptions(kp, params, conn),
-      reserveFinalVoucherV2: async (input) => finalizedReservationReceipt(input),
+      reserveFinalVoucherV2: async (input) => {
+        conn.setAccount(
+          sessionPdaFor(params),
+          sessionAccountData({ params, currentOutstanding: 5000n }),
+        );
+        return finalizedReservationReceipt(input);
+      },
     });
     const mw = tabMiddleware({
       connection: conn,
@@ -589,7 +613,24 @@ describe('tabFromGrant — voucher satisfies the seller middleware (real oracle)
     const accountData = sessionAccountData({ params, spent: 250000n, crystallized: 100000n });
     const conn = connFor(params, accountData);
 
-    const tab = await tabFromGrant(baseOptions(kp, params, conn));
+    const tab = await tabFromGrant({
+      ...baseOptions(kp, params, conn),
+      reserveFinalVoucherV2: async (input) => {
+        const settledFrontier = input.previousCumulativeAtomic === '250000'
+          ? 250000n
+          : 255000n;
+        conn.setAccount(
+          sessionPdaFor(params),
+          sessionAccountData({
+            params,
+            spent: settledFrontier,
+            crystallized: 100000n,
+            currentOutstanding: 5000n,
+          }),
+        );
+        return finalizedReservationReceipt(input);
+      },
+    });
 
     // One middleware instance across both requests: session cache + ledger persist.
     const mw = tabMiddleware({
@@ -617,6 +658,18 @@ describe('tabFromGrant — voucher satisfies the seller middleware (real oracle)
     res1.emit('close');
     await new Promise((r) => setTimeout(r, 0));
 
+    // The first FINAL obligation settles before the next exact reservation.
+    conn.setAccount(
+      sessionPdaFor(params),
+      sessionAccountData({
+        params,
+        spent: 255000n,
+        crystallized: 100000n,
+        currentOutstanding: 0n,
+        lastLockedSequence: 0x8000_0001,
+      }),
+    );
+
     // Request 2 — monotonicity against the seller's cached cumulative.
     const v2 = await tab.signNextVoucher('5000');
     const req2 = fakeReq(voucherToHeader(v2));
@@ -628,13 +681,22 @@ describe('tabFromGrant — voucher satisfies the seller middleware (real oracle)
     expect(req2.tab!.cumulative()).toBe('0.26');
   });
 
-  it('a REPLAYED voucher is rejected by the seller as non-monotonic', async () => {
+  it('a REPLAYED V2 voucher is rejected by the seller as already covered', async () => {
     stubFetchRouter();
     const kp = nacl.sign.keyPair();
     const params = grantParams(kp);
     const conn = connFor(params, sessionAccountData({ params }));
 
-    const tab = await tabFromGrant(baseOptions(kp, params, conn));
+    const tab = await tabFromGrant({
+      ...baseOptions(kp, params, conn),
+      reserveFinalVoucherV2: async (input) => {
+        conn.setAccount(
+          sessionPdaFor(params),
+          sessionAccountData({ params, currentOutstanding: 5000n }),
+        );
+        return finalizedReservationReceipt(input);
+      },
+    });
     const mw = tabMiddleware({
       connection: conn,
       sellerPubkey: SELLER.toBase58(),
@@ -653,11 +715,14 @@ describe('tabFromGrant — voucher satisfies the seller middleware (real oracle)
     res1.emit('finish');
     await new Promise((r) => setTimeout(r, 0));
 
-    // Same voucher again — cumulative not strictly greater → 402 non_monotonic.
+    // Same voucher again — it is already covered by the seller ledger.
     const res2 = fakeRes();
     await mw(fakeReq(header) as unknown as ExpressRequest, res2 as unknown as ExpressResponse, vi.fn() as NextFunction);
     expect(res2.statusCode).toBe(402);
-    expect(res2.body).toMatchObject({ error: 'invalid_voucher', reason: 'non_monotonic' });
+    expect(res2.body).toMatchObject({
+      error: 'invalid_voucher',
+      reason: 'voucher_already_covered',
+    });
   });
 
   it('never lets a forged registration/key inherit a verified channel cache entry', async () => {
@@ -665,7 +730,16 @@ describe('tabFromGrant — voucher satisfies the seller middleware (real oracle)
     const kp = nacl.sign.keyPair();
     const params = grantParams(kp);
     const conn = connFor(params, sessionAccountData({ params }));
-    const tab = await tabFromGrant(baseOptions(kp, params, conn));
+    const tab = await tabFromGrant({
+      ...baseOptions(kp, params, conn),
+      reserveFinalVoucherV2: async (input) => {
+        conn.setAccount(
+          sessionPdaFor(params),
+          sessionAccountData({ params, currentOutstanding: 5000n }),
+        );
+        return finalizedReservationReceipt(input);
+      },
+    });
     const mw = tabMiddleware({
       connection: conn,
       sellerPubkey: SELLER.toBase58(),

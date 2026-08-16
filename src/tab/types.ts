@@ -166,6 +166,19 @@ export interface FinalVoucherV2ReservationReceipt {
   economicEffectDigest?: string;
 }
 
+/**
+ * Voucher released by a live Tab handle. Historical V1 vouchers omit the
+ * receipt. Every V2 voucher carries the complete provider receipt that the
+ * buyer already verified before release; sellers still treat that receipt as
+ * untrusted evidence and independently prove its finalized transaction.
+ *
+ * This extends the existing SignedVoucher shape so existing callers that only
+ * consume the four signed fields remain source-compatible.
+ */
+export interface TabSignedVoucher extends SignedVoucher {
+  readonly reservationReceipt?: FinalVoucherV2ReservationReceipt;
+}
+
 export type ReserveFinalVoucherV2 = (
   input: FinalVoucherV2ReservationInput,
 ) => Promise<FinalVoucherV2ReservationReceipt>;
@@ -258,7 +271,7 @@ export interface Tab {
    * Same counter, same scope enforcement as stream() — throws
    * SessionScopeExceededError past the cap.
    */
-  signNextVoucher(incrementAtomic: AtomicAmount): Promise<SignedVoucher>;
+  signNextVoucher(incrementAtomic: AtomicAmount): Promise<TabSignedVoucher>;
 
   /**
    * Streamed paid request. Returns an async iterable of chunks. Voucher

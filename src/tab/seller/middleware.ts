@@ -3,24 +3,32 @@
  *
  * Wire shape:
  *   - Buyer sends each paid request with header `X-Tab-Voucher: <base64-json>`
- *   - The voucher JSON is the SignedVoucher shape (payload + session pubkey +
- *     registration + signature)
- *   - On the FIRST voucher of a session, the middleware parses the
+ *   - The envelope contains the SignedVoucher fields (payload + session pubkey
+ *     + registration + signature). V2 additionally carries the complete
+ *     FinalVoucherV2ReservationReceipt used only as an untrusted proof locator.
+ *   - On the FIRST V1 voucher of a session, the middleware parses the
  *     registration, verifies it against the on-chain vault (one RPC call),
- *     and caches the result
+ *     and caches the result. V2 re-reads the SessionAccount on EVERY voucher
+ *     because the live reservation is the seller's delivery authorization.
  *   - On EVERY voucher, the middleware verifies the session-key signature
  *     and enforces scope (cap, expiry, counterparty, monotonicity)
  *   - The route handler reads `req.tab` and either runs a stream against it
  *     or rejects with 402 Payment Required
  *
- * The middleware never blocks on chain in the per-voucher hot path. The
- * one-time on-chain read is amortized across the entire session.
+ * Historical V1 keeps the cached, no-chain hot path. Native Tab V2 deliberately
+ * performs finalized registration/reservation admission on every voucher and
+ * independently proves the exact authority-signed settle + Memo before delivery.
  */
 
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import { Connection, PublicKey } from '@solana/web3.js';
 
-import type { SignedVoucher, HumanAmount, AtomicAmount } from '../types';
+import type {
+  SignedVoucher,
+  HumanAmount,
+  AtomicAmount,
+  FinalVoucherV2ReservationReceipt,
+} from '../types';
 import type {
   SellerTab,
   TabMiddlewareOptions,
@@ -32,7 +40,9 @@ import {
   verifyRegistrationOnChain,
   verifyVoucherSignature,
   enforceScope,
+  nativeTabWireVersion,
   type ParsedRegistration,
+  type OnChainSessionFrontier,
   InvalidRegistrationError,
   OnChainVerificationError,
   InvalidVoucherSignatureError,
@@ -41,6 +51,12 @@ import {
 
 import { InMemoryChannelLedger, withChannelLock, type ChannelLedger, type ChannelLedgerEntry } from './channel-ledger';
 import { atomicToHuman, humanToAtomic, DEFAULT_FACILITATOR_URL } from '../tab';
+import { finalVoucherV2ReservationIdentity } from '../reservation';
+import {
+  SolanaFinalVoucherV2ReservationError,
+  verifySolanaFinalVoucherV2Reservation,
+} from '../adapters/solana/reservation-verifier';
+import { deriveSessionPda } from '@dexterai/vault/session';
 import { maybeCrystallize, crystallizeNow, isGateRefused, type LockCadence } from './crystallize';
 
 // ── Augmented Express request type ─────────────────────────────────────
@@ -60,7 +76,7 @@ export interface TabMiddlewareConfig extends TabMiddlewareOptions {
   sellerPubkey: string | PublicKey;
 }
 
-/** Header the buyer sends with each paid request. base64-encoded JSON of SignedVoucher. */
+/** Header the buyer sends with each paid request. Base64 JSON voucher envelope. */
 export const TAB_VOUCHER_HEADER = 'x-tab-voucher';
 
 // ── Session cache ──────────────────────────────────────────────────────
@@ -144,7 +160,12 @@ export class SellerTabImpl implements SellerTab {
 
 // ── Voucher decoding ───────────────────────────────────────────────────
 
-function decodeVoucherHeader(header: unknown): SignedVoucher {
+interface DecodedVoucherHeader {
+  voucher: SignedVoucher;
+  reservationReceipt: unknown;
+}
+
+function decodeVoucherHeader(header: unknown): DecodedVoucherHeader {
   if (typeof header !== 'string' || header.length === 0) {
     throw new InvalidVoucherError('signature_invalid', `missing ${TAB_VOUCHER_HEADER} header`);
   }
@@ -165,10 +186,13 @@ function decodeVoucherHeader(header: unknown): SignedVoucher {
     throw new InvalidVoucherError('signature_invalid', 'missing required fields');
   }
   return {
-    payload: parsed.payload,
-    sessionPublicKey: hexToBytes(parsed.sessionPublicKey),
-    sessionRegistration: hexToBytes(parsed.sessionRegistration),
-    sessionSignature: hexToBytes(parsed.sessionSignature),
+    voucher: {
+      payload: parsed.payload,
+      sessionPublicKey: hexToBytes(parsed.sessionPublicKey),
+      sessionRegistration: hexToBytes(parsed.sessionRegistration),
+      sessionSignature: hexToBytes(parsed.sessionSignature),
+    },
+    reservationReceipt: parsed.reservationReceipt,
   };
 }
 
@@ -225,22 +249,24 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
       // 1. Decode the voucher off the header.
-      const voucher = decodeVoucherHeader(req.headers[TAB_VOUCHER_HEADER]);
+      const decoded = decodeVoucherHeader(req.headers[TAB_VOUCHER_HEADER]);
+      const voucher = decoded.voucher;
       const channelId = voucher.payload.channelId;
       const channelIdBytes = channelIdHexToBytes(channelId);
 
       // 2. Look up (or build) the session entry.
       let entry = cache.get(channelId);
       // Chain frontier (max(spent, crystallized)) read as a by-product of the
-      // one-time on-chain verification. Non-null ONLY on the first voucher of
-      // a session in this process — used further down to seed a FRESH ledger
-      // entry's delivered baseline so a resumed session (or a restarted
-      // in-memory ledger) can't re-grant budget that already settled/locked.
+      // registration check. Historical V1 reads it only on the first voucher;
+      // V2 refreshes it on every voucher together with currentOutstanding.
       let chainFrontierAtomic: string | null = null;
+      let onChain: OnChainSessionFrontier | undefined;
+      let registrationChecked = false;
       if (!entry) {
         // First voucher for this channel — parse + verify the registration.
         const parsed = parseRegistration(voucher.sessionRegistration);
-        const onChain = await verifyRegistrationOnChain(config.connection, parsed);
+        onChain = await verifyRegistrationOnChain(config.connection, parsed);
+        registrationChecked = true;
         // Defensive `?.`: custom/mocked verifiers may still return void.
         chainFrontierAtomic = onChain?.frontierAtomic ?? null;
         // Seed the monotonicity/increment baseline from the durable ledger's
@@ -265,23 +291,122 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
         );
       }
 
+      const registrationWireVersion = nativeTabWireVersion(
+        entry.registration.nonce,
+      );
+      const voucherWireVersion = nativeTabWireVersion(
+        voucher.payload.sequenceNumber,
+      );
+      if (voucherWireVersion !== registrationWireVersion) {
+        throw new InvalidVoucherError(
+          'wire_version_mismatch',
+          `voucher is V${voucherWireVersion}, active registration is V${registrationWireVersion}`,
+        );
+      }
+
+      let reservationReceipt: FinalVoucherV2ReservationReceipt | undefined;
+      if (registrationWireVersion === 2) {
+        if (decoded.reservationReceipt === undefined) {
+          throw new InvalidVoucherError(
+            'reservation_proof_missing',
+            'Native Tab V2 requires the verified reservation receipt in the voucher envelope',
+          );
+        }
+        if (
+          decoded.reservationReceipt === null
+          || typeof decoded.reservationReceipt !== 'object'
+          || Array.isArray(decoded.reservationReceipt)
+        ) {
+          throw new InvalidVoucherError(
+            'reservation_proof_invalid',
+            'reservationReceipt must be an object',
+          );
+        }
+        reservationReceipt = decoded.reservationReceipt as
+          FinalVoucherV2ReservationReceipt;
+      }
+
+      // A V2 registration cache is identity memory, never current authority.
+      // Re-read before EVERY delivery so replacement/revoke/expiry and the
+      // exact finalized reservation cannot be bypassed by a warm process.
+      if (registrationWireVersion === 2 && !registrationChecked) {
+        onChain = await verifyRegistrationOnChain(
+          config.connection,
+          entry.registration,
+        );
+        registrationChecked = true;
+        chainFrontierAtomic = onChain?.frontierAtomic ?? null;
+      }
+
       // 3. Verify the voucher signature over the canonical message.
       verifyVoucherSignature(voucher, channelIdBytes);
 
-      // 4. Enforce scope: cap, expiry, counterparty, monotonicity.
+      const cumulative = BigInt(voucher.payload.cumulativeAmount);
+      const previous = BigInt(entry.lastCumulativeAtomic);
+      let authorizationBaseline = previous;
+      let reservationDelta: bigint | null = null;
+
+      if (registrationWireVersion === 2) {
+        // V2 must fail closed if a custom verifier omits any authoritative
+        // field. A reservation is exact: currentOutstanding covers only the
+        // voucher delta above the greater of the seller's accepted cumulative
+        // and the terminal chain frontier. Anything at/below that frontier is
+        // already covered and cannot buy delivery again.
+        if (onChain?.wireVersion !== 2) {
+          throw new InvalidVoucherError(
+            'wire_version_mismatch',
+            `active SessionAccount is V${onChain?.wireVersion ?? 'unknown'}, voucher is V2`,
+          );
+        }
+        if (
+          onChain.sessionAccountVersion !== 1
+          || chainFrontierAtomic === null
+          || onChain.currentOutstandingAtomic === undefined
+        ) {
+          throw new InvalidVoucherError(
+            'reservation_mismatch',
+            'authoritative V2 SessionAccount reservation evidence is incomplete',
+          );
+        }
+        const chainFrontier = parseOnChainAtomic(
+          chainFrontierAtomic,
+          'frontierAtomic',
+        );
+        if (chainFrontier > authorizationBaseline) {
+          authorizationBaseline = chainFrontier;
+        }
+        if (cumulative <= authorizationBaseline) {
+          throw new InvalidVoucherError(
+            'voucher_already_covered',
+            `cumulative ${cumulative} is not above covered frontier ${authorizationBaseline}`,
+          );
+        }
+        reservationDelta = cumulative - authorizationBaseline;
+        const currentOutstanding = parseOnChainAtomic(
+          onChain.currentOutstandingAtomic,
+          'currentOutstandingAtomic',
+        );
+        if (currentOutstanding !== reservationDelta) {
+          throw new InvalidVoucherError(
+            'reservation_mismatch',
+            `currentOutstanding ${currentOutstanding} does not equal voucher delta ${reservationDelta}`,
+          );
+        }
+      }
+
+      // 4. Enforce scope: cap, expiry, counterparty, monotonicity. V2 uses the
+      // authoritative covered baseline; V1 retains its cached seller baseline.
       enforceScope({
         registration: entry.registration,
         voucher,
         expectedCounterparty: sellerPubkey,
-        previousCumulativeAtomic: entry.lastCumulativeAtomic,
+        previousCumulativeAtomic: authorizationBaseline.toString(),
       });
 
       // 5. Bound per-voucher increment. Protects against a giant single
       //    voucher slipping through; the buyer's perUnitCap should prevent
       //    this from the client side but the seller still defends.
-      const cumulative = BigInt(voucher.payload.cumulativeAmount);
-      const previous = BigInt(entry.lastCumulativeAtomic);
-      const increment = cumulative - previous;
+      const increment = cumulative - authorizationBaseline;
       if (increment > maxPerVoucherAtomic) {
         throw new ScopeViolationError(
           'cumulative_exceeds_cap',
@@ -289,7 +414,55 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
         );
       }
 
-      // 5b. One live stream per channel: acquire the lease or reject. Closes the
+      // 5b. V2 delivery requires the exact authority-signed reservation, not
+      // merely an equal outstanding amount. The receipt supplies an untrusted
+      // transaction locator and buyer Swig identity; the verifier fetches that
+      // transaction at finalized, recomputes the Memo from this voucher, and
+      // proves the coherent Vault/binding/session post-state independently.
+      if (registrationWireVersion === 2) {
+        if (!reservationReceipt || reservationDelta === null) {
+          throw new InvalidVoucherError(
+            'reservation_proof_missing',
+            'Native Tab V2 reservation proof was not carried through admission',
+          );
+        }
+        const [sessionPda] = deriveSessionPda(
+          entry.registration.vaultPda,
+          entry.registration.allowedCounterparty,
+          entry.registration.programId,
+        );
+        const identity = finalVoucherV2ReservationIdentity(voucher);
+        try {
+          await verifySolanaFinalVoucherV2Reservation(
+            config.connection,
+            {
+              network: config.network,
+              programId: entry.registration.programId.toBase58(),
+              buyerSwigAddress: reservationReceipt.buyerSwigAddress,
+              vaultPda: entry.registration.vaultPda.toBase58(),
+              sessionPda: sessionPda.toBase58(),
+              seller: entry.registration.allowedCounterparty.toBase58(),
+              channelId,
+              sessionNonce: entry.registration.nonce,
+              reservationAmountAtomic: reservationDelta.toString(),
+              previousCumulativeAtomic: authorizationBaseline.toString(),
+              ...identity,
+              voucher,
+            },
+            reservationReceipt,
+          );
+        } catch (error) {
+          if (error instanceof SolanaFinalVoucherV2ReservationError) {
+            throw new InvalidVoucherError(
+              'reservation_proof_invalid',
+              error.message,
+            );
+          }
+          throw error;
+        }
+      }
+
+      // 5c. One live stream per channel: acquire the lease or reject. Closes the
       //     concurrent-same-channel over-delivery rug.
       const leaseTtlMs = config.leaseTtlMs ?? 300_000;
       if (!(await ledger.tryAcquireLease(channelId, leaseTtlMs))) {
@@ -436,15 +609,20 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
       const prior = await ledger.get(channelId);
       // A ledger entry is FRESH when it has never seen a voucher or delivery —
       // tryAcquireLease auto-creates zeroed entries, so `prior != null` alone
-      // does not mean history exists. Only a fresh entry gets seeded from the
-      // chain frontier; real history is never overwritten (multi-instance
-      // reconciliation stays out of scope, as documented on the meter).
-      const priorIsFresh =
-        !prior?.lastVoucher && BigInt(prior?.deliveredCumulativeAtomic ?? '0') === 0n;
-      const seedAtomic =
-        chainFrontierAtomic !== null && priorIsFresh && BigInt(chainFrontierAtomic) > 0n
-          ? chainFrontierAtomic
-          : null;
+      // does not mean history exists. V1 retains the historical fresh-only
+      // seed. V2 advances even an existing ledger's delivery floor when the
+      // authoritative chain frontier has moved, preventing another process's
+      // already-settled delivery from becoming fresh budget here.
+      const priorDelivered = BigInt(prior?.deliveredCumulativeAtomic ?? '0');
+      const priorIsFresh = !prior?.lastVoucher && priorDelivered === 0n;
+      const frontier = chainFrontierAtomic === null
+        ? null
+        : BigInt(chainFrontierAtomic);
+      const seedAtomic = frontier !== null && frontier > priorDelivered && (
+        registrationWireVersion === 2 || priorIsFresh
+      )
+        ? frontier.toString()
+        : null;
       if (seedAtomic !== null) {
         console.info(
           `[tab/seller] channel ${channelId.slice(0, 16)}… resumed: seeding delivered ` +
@@ -559,6 +737,16 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
     difference |= left[index] ^ right[index];
   }
   return difference === 0;
+}
+
+function parseOnChainAtomic(value: string, field: string): bigint {
+  if (!/^(0|[1-9][0-9]*)$/.test(value)) {
+    throw new InvalidVoucherError(
+      'reservation_mismatch',
+      `authoritative ${field} is not a canonical atomic amount`,
+    );
+  }
+  return BigInt(value);
 }
 
 /** Pull the SellerTab off a request. Throws if the middleware didn't run. */
