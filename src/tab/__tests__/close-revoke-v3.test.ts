@@ -137,7 +137,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('Solana adapter close — Vault 0.43.1 exact-state revocation', () => {
+describe('Solana adapter close — Vault 0.43.2 exact-state revocation', () => {
   it('signs the authoritative post-settlement snapshot and carries the exact pending count', async () => {
     const session = createSession();
     const snapshot = exactSnapshot(session);

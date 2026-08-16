@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.0-rc.1] - 2026-08-16
+
+### Fixed
+
+- Native Tab V2 sellers now require the complete reservation receipt in the existing `X-Tab-Voucher` envelope and independently prove the exact finalized `settle_voucher` transaction plus its Dexter-authority-signed voucher-binding Memo before delivery. Missing, malformed, confirmed-only, replayed, consumed, wrong-version, stale-registration, and same-amount substituted proofs fail closed.
+- V2 seller admission re-reads the exact finalized SessionAccount PDA for every voucher and requires `currentOutstanding` to equal only the uncovered voucher increment above the authoritative settled/crystallized frontier.
+- V2 terminal settlement sends the exact final reservation increment as `attemptedAmount`, rather than reconstructing it from the tab's lifetime cumulative amount.
+- The CommonJS `@dexterai/x402/server` entrypoint now bundles the ESM-only sponsored-access runtime constant, so a clean `require()` consumer no longer fails during module loading.
+
+### Changed
+
+- The complete verified `FinalVoucherV2ReservationReceipt` now survives every buyer route (`openTab`, `tabFromGrant`, `stream`, and `payAndFetch`) inside the existing voucher envelope. Provider-local lifecycle metadata remains non-authoritative; finalized transaction, Memo, and coherent post-state evidence authorize seller delivery.
+- `@dexterai/vault` is pinned exactly to `0.43.2` for both peer and development use, including its corrected optional-account sentinel encoding.
+
 ## [6.0.0-rc.0] - 2026-08-16
 
 ### Added

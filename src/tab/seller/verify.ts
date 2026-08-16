@@ -227,7 +227,7 @@ export async function verifyRegistrationOnChain(
     registration.allowedCounterparty,
     registration.programId,
   );
-  // Vault 0.43.1's fetchSessionAccount hardcodes `confirmed`. Do not use it
+  // Vault 0.43.2's fetchSessionAccount hardcodes `confirmed`. Do not use it
   // here: seller delivery is irreversible and V2 reservation admission must
   // be rooted in finalized state.
   const account = await connection.getAccountInfo(

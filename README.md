@@ -175,7 +175,7 @@ Tabs are Solana. One-shot and batch settlement span Solana and the major EVM cha
 ## More
 
 - **[REFERENCE.md](./REFERENCE.md)** — every export, option table, and example: tabs, one-shot, batch settlement, discovery.
-- **Upgrading?** v6 pins the tested Vault `0.43.1` pair, requires voucher-bound V2 reservation receipts, and uses exact-state V3 revocation. Migration from v5/v4/v3: [REFERENCE.md](./REFERENCE.md#migration).
+- **Upgrading?** v6 pins the tested Vault `0.43.2` pair, requires voucher-bound V2 reservation receipts, and uses exact-state V3 revocation. Migration from v5/v4/v3: [REFERENCE.md](./REFERENCE.md#migration).
 - **License** — MIT, see [LICENSE](./LICENSE).
 
 ---
