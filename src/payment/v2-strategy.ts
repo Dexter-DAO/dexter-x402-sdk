@@ -53,7 +53,7 @@ async function payWithTab(
   try {
     signed = await tab.signNextVoucher(option.amount);
   } catch (err: unknown) {
-    if (tab.voucherVersion === 2) {
+    if (tab.voucherVersion !== 1) {
       const detail = err instanceof Error ? err.message : String(err);
       return {
         ok: false,
@@ -90,7 +90,7 @@ async function payWithTab(
   }
 
   if (response.status === 402) {
-    if (tab.voucherVersion === 2) {
+    if (tab.voucherVersion !== 1) {
       // V2 is FINAL and durably reserved before signNextVoucher returns. The
       // seller now holds an irrevocable bearer claim even if this particular
       // response says 402. Never consult an optional/private rollback hook and
@@ -121,13 +121,13 @@ async function payWithTab(
       tab as Tab & { rollbackVoucher?: (v: SignedVoucher) => boolean }
     ).rollbackVoucher;
     const rolledBack = rollback?.call(tab, signed);
-    if (rolledBack === false) {
+    if (rolledBack !== true) {
       return {
         ok: false,
         reason: 'error',
         detail:
-          'seller refused an irrevocable FINAL tab voucher; its exact reservation ' +
-          'must be reconciled before another payment rail is attempted',
+          'seller refused a V1 tab voucher but local rollback was unavailable or ' +
+          'failed; another payment rail was not attempted to avoid double payment',
       };
     }
     return null;

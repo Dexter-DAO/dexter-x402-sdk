@@ -7,16 +7,32 @@
  *
  * @example
  * ```ts
- * import { openTab } from '@dexterai/x402/tab';
+ * import { openTab, type ReserveFinalVoucherV2 } from '@dexterai/x402/tab';
  * import { createSolanaVaultAdapter } from '@dexterai/x402/tab/adapters/solana';
  *
- * const vault = createSolanaVaultAdapter({ ... });
+ * const vault = createSolanaVaultAdapter({
+ *   connection,
+ *   swigAddress,
+ *   vaultPda,
+ *   passkeySigner,
+ *   feePayer,
+ * });
+ * const reserveFinalVoucherV2: ReserveFinalVoucherV2 = async (input) => {
+ *   const response = await fetch('/api/native-tab/reserve', {
+ *     method: 'POST',
+ *     headers: { 'content-type': 'application/json' },
+ *     body: JSON.stringify(input),
+ *   });
+ *   if (!response.ok) throw new Error(`reservation failed: ${response.status}`);
+ *   return response.json();
+ * };
  * const tab = await openTab({
  *   vault,
  *   network: 'solana:mainnet',
- *   seller: 'https://api.example.com',
+ *   seller: 'DhP2eR7XGwsCFUxiYxkLBpzkmuyU1Cn9CGUVNkpBu1g7',
  *   perUnitCap: '0.001',
  *   totalCap: '5.00',
+ *   reserveFinalVoucherV2,
  * });
  *
  * const stream = await tab.stream('https://api.example.com/inference', {
@@ -54,10 +70,12 @@ export type {
   FinalVoucherV2ReservationInput,
   FinalVoucherV2ReservationReceipt,
   ReserveFinalVoucherV2,
+  VerifyFinalVoucherV2Reservation,
 } from './types';
 
 export {
   UnsupportedNetworkError,
+  HistoricalV1MigrationRequiredError,
   SessionScopeExceededError,
   TabClosedError,
   LiveSessionExistsError,
@@ -65,6 +83,19 @@ export {
 
 // Phase 2 implementations.
 export { openTab, resumeTab, humanToAtomic, atomicToHuman, voucherToHeader, armTabOpen, DEFAULT_FACILITATOR_URL } from './tab';
+export {
+  canonicalFinalVoucherV2ReservationNetwork,
+  finalVoucherV2Digest,
+  finalVoucherV2ReservationIdentity,
+  finalVoucherV2ReservationBindingDigestFromIdentity,
+  finalVoucherV2ReservationBindingDigest,
+  finalVoucherV2ReservationMemo,
+  assertFinalVoucherV2ReservationReceipt,
+  FINAL_VOUCHER_V2_SOLANA_MAINNET_CAIP2,
+  FINAL_VOUCHER_V2_RESERVATION_BINDING_DOMAIN,
+  FINAL_VOUCHER_V2_RESERVATION_MEMO_PREFIX,
+  type FinalVoucherV2ReservationBindingIdentity,
+} from './reservation';
 
 // Grant lane: a Tab from a granted session key (the /tabs/connect ceremony's
 // custody modes) — openTab minus the passkey, resume = the on-chain frontier.

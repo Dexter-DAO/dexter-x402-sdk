@@ -33,11 +33,16 @@ import type {
 } from './types';
 import {
   TabClosedError,
+  HistoricalV1MigrationRequiredError,
   SessionScopeExceededError,
   UnsupportedNetworkError,
 } from './types';
 
 import { deriveChannelId } from './sessions';
+import {
+  assertFinalVoucherV2ReservationReceipt,
+  finalVoucherV2ReservationIdentity,
+} from './reservation';
 import { deriveSessionPda } from '@dexterai/vault/session';
 import { sessionRegisterMessage } from './messages';
 import { DEXTER_VAULT_PROGRAM_ID } from './instructions';
@@ -150,6 +155,14 @@ class TabImpl implements Tab {
   private sequenceNumber: number;
   private readonly isFinalV2: boolean;
   private closed = false;
+  /**
+   * Local single-flight gate for state-changing Tab operations. Without it,
+   * two concurrent sign calls can both observe the same sequence/cumulative
+   * frontier and attempt to reserve the same obligation. Close must share the
+   * same gate so it cannot snapshot or wipe the session while signing is in
+   * flight.
+   */
+  private operationInFlight: 'voucher' | 'close' | 'rollback' | null = null;
   /** Most recent voucher we signed. Held so `close()` can POST it to the
    *  facilitator for on-chain settle without needing the seller to round-trip
    *  it back to us. Null if no voucher was signed in this tab's lifetime
@@ -201,6 +214,17 @@ class TabImpl implements Tab {
    * buyer from over-signing (cap, expiry, perUnitCap).
    */
   async signNextVoucher(incrementAtomic: AtomicAmount): Promise<SignedVoucher> {
+    this.beginOperation('voucher');
+    try {
+      return await this.signNextVoucherExclusive(incrementAtomic);
+    } finally {
+      this.endOperation('voucher');
+    }
+  }
+
+  private async signNextVoucherExclusive(
+    incrementAtomic: AtomicAmount,
+  ): Promise<SignedVoucher> {
     if (this.closed) throw new TabClosedError(this.channelId);
 
     const incBig = BigInt(incrementAtomic);
@@ -261,7 +285,7 @@ class TabImpl implements Tab {
     if (this.internals.beforeVoucherRelease) {
       await this.internals.beforeVoucherRelease({
         voucher: signed,
-        incrementAtomic: incrementAtomic,
+        incrementAtomic: incBig.toString(),
         previousCumulativeAtomic: this.cumulativeAtomic.toString(),
       });
     }
@@ -272,6 +296,22 @@ class TabImpl implements Tab {
     this.sequenceNumber = nextSequence;
     this.cumulativeAtomic = newCumulative;
     return signed;
+  }
+
+  private beginOperation(operation: 'voucher' | 'close' | 'rollback'): void {
+    if (this.operationInFlight !== null) {
+      throw new Error(
+        `tab_operation_in_flight: ${this.operationInFlight}`,
+      );
+    }
+    this.operationInFlight = operation;
+  }
+
+  private endOperation(operation: 'voucher' | 'close' | 'rollback'): void {
+    if (this.operationInFlight !== operation) {
+      throw new Error('tab_operation_gate_corrupted');
+    }
+    this.operationInFlight = null;
   }
 
   /**
@@ -304,6 +344,22 @@ class TabImpl implements Tab {
     // through to another payment rail would create a double-payment path.
     if (this.isFinalV2) return false;
 
+    // Rollback mutates the same cumulative/sequence frontier as signing and
+    // close. Refuse while either is suspended at an await boundary; otherwise
+    // rollback could erase the state underneath an in-flight signature or the
+    // settle/revoke snapshot. Once admitted, hold the same gate for the whole
+    // synchronous mutation so no other operation can interleave.
+    if (this.operationInFlight !== null) return false;
+    this.beginOperation('rollback');
+
+    try {
+      return this.rollbackVoucherExclusive(v);
+    } finally {
+      this.endOperation('rollback');
+    }
+  }
+
+  private rollbackVoucherExclusive(v: SignedVoucher): boolean {
     const last = this.lastSignedVoucher;
     if (
       !last ||
@@ -398,38 +454,43 @@ class TabImpl implements Tab {
    * resurrected, and `settleTx` comes back empty (legitimately).
    */
   async close(): Promise<TabCloseResult> {
-    if (this.closed) throw new TabClosedError(this.channelId);
+    this.beginOperation('close');
+    try {
+      if (this.closed) throw new TabClosedError(this.channelId);
 
-    let settled: SettleResult = { settleTx: '' };
-    if (this.lastSignedVoucher && this.cumulativeAtomic > 0n) {
-      settled = await postSettle(
-        this.internals.facilitatorUrl,
-        this.lastSignedVoucher,
-        this.internals.network,
-      );
+      let settled: SettleResult = { settleTx: '' };
+      if (this.lastSignedVoucher && this.cumulativeAtomic > 0n) {
+        settled = await postSettle(
+          this.internals.facilitatorUrl,
+          this.lastSignedVoucher,
+          this.internals.network,
+        );
+      }
+
+      // 'revoke' (openTab): passkey-sign + submit the on-chain revocation.
+      // 'settle-only' (tabFromGrant): a grant-held tab has NO passkey — the
+      // revoke belongs to the wallet owner's surfaces; skipping it here is a
+      // documented mode, reported honestly via `sessionRevoked` below.
+      const revoke = (this.internals.closeMode ?? 'revoke') === 'revoke';
+      if (revoke) {
+        await this.internals.vault.signCloseTab(
+          this.internals.session,
+          this.channelId,
+          this.cumulativeAtomic.toString(),
+        );
+      }
+
+      this.closed = true;
+      this.internals.session.privateKey.fill(0);
+
+      return {
+        settledAmount: atomicToHuman(this.cumulativeAtomic.toString()),
+        sessionRevoked: revoke,
+        ...settled,
+      };
+    } finally {
+      this.endOperation('close');
     }
-
-    // 'revoke' (openTab): passkey-sign + submit the on-chain revocation.
-    // 'settle-only' (tabFromGrant): a grant-held tab has NO passkey — the
-    // revoke belongs to the wallet owner's surfaces; skipping it here is a
-    // documented mode, reported honestly via `sessionRevoked` below.
-    const revoke = (this.internals.closeMode ?? 'revoke') === 'revoke';
-    if (revoke) {
-      await this.internals.vault.signCloseTab(
-        this.internals.session,
-        this.channelId,
-        this.cumulativeAtomic.toString(),
-      );
-    }
-
-    this.closed = true;
-    this.internals.session.privateKey.fill(0);
-
-    return {
-      settledAmount: atomicToHuman(this.cumulativeAtomic.toString()),
-      sessionRevoked: revoke,
-      ...settled,
-    };
   }
 }
 
@@ -637,31 +698,19 @@ async function postSettle(
  * /tab/open. THROWS if protection cannot be confirmed — a tab that is not
  * drain-protected must never be returned to the caller.
  */
+/**
+ * @deprecated V6 has no buyer-side V1 arming route. This retained symbol is a
+ * deterministic migration fence for callers compiled against the old helper;
+ * it performs no fetch, signing, or chain action.
+ */
 export async function armTabOpen(
-  facilitatorUrl: string,
-  buyerSwigAddress: string,
-  maxAmountAtomic: bigint,
-  network: string,
-  counterparty: string,
+  _facilitatorUrl: string,
+  _buyerSwigAddress: string,
+  _maxAmountAtomic: bigint,
+  _network: string,
+  _counterparty: string,
 ): Promise<{ armed: true; signature: string }> {
-  const url = `${facilitatorUrl.replace(/\/$/, '')}/tab/open`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      buyer_swig_address: buyerSwigAddress,
-      // The tab's allowed_counterparty — V6 settle_voucher raises THIS session's
-      // meter, so the facilitator needs it to derive the session PDA.
-      seller: counterparty,
-      max_amount_atomic: maxAmountAtomic.toString(),
-      network,
-    }),
-  });
-  const body = (await res.json().catch(() => ({}))) as { success?: boolean; armed?: boolean; signature?: string; error?: string };
-  if (!res.ok || !body.success || !body.armed) {
-    throw new Error(`tab_open_unprotected: ${body.error ?? `http_${res.status}`}`);
-  }
-  return { armed: true, signature: body.signature ?? '' };
+  throw new HistoricalV1MigrationRequiredError('armTabOpen');
 }
 
 // ── openTab / resumeTab ────────────────────────────────────────────────
@@ -678,8 +727,22 @@ export async function openTab(options: OpenTabOptions): Promise<Tab> {
     throw new UnsupportedNetworkError(options.network);
   }
   if (
+    options.vault.sessionVoucherVersion !== 1
+    && options.vault.sessionVoucherVersion !== 2
+  ) {
+    throw new Error('native_tab_adapter_voucher_version_required');
+  }
+  if (options.vault.sessionVoucherVersion === 1) {
+    // The current facilitator's /tab/open route is exact V2-only. Reject
+    // before authorizeSession creates an unusable on-chain credential.
+    throw new HistoricalV1MigrationRequiredError('openTab');
+  }
+  if (
     options.vault.sessionVoucherVersion === 2
-    && !options.reserveFinalVoucherV2
+    && (
+      !options.reserveFinalVoucherV2
+      || !options.vault.verifyFinalVoucherV2Reservation
+    )
   ) {
     // Fail before authorizeSession creates/replaces any on-chain session. A
     // V2 FINAL voucher may never be issued without an exact durable fence.
@@ -741,17 +804,9 @@ export async function openTab(options: OpenTabOptions): Promise<Tab> {
   });
 
   const isV2 = isContextBoundV2Session(session);
-  if (!isV2) {
-    // Historical V1 recovery keeps the old total-cap arming contract.
-    await armTabOpen(
-      options.facilitatorUrl ?? DEFAULT_FACILITATOR_URL,
-      options.vault.swigAddress,
-      totalCapAtomic,
-      options.network,
-      counterparty,
-    );
+  if (options.vault.sessionVoucherVersion !== (isV2 ? 2 : 1)) {
+    throw new Error('native_tab_adapter_voucher_version_mismatch');
   }
-
   let beforeVoucherRelease: TabInternals['beforeVoucherRelease'];
   if (isV2) {
     if (!options.reserveFinalVoucherV2) {
@@ -797,8 +852,10 @@ export async function openTab(options: OpenTabOptions): Promise<Tab> {
       incrementAtomic,
       previousCumulativeAtomic,
     }) => {
-      const receipt = await options.reserveFinalVoucherV2!({
+      const identity = finalVoucherV2ReservationIdentity(voucher);
+      const input = {
         network: options.network,
+        programId: programId.toBase58(),
         buyerSwigAddress: options.vault.swigAddress,
         vaultPda: registrationVault.toBase58(),
         sessionPda: sessionPda.toBase58(),
@@ -807,11 +864,12 @@ export async function openTab(options: OpenTabOptions): Promise<Tab> {
         sessionNonce,
         reservationAmountAtomic: incrementAtomic,
         previousCumulativeAtomic,
+        ...identity,
         voucher,
-      });
-      if (!receipt || receipt.armed !== true) {
-        throw new Error('native_tab_v2_reservation_not_confirmed');
-      }
+      };
+      const receipt = await options.reserveFinalVoucherV2!(input);
+      assertFinalVoucherV2ReservationReceipt(input, receipt);
+      await options.vault.verifyFinalVoucherV2Reservation!(input, receipt);
     };
   }
 

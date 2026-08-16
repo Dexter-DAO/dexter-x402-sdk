@@ -21,18 +21,24 @@ import { Keypair, PublicKey, type Connection } from '@solana/web3.js';
 import { requestSpendGrant, approveSpendGrant, type ApprovedSpendGrantParams } from '@dexterai/vault/grant';
 import { deriveSessionPda } from '@dexterai/vault/session';
 
-import { tabFromGrant } from '../from-grant';
+import { tabFromGrant, type TabFromGrantOptions } from '../from-grant';
 import { voucherToHeader } from '../tab';
 import { DEXTER_VAULT_PROGRAM_ID } from '../instructions';
 import { sessionRegisterMessage } from '../messages';
 import { signVoucher } from '../sessions';
-import { parseRegistration } from '../seller/verify';
+import { finalizedReservationReceipt } from './reservation-fixture';
+import { verifySolanaFinalVoucherV2Reservation } from '../adapters/solana/reservation-verifier';
+import { parseRegistration, verifyVoucherSignature } from '../seller/verify';
 import { tabMiddleware } from '../seller/middleware';
 import type {
   Request as ExpressRequest,
   Response as ExpressResponse,
   NextFunction,
 } from 'express';
+
+vi.mock('../adapters/solana/reservation-verifier', () => ({
+  verifySolanaFinalVoucherV2Reservation: vi.fn(async () => undefined),
+}));
 
 // ── Fixtures ───────────────────────────────────────────────────────────
 
@@ -52,7 +58,7 @@ function grantParams(
     sessionPubkey: new PublicKey(kp.publicKey).toBase58(),
     maxAmountAtomic: '1000000', // 1 USDC
     expiresAtUnix: NOW + 3600,
-    nonce: 42,
+    nonce: 0x8000_002a,
     maxRevolvingCapacityAtomic: '1000000',
     ...over,
   };
@@ -161,7 +167,11 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-function baseOptions(kp: nacl.SignKeyPair, params: ApprovedSpendGrantParams, conn: Connection) {
+function baseOptions(
+  kp: nacl.SignKeyPair,
+  params: ApprovedSpendGrantParams,
+  conn: Connection,
+): TabFromGrantOptions {
   return {
     sessionSecretKey: kp.secretKey,
     params,
@@ -170,10 +180,14 @@ function baseOptions(kp: nacl.SignKeyPair, params: ApprovedSpendGrantParams, con
     swigAddress: SWIG,
     perUnitCapAtomic: '5000',
     facilitatorUrl: FAC,
+    reserveFinalVoucherV2: async input => finalizedReservationReceipt(input),
   };
 }
 
-beforeEach(() => vi.restoreAllMocks());
+beforeEach(() => {
+  vi.restoreAllMocks();
+  vi.mocked(verifySolanaFinalVoucherV2Reservation).mockClear();
+});
 
 // ── 1. Registration byte-exactness vs the grant ceremony's own output ──
 
@@ -198,7 +212,9 @@ describe('tabFromGrant — registration rebuild', () => {
     });
 
     const conn = connFor(grant.params, sessionAccountData({ params: grant.params }));
-    const reserveFinalVoucherV2 = vi.fn(async () => ({ armed: true as const }));
+    const reserveFinalVoucherV2 = vi.fn(async (input) => (
+      finalizedReservationReceipt(input)
+    ));
     const tab = await tabFromGrant({
       ...baseOptions(kp, grant.params, conn),
       reserveFinalVoucherV2,
@@ -217,6 +233,7 @@ describe('tabFromGrant — registration rebuild', () => {
     expect(Buffer.from(parsed.sessionPubkey).equals(Buffer.from(kp.publicKey))).toBe(true);
     expect(voucher.payload.sequenceNumber).toBe(0x8000_0001);
     expect(reserveFinalVoucherV2).toHaveBeenCalledOnce();
+    expect(verifySolanaFinalVoucherV2Reservation).toHaveBeenCalledOnce();
     expect(reserveFinalVoucherV2).toHaveBeenCalledWith(expect.objectContaining({
       buyerSwigAddress: SWIG,
       vaultPda: VAULT.toBase58(),
@@ -235,9 +252,11 @@ describe('tabFromGrant — registration rebuild', () => {
     const params = grantParams(kp, { nonce: 0x8000_002a });
     const conn = connFor(params, sessionAccountData({ params }));
 
-    await expect(
-      tabFromGrant(baseOptions(kp, params, conn)),
-    ).rejects.toThrow(/native_tab_v2_reservation_fence_required/);
+    const options = baseOptions(kp, params, conn);
+    delete options.reserveFinalVoucherV2;
+    await expect(tabFromGrant(options)).rejects.toThrow(
+      /native_tab_v2_reservation_fence_required/,
+    );
     expect(fetchMock).not.toHaveBeenCalled();
     expect((conn as any).reads).toHaveLength(0);
   });
@@ -251,7 +270,7 @@ describe('tabFromGrant — registration rebuild', () => {
     const reserveFinalVoucherV2 = vi.fn(async (input) => {
       reserved.push(input);
       if (reserved.length === 1) throw new Error('reservation_timeout_unknown');
-      return { armed: true as const };
+      return finalizedReservationReceipt(input);
     });
     const tab = await tabFromGrant({
       ...baseOptions(kp, params, conn),
@@ -284,7 +303,7 @@ describe('tabFromGrant — registration rebuild', () => {
 
     await expect(tabFromGrant({
       ...baseOptions(kp, params, conn),
-      reserveFinalVoucherV2: async () => ({ armed: true }),
+      reserveFinalVoucherV2: async (input) => finalizedReservationReceipt(input),
     })).rejects.toThrow(/native_tab_v2_reservation_pending/);
   });
 });
@@ -303,7 +322,7 @@ describe('tabFromGrant — chain-frontier resume', () => {
 
     const v = await tab.signNextVoucher('5000');
     expect(v.payload.cumulativeAmount).toBe('5000');
-    expect(v.payload.sequenceNumber).toBe(1);
+    expect(v.payload.sequenceNumber).toBe(0x8000_0001);
   });
 
   it('resumes above spent when spent > crystallized', async () => {
@@ -355,7 +374,7 @@ describe('tabFromGrant — chain-frontier resume', () => {
     await expect(tabFromGrant(baseOptions(kp, params, conn))).rejects.toThrow(/tab_exhausted/);
   });
 
-  it('rolls a first-and-only voucher back to the FRONTIER, not zero', async () => {
+  it('does not roll back a finalized V2 obligation from the frontier', async () => {
     stubFetchRouter();
     const kp = nacl.sign.keyPair();
     const params = grantParams(kp);
@@ -364,12 +383,8 @@ describe('tabFromGrant — chain-frontier resume', () => {
     const tab = await tabFromGrant(baseOptions(kp, params, conn));
     const first = await tab.signNextVoucher('5000');
     const rollback = (tab as any).rollbackVoucher(first);
-    expect(rollback).toBe(true);
-    expect(tab.state.spent).toBe('0.25'); // back to the frontier, NOT 0
-
-    // Reissue reproduces the same strictly-above-frontier cumulative.
-    const reissued = await tab.signNextVoucher('5000');
-    expect(reissued.payload.cumulativeAmount).toBe(first.payload.cumulativeAmount);
+    expect(rollback).toBe(false);
+    expect(tab.state.spent).toBe('0.255');
   });
 });
 
@@ -417,13 +432,12 @@ describe('tabFromGrant — key and params validation', () => {
 
     const tab = await tabFromGrant({ ...baseOptions(kp, params, conn), sessionSecretKey: seed });
     const v = await tab.signNextVoucher('5000');
-    // Signature must verify under the granted pubkey — REAL nacl verify.
-    const ok = nacl.sign.detached.verify(
-      buildVoucherBytes(v.payload.channelId, 5000n, 1),
-      v.sessionSignature,
-      kp.publicKey,
-    );
-    expect(ok).toBe(true);
+    // The production seller verifier checks the granted pubkey signature and
+    // the complete V2 economic context.
+    expect(() => verifyVoucherSignature(
+      v,
+      Uint8Array.from(Buffer.from(v.payload.channelId, 'hex')),
+    )).not.toThrow();
   });
 
   it('rejects garbage key lengths', async () => {
@@ -484,51 +498,33 @@ describe('tabFromGrant — key and params validation', () => {
   });
 });
 
-// ── 4. Arming — fail-closed /tab/open ──────────────────────────────────
+// ── 4. Exact V2 reservation identity ──────────────────────────────────
 
-describe('tabFromGrant — drain-protection arming', () => {
-  it('POSTs /tab/open with the swig, counterparty and cap, before returning the tab', async () => {
+describe('tabFromGrant — exact V2 reservation identity', () => {
+  it('does not call the obsolete V1 /tab/open route', async () => {
     const { calls } = stubFetchRouter();
     const kp = nacl.sign.keyPair();
     const params = grantParams(kp);
     const conn = connFor(params, sessionAccountData({ params }));
 
-    await tabFromGrant(baseOptions(kp, params, conn));
+    const reserveFinalVoucherV2 = vi.fn(async input =>
+      finalizedReservationReceipt(input));
+    const tab = await tabFromGrant({
+      ...baseOptions(kp, params, conn),
+      reserveFinalVoucherV2,
+    });
+    await tab.signNextVoucher('5000');
 
-    const arm = calls.find((c) => c.url === `${FAC}/tab/open`);
-    expect(arm).toBeDefined();
-    expect(arm!.body).toMatchObject({
-      buyer_swig_address: SWIG,
+    expect(calls.some(c => c.url === `${FAC}/tab/open`)).toBe(false);
+    expect(reserveFinalVoucherV2).toHaveBeenCalledWith(expect.objectContaining({
+      buyerSwigAddress: SWIG,
       seller: SELLER.toBase58(),
-      max_amount_atomic: '1000000',
-      network: 'solana:mainnet',
-    });
+      reservationAmountAtomic: '5000',
+    }));
   });
 
-  it('THROWS (fail-closed) when the facilitator refuses to arm — no unprotected tab is ever returned', async () => {
-    stubFetchRouter({
-      '/tab/open': () => jsonResponse({ success: false, error: 'vault_gate_failed' }),
-    });
-    const kp = nacl.sign.keyPair();
-    const params = grantParams(kp);
-    const conn = connFor(params, sessionAccountData({ params }));
-
-    await expect(tabFromGrant(baseOptions(kp, params, conn))).rejects.toThrow(/tab_open_unprotected/);
-  });
-
-  it('THROWS on a non-200 arming response', async () => {
-    stubFetchRouter({
-      '/tab/open': () => jsonResponse({ error: 'nope' }, 503),
-    });
-    const kp = nacl.sign.keyPair();
-    const params = grantParams(kp);
-    const conn = connFor(params, sessionAccountData({ params }));
-
-    await expect(tabFromGrant(baseOptions(kp, params, conn))).rejects.toThrow(/tab_open_unprotected/);
-  });
-
-  it('reads swigAddress from the on-chain vault account when not supplied', async () => {
-    const { calls } = stubFetchRouter();
+  it('reads swigAddress from the on-chain vault account for the V2 receipt', async () => {
+    stubFetchRouter();
     const kp = nacl.sign.keyPair();
     const params = grantParams(kp);
     const chainSwig = Keypair.generate().publicKey.toBase58();
@@ -536,12 +532,17 @@ describe('tabFromGrant — drain-protection arming', () => {
       [VAULT.toBase58(), vaultAccountData(chainSwig)],
     ]);
 
-    const opts = baseOptions(kp, params, conn) as any;
+    const opts = baseOptions(kp, params, conn);
     delete opts.swigAddress;
-    await tabFromGrant(opts);
+    const reserveFinalVoucherV2 = vi.fn(async input =>
+      finalizedReservationReceipt(input));
+    opts.reserveFinalVoucherV2 = reserveFinalVoucherV2;
+    const tab = await tabFromGrant(opts);
+    await tab.signNextVoucher('5000');
 
-    const arm = calls.find((c) => c.url === `${FAC}/tab/open`);
-    expect(arm!.body.buyer_swig_address).toBe(chainSwig);
+    expect(reserveFinalVoucherV2).toHaveBeenCalledWith(expect.objectContaining({
+      buyerSwigAddress: chainSwig,
+    }));
   });
 });
 
@@ -555,7 +556,7 @@ describe('tabFromGrant — voucher satisfies the seller middleware (real oracle)
     const conn = connFor(params, sessionAccountData({ params }));
     const tab = await tabFromGrant({
       ...baseOptions(kp, params, conn),
-      reserveFinalVoucherV2: async () => ({ armed: true }),
+      reserveFinalVoucherV2: async (input) => finalizedReservationReceipt(input),
     });
     const mw = tabMiddleware({
       connection: conn,
@@ -746,7 +747,7 @@ describe('tabFromGrant — settle-only close', () => {
     expect(settle!.body).toMatchObject({
       channelId: v.payload.channelId,
       cumulativeAmount: '255000',
-      sequenceNumber: 1,
+      sequenceNumber: 0x8000_0001,
       network: 'solana:mainnet',
     });
     // hex-encoded byte fields, exactly the /tab/settle wire shape
@@ -822,15 +823,4 @@ function fakeRes() {
     },
   };
   return res;
-}
-
-/** Local 44-byte voucher builder for the nacl-verify assertion (test-side only —
- *  production bytes come from @dexterai/vault/messages inside signVoucher). */
-function buildVoucherBytes(channelIdHex: string, cumulative: bigint, seq: number): Uint8Array {
-  const out = new Uint8Array(44);
-  out.set(Buffer.from(channelIdHex, 'hex'), 0);
-  const view = new DataView(out.buffer);
-  view.setBigUint64(32, cumulative, true);
-  view.setUint32(40, seq, true);
-  return out;
 }

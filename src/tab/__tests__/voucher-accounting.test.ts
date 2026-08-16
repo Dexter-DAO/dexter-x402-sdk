@@ -13,10 +13,11 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { PublicKey } from '@solana/web3.js';
-import { openTab } from '../tab';
+import { openTab, TabImpl } from '../tab';
 import type { Tab, VaultAdapter, SignedVoucher, VoucherPayload } from '../types';
 import { sessionRegisterMessage } from '@dexterai/vault/messages';
 import { DEXTER_VAULT_PROGRAM_ID } from '../instructions';
+import { finalizedReservationReceipt } from './reservation-fixture';
 
 // Any valid base58 pubkeys — never hit on chain in these tests.
 const SELLER_PUBKEY = 'DhP2eR7XGwsCFUxiYxkLBpzkmuyU1Cn9CGUVNkpBu1g7';
@@ -44,6 +45,7 @@ function makeFakeAdapter(
     network: 'solana:mainnet',
     swigAddress: VAULT_PUBKEY,
     vaultPda: VAULT_PUBKEY,
+    sessionVoucherVersion: 1,
     authorizeSession: async scope => ({
       publicKey: new Uint8Array(32).fill(1),
       privateKey: new Uint8Array(64).fill(9),
@@ -58,12 +60,41 @@ function makeFakeAdapter(
 }
 
 async function makeTab(adapter: VaultAdapter): Promise<TabInternalsView> {
+  if (adapter.sessionVoucherVersion === 1) {
+    // Construct an already-issued historical handle directly. V6 public
+    // open/recovery rejects V1; these unit tests retain coverage of the local
+    // rollback/accounting behavior used while settling an existing handle.
+    const expiresAtUnix = Math.floor(Date.now() / 1000) + 3600;
+    const channelIdHex = '11'.repeat(32);
+    const scope = {
+      channelId: channelIdHex,
+      maxAmountAtomic: '5000000',
+      revolvingCapacityAtomic: '5000000',
+      expiresAtUnix,
+      allowedCounterparty: SELLER_PUBKEY,
+    };
+    const session = await adapter.authorizeSession(scope);
+    return new TabImpl({
+      vault: adapter,
+      network: 'solana:mainnet',
+      seller: SELLER_PUBKEY,
+      counterparty: SELLER_PUBKEY,
+      session,
+      channelIdHex,
+      channelIdBytes: Uint8Array.from(Buffer.from(channelIdHex, 'hex')),
+      perUnitCapAtomic: 5000n,
+      totalCapAtomic: 5000000n,
+      expiresAtUnix,
+      facilitatorUrl: 'https://facilitator.test',
+    }) as unknown as TabInternalsView;
+  }
   const tab = await openTab({
     vault: adapter,
     network: 'solana:mainnet',
     seller: SELLER_PUBKEY,
     perUnitCap: '0.005', // 5000 atomic
     totalCap: '5',
+    reserveFinalVoucherV2: async input => finalizedReservationReceipt(input),
   });
   return tab as TabInternalsView;
 }
@@ -105,6 +136,7 @@ function makeFakeV2Adapter() {
     }),
     signOpenTab: async () => new Uint8Array(0),
     signCloseTab: async () => new Uint8Array(0),
+    verifyFinalVoucherV2Reservation: vi.fn(async () => undefined),
   };
   return { adapter, authorizeSession };
 }
@@ -123,18 +155,89 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('Tab.signNextVoucher — commit only after signing', () => {
+  it('rejects a concurrent voucher operation before it can reuse the same counter', async () => {
+    let releaseSigner!: () => void;
+    const signerBlocked = new Promise<void>(resolve => {
+      releaseSigner = resolve;
+    });
+    const sign = vi
+      .fn<VaultAdapter['signWithSession']>()
+      .mockImplementation(async (_session, payload) => {
+        await signerBlocked;
+        return fakeSign(payload);
+      });
+    const tab = await makeTab(makeFakeAdapter(sign));
+
+    const first = tab.signNextVoucher('5000');
+    await vi.waitFor(() => expect(sign).toHaveBeenCalledTimes(1));
+    await expect(tab.signNextVoucher('5000')).rejects.toThrow(
+      /tab_operation_in_flight: voucher/,
+    );
+
+    releaseSigner();
+    const voucher = await first;
+    expect(voucher.payload.sequenceNumber).toBe(1);
+    expect(sign).toHaveBeenCalledTimes(1);
+    expect(tab.state.spent).toBe('0.005');
+  });
+
+  it('rejects close while a voucher operation is still in flight', async () => {
+    let releaseSigner!: () => void;
+    const signerBlocked = new Promise<void>(resolve => {
+      releaseSigner = resolve;
+    });
+    const sign = vi
+      .fn<VaultAdapter['signWithSession']>()
+      .mockImplementation(async (_session, payload) => {
+        await signerBlocked;
+        return fakeSign(payload);
+      });
+    const tab = await makeTab(makeFakeAdapter(sign));
+
+    const signing = tab.signNextVoucher('5000');
+    await vi.waitFor(() => expect(sign).toHaveBeenCalledTimes(1));
+    await expect(tab.close()).rejects.toThrow(
+      /tab_operation_in_flight: voucher/,
+    );
+
+    releaseSigner();
+    await signing;
+    expect(tab.state.isOpen).toBe(true);
+  });
+
   it('requires the V2 reservation fence before creating an on-chain session', async () => {
     const { adapter, authorizeSession } = makeFakeV2Adapter();
-    await expect(makeTab(adapter)).rejects.toThrow(
+    await expect(openTab({
+      vault: adapter,
+      network: 'solana:mainnet',
+      seller: SELLER_PUBKEY,
+      perUnitCap: '0.005',
+      totalCap: '5',
+    })).rejects.toThrow(
       /native_tab_v2_reservation_fence_required/,
     );
     expect(authorizeSession).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it('rejects an unknown adapter voucher generation before creating a session', async () => {
+    const adapter = makeFakeAdapter();
+    const authorizeSession = vi.spyOn(adapter, 'authorizeSession');
+    Object.defineProperty(adapter, 'sessionVoucherVersion', {
+      configurable: true,
+      value: undefined,
+    });
+
+    await expect(makeTab(adapter)).rejects.toThrow(
+      'native_tab_adapter_voucher_version_required',
+    );
+    expect(authorizeSession).not.toHaveBeenCalled();
+  });
+
   it('releases a V2 FINAL voucher only after the exact reservation callback', async () => {
     const { adapter } = makeFakeV2Adapter();
-    const reserveFinalVoucherV2 = vi.fn(async () => ({ armed: true as const }));
+    const reserveFinalVoucherV2 = vi.fn(async input =>
+      finalizedReservationReceipt(input));
     const tab = await openTab({
       vault: adapter,
       network: 'solana:mainnet',
@@ -186,7 +289,8 @@ describe('Tab.signNextVoucher — commit only after signing', () => {
       seller: SELLER_PUBKEY,
       perUnitCap: '0.005',
       totalCap: '5',
-      reserveFinalVoucherV2: async () => ({ armed: true }),
+      reserveFinalVoucherV2: async input =>
+        finalizedReservationReceipt(input),
     })).rejects.toThrow('native_tab_v2_registration_identity_mismatch');
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -225,7 +329,104 @@ describe('Tab.signNextVoucher — commit only after signing', () => {
   });
 });
 
+describe('Tab.close — revoke confirmation boundary', () => {
+  it('keeps the session open and key intact when revoke confirmation rejects', async () => {
+    const privateKey = new Uint8Array(64).fill(9);
+    const adapter = makeFakeAdapter();
+    adapter.authorizeSession = async scope => ({
+      publicKey: new Uint8Array(32).fill(1),
+      privateKey,
+      scope,
+      registration: new Uint8Array(180).fill(2),
+    });
+    adapter.signCloseTab = vi.fn(async () => {
+      throw new Error(
+        'session revoke transaction failed: {"InstructionError":[1,{"Custom":6012}]}',
+      );
+    });
+    const tab = await makeTab(adapter);
+
+    await expect(tab.close()).rejects.toThrow(
+      'session revoke transaction failed',
+    );
+    expect(tab.state.isOpen).toBe(true);
+    expect(privateKey.every(byte => byte === 9)).toBe(true);
+
+    adapter.signCloseTab = vi.fn(async () => new Uint8Array(0));
+    const result = await tab.close();
+    expect(result.sessionRevoked).toBe(true);
+    expect(tab.state.isOpen).toBe(false);
+    expect(privateKey.every(byte => byte === 0)).toBe(true);
+  });
+});
+
 describe('Tab.rollbackVoucher — internal honest-refusal rollback', () => {
+  it('fails closed while a later voucher signature is in flight', async () => {
+    let releaseSecond!: () => void;
+    let markSecondStarted!: () => void;
+    const secondBlocked = new Promise<void>(resolve => {
+      releaseSecond = resolve;
+    });
+    const secondStarted = new Promise<void>(resolve => {
+      markSecondStarted = resolve;
+    });
+    const sign = vi
+      .fn<VaultAdapter['signWithSession']>()
+      .mockImplementation(async (_session, payload) => {
+        if (payload.sequenceNumber === 2) {
+          markSecondStarted();
+          await secondBlocked;
+        }
+        return fakeSign(payload);
+      });
+    const tab = await makeTab(makeFakeAdapter(sign));
+    const first = await tab.signNextVoucher('5000');
+
+    const signingSecond = tab.signNextVoucher('5000');
+    await secondStarted;
+    expect(tab.rollbackVoucher(first)).toBe(false);
+
+    releaseSecond();
+    const second = await signingSecond;
+    expect(second.payload.sequenceNumber).toBe(2);
+    expect(second.payload.cumulativeAmount).toBe('10000');
+    expect(tab.lastSignedVoucher).toBe(second);
+    expect(tab.state.spent).toBe('0.01');
+  });
+
+  it('fails closed while close is in flight', async () => {
+    let releaseRevoke!: () => void;
+    let markRevokeStarted!: () => void;
+    const revokeBlocked = new Promise<void>(resolve => {
+      releaseRevoke = resolve;
+    });
+    const revokeStarted = new Promise<void>(resolve => {
+      markRevokeStarted = resolve;
+    });
+    const adapter = makeFakeAdapter();
+    adapter.signCloseTab = vi.fn(async () => {
+      markRevokeStarted();
+      await revokeBlocked;
+      return new Uint8Array(0);
+    });
+    const tab = await makeTab(adapter);
+    const voucher = await tab.signNextVoucher('5000');
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ settleTx: 'SETTLE_TX' }), {
+        status: 200,
+      })));
+
+    const closing = tab.close();
+    await revokeStarted;
+    expect(tab.rollbackVoucher(voucher)).toBe(false);
+
+    releaseRevoke();
+    const result = await closing;
+    expect(result.sessionRevoked).toBe(true);
+    expect(result.settledAmount).toBe('0.005');
+    expect(tab.state.spent).toBe('0.005');
+  });
+
   it('reverts counters and restores the previous lastSignedVoucher', async () => {
     const tab = await makeTab(makeFakeAdapter());
 

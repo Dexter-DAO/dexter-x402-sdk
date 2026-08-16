@@ -22,8 +22,11 @@
  *     odometer starts there so the first voucher strictly exceeds everything
  *     the chain has already terminally counted. The chain is the durable
  *     counter; there is no local state store to lose.
- *   - drain-protection arming via the facilitator's `POST /tab/open`,
- *     fail-closed exactly like `openTab` (an unarmed tab is never returned)
+ *   - a context-bound V2 reservation fence before every newly issued FINAL
+ *     voucher. Historical low-bit V1 grants are rejected before I/O: the v6
+ *     facilitator has no compatible buyer-side V1 arming/recovery endpoint.
+ *     Seller-side V1 verification remains available for obligations that were
+ *     already issued under the deployment that originally opened them.
  *
  * CUSTODY NOTE — why this constructor may hold a session secret when
  * `resumeTab` refuses to: the passkey path's "session keys are memory-only"
@@ -62,6 +65,7 @@ import type {
   VaultAdapter,
   ReserveFinalVoucherV2,
 } from './types';
+import { HistoricalV1MigrationRequiredError } from './types';
 import { sessionRegisterMessage } from './messages';
 import { DEXTER_VAULT_PROGRAM_ID } from './instructions';
 import {
@@ -71,7 +75,12 @@ import {
   parseAtomic,
   deriveChannelId,
 } from './sessions';
-import { TabImpl, armTabOpen, DEFAULT_FACILITATOR_URL } from './tab';
+import { TabImpl, DEFAULT_FACILITATOR_URL } from './tab';
+import {
+  assertFinalVoucherV2ReservationReceipt,
+  finalVoucherV2ReservationIdentity,
+} from './reservation';
+import { verifySolanaFinalVoucherV2Reservation } from './adapters/solana/reservation-verifier';
 
 // Re-exported so consumers can type their grant hand-off without importing
 // @dexterai/vault directly.
@@ -131,9 +140,9 @@ export interface TabFromGrantOptions {
    */
   sellerUrl?: string;
   /**
-   * The buyer's Swig STATE address (`vault.swig_address`) for the `/tab/open`
-   * arming call. When omitted it is read from the on-chain vault account —
-   * one extra RPC read, never a guess.
+   * The buyer's Swig STATE address (`vault.swig_address`) bound into the exact
+   * V2 reservation request and receipt. When omitted it is read from the
+   * on-chain vault account — one extra RPC read, never a guess.
    */
   swigAddress?: string;
   /** Facilitator base URL. Default: DEFAULT_FACILITATOR_URL (https://x402.dexter.cash). */
@@ -145,8 +154,9 @@ export interface TabFromGrantOptions {
    * voucher before it can be returned to merchant-facing code. The
    * implementation must durably persist and establish that voucher's exact
    * on-chain reservation, be idempotent for identical bytes, and resolve only
-   * after authoritative confirmation. Historical low-bit V1 recovery ignores
-   * this seam and keeps the old facilitator arming flow.
+   * after authoritative finalization. Low-bit V1 grants are rejected before
+   * this seam or any external I/O because v6 cannot reconstruct their arming
+   * identity safely.
    */
   reserveFinalVoucherV2?: ReserveFinalVoucherV2;
 }
@@ -155,8 +165,9 @@ const NETWORK: TabNetworkId = 'solana:mainnet';
 
 /**
  * Construct a live `Tab` from a granted session key. Fail-loud at every step:
- * key/params mismatch, dead or drifted on-chain session, exhausted cap, and
- * unarmed drain protection all THROW — an invalid tab is never returned.
+ * key/params mismatch, dead or drifted on-chain session, exhausted cap, and a
+ * missing exact V2 reservation fence all THROW — an invalid tab is never
+ * returned.
  */
 export async function tabFromGrant(options: TabFromGrantOptions): Promise<Tab> {
   const facilitatorUrl = options.facilitatorUrl ?? DEFAULT_FACILITATOR_URL;
@@ -171,6 +182,9 @@ export async function tabFromGrant(options: TabFromGrantOptions): Promise<Tab> {
   const totalCapAtomic = parseAtomic(options.params.maxAmountAtomic);
   const maxRevolvingCapacity = parseAtomic(options.params.maxRevolvingCapacityAtomic);
   const isV2 = (options.params.nonce & 0x8000_0000) !== 0;
+  if (!isV2) {
+    throw new HistoricalV1MigrationRequiredError('tabFromGrant');
+  }
   if (isV2 && !options.reserveFinalVoucherV2) {
     throw new Error(
       'native_tab_v2_reservation_fence_required: provide reserveFinalVoucherV2; ' +
@@ -312,20 +326,9 @@ export async function tabFromGrant(options: TabFromGrantOptions): Promise<Tab> {
     }
     swigAddress = vaultFull.swigAddress;
   }
-  // Historical V1 is recovery-only and retains the old total-cap arming call.
   // V2 cannot arm here: its on-chain reservation is one exact purchase and is
   // cryptographically bound to the FINAL voucher that does not exist until
   // signNextVoucher. TabImpl invokes the required release fence at that point.
-  if (!isV2) {
-    await armTabOpen(
-      facilitatorUrl,
-      swigAddress,
-      totalCapAtomic,
-      NETWORK,
-      options.params.counterparty,
-    );
-  }
-
   // ── 6. Assemble the Tab ───────────────────────────────────────────────
   const scope: SessionScope = {
     channelId: channelIdHex,
@@ -353,6 +356,7 @@ export async function tabFromGrant(options: TabFromGrantOptions): Promise<Tab> {
     network: NETWORK,
     swigAddress,
     vaultPda: vaultPdaKey.toBase58(),
+    sessionVoucherVersion: isV2 ? 2 : 1,
     authorizeSession: async () => {
       throw new Error(
         'grant_tab_no_passkey: a grant-held tab cannot authorize sessions — ' +
@@ -398,6 +402,13 @@ export async function tabFromGrant(options: TabFromGrantOptions): Promise<Tab> {
         'to the wallet owner\'s surfaces — a grant-held tab closes settle-only',
       );
     },
+    verifyFinalVoucherV2Reservation: isV2
+      ? (input, receipt) => verifySolanaFinalVoucherV2Reservation(
+          connection,
+          input,
+          receipt,
+        )
+      : undefined,
   };
 
   return new TabImpl({
@@ -419,8 +430,10 @@ export async function tabFromGrant(options: TabFromGrantOptions): Promise<Tab> {
         : 0,
     beforeVoucherRelease: isV2
       ? async ({ voucher, incrementAtomic, previousCumulativeAtomic }) => {
-          const receipt = await options.reserveFinalVoucherV2!({
+          const identity = finalVoucherV2ReservationIdentity(voucher);
+          const input = {
             network: NETWORK,
+            programId: programId.toBase58(),
             buyerSwigAddress: swigAddress,
             vaultPda: vaultPdaKey.toBase58(),
             sessionPda: sessionPda.toBase58(),
@@ -429,11 +442,12 @@ export async function tabFromGrant(options: TabFromGrantOptions): Promise<Tab> {
             sessionNonce: options.params.nonce,
             reservationAmountAtomic: incrementAtomic,
             previousCumulativeAtomic,
+            ...identity,
             voucher,
-          });
-          if (!receipt || receipt.armed !== true) {
-            throw new Error('native_tab_v2_reservation_not_confirmed');
-          }
+          };
+          const receipt = await options.reserveFinalVoucherV2!(input);
+          assertFinalVoucherV2ReservationReceipt(input, receipt);
+          await vault.verifyFinalVoucherV2Reservation!(input, receipt);
         }
       : undefined,
     closeMode: 'settle-only',

@@ -1,7 +1,7 @@
 /**
  * @dexterai/x402/tab message encoders — moved to @dexterai/vault/messages.
  *
- * The current byte layouts (188-byte V2 session registration, 220-byte
+ * The current byte layouts (188-byte V2 session registration, 252-byte
  * revocation, and versioned voucher preimages) are the on-chain protocol
  * contract. Keeping them in the
  * vault package ensures they cannot drift from the instruction builders

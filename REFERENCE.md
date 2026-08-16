@@ -42,7 +42,7 @@ import { createSolanaAdapter, createEvmAdapter } from '@dexterai/x402/adapters';
 import { toAtomicUnits, fromAtomicUnits } from '@dexterai/x402/utils';
 ```
 
-> `@dexterai/vault` is a **peer dependency** (`>=0.19`): install it alongside `@dexterai/x402` so the tab adapter and your app share ONE vault instance. The passkey signer the adapter consumes is vault's canonical `signOperation(operationMessage)` — the same type your app builds, with no bridge shim.
+> `@dexterai/vault` is an exact **peer dependency** at `0.43.1`: install it alongside the matching v6 x402 package so the adapter, revocation wire, and your app use one tested Vault contract.
 
 ---
 
@@ -50,16 +50,31 @@ import { toAtomicUnits, fromAtomicUnits } from '@dexterai/x402/utils';
 
 ### `payUrlWithTab(url, init, opts) → Promise<{ result, tab }>`
 
-Opens (or reuses) a lock-protected tab to the seller discovered from the URL's `402` challenge, and pays. `opts`: `{ vault, perUnitCap, totalCap, tabs }`. Reuse one `tabs` map across calls to keep a single open tab per seller; `tab.close()` settles everything spent in one transaction.
+Opens (or reuses) a lock-protected tab to the seller discovered from the URL's `402` challenge, and pays. `opts`: `{ vault, perUnitCap, totalCap, tabs, reserveFinalVoucherV2 }`. Reuse one `tabs` map across calls to keep a single open tab per seller; `tab.close()` settles everything spent in one transaction. V2 requires `reserveFinalVoucherV2`; see [FINAL V2 reservation provider](#final-v2-reservation-provider).
 
 ```ts
-import { payUrlWithTab } from '@dexterai/x402/tab';
+import { payUrlWithTab, type ReserveFinalVoucherV2 } from '@dexterai/x402/tab';
 
+const reserveFinalVoucherV2: ReserveFinalVoucherV2 = async (input) => {
+  const response = await fetch('/api/native-tab/reserve', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) throw new Error(`reservation failed: ${response.status}`);
+  return response.json();
+};
 const tabs = new Map();
 const { result, tab } = await payUrlWithTab(
   'https://api.example.com/paid/infer',
   { method: 'GET' },
-  { vault, perUnitCap: '0.01', totalCap: '1.00', tabs },
+  {
+    vault,
+    perUnitCap: '0.01',
+    totalCap: '1.00',
+    tabs,
+    reserveFinalVoucherV2,
+  },
 );
 await tab?.close();
 ```
@@ -90,10 +105,55 @@ Builds the `vault` adapter the buyer calls drive through.
 | `passkeySigner` | `PasskeySignerWithPublicKey` | A `signOperation(operationMessage)` signer (see below) |
 | `feePayer` | `Signer` | Lamport fee payer |
 
-The `passkeySigner` uses Vault 0.42.2's canonical shape: `{ credentialId, publicKey, signOperation(operationMessage) }`. The adapter passes the raw operation bytes. The signer obtains the canonical V7 200-byte challenge binding the fixed program, exact vault, current monotonic authorization nonce, operation hash, and fresh ceremony entropy; the adapter owns only the precompile assembly. Do not substitute a bare `sha256(operationMessage)` challenge for V7 operations.
+The `passkeySigner` uses Vault 0.43.1's canonical shape: `{ credentialId, publicKey, signOperation(operationMessage) }`. The adapter passes the raw operation bytes. The signer obtains the canonical V7 200-byte challenge binding the fixed program, exact vault, current monotonic authorization nonce, operation hash, and fresh ceremony entropy; the adapter owns only the precompile assembly. Do not substitute a bare `sha256(operationMessage)` challenge for V7 operations.
 
 - **Browser:** vault's `DexterApiBrowserPasskeySigner` — drops in with no shim.
-- **CLI / server agent:** `passkeySignerFromP256Keypair(kp)` from `@dexterai/x402/tab/adapters/solana`, wrapping a locally-held P-256 keypair.
+- **CLI / server agent:** `passkeySignerFromP256Keypair(kp, { resolveAuthorizationContext })` from `@dexterai/x402/tab/adapters/solana`, wrapping a locally-held P-256 keypair. The resolver must read the current `PasskeyAuthorization` state immediately before a revoke ceremony; the helper never guesses that nonce.
+
+```ts
+import { fetchPasskeyAuthorizationState } from '@dexterai/vault';
+import { DEXTER_VAULT_PROGRAM_ID } from '@dexterai/vault/constants';
+import { passkeySignerFromP256Keypair } from '@dexterai/x402/tab/adapters/solana';
+import { PublicKey } from '@solana/web3.js';
+
+const passkeySigner = passkeySignerFromP256Keypair(kp, {
+  resolveAuthorizationContext: async () => {
+    const authorization = await fetchPasskeyAuthorizationState(
+      connection,
+      new PublicKey(vaultPda),
+    );
+    if (!authorization) throw new Error('passkey authorization unavailable');
+    return {
+      programId: DEXTER_VAULT_PROGRAM_ID,
+      vault: authorization.vault,
+      nonce: authorization.nonce,
+    };
+  },
+});
+```
+
+### FINAL V2 reservation provider
+
+Before a FINAL V2 voucher is returned to merchant-facing code, the buyer must reserve its exact increment through `reserveFinalVoucherV2`. This is a money-side effect and normally belongs in the buyer's authenticated backend, not browser JavaScript. The callback must be idempotent for the same input, use `input.idempotencyKey` as its stable caller-operation identity, and return the complete `FinalVoucherV2ReservationReceipt` only after the exact transaction reaches Solana finalized commitment. Provider receipt and lifecycle IDs remain provider-owned; they are not aliases for the SDK idempotency key. The finalized transaction must contain exactly the canonical `settle_voucher(increment=true)` instruction followed by an SPL Memo v2 instruction whose sole account is the Dexter authority signer and whose UTF-8 data is `finalVoucherV2ReservationMemo(input)`. The Solana adapter independently verifies both instructions and coherent finalized Vault/SessionAccount post-state. A merely confirmed receipt, `{ armed: true }`, a broadcast-only response, a provider-only voucher assertion, or a receipt that does not match the voucher is rejected.
+
+```ts
+const { result, tab } = await payUrlWithTab(url, init, {
+  vault,
+  perUnitCap: '0.01',
+  totalCap: '1.00',
+  reserveFinalVoucherV2: async (input) => {
+    const response = await fetch('https://your-backend.example/native-tab/reserve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    if (!response.ok) throw new Error(`reservation failed: ${response.status}`);
+    return response.json();
+  },
+});
+```
+
+The Vault instruction proves the exact session and amount. The immediately following authority-signed Memo carries `dexter-native-tab-v2-reservation/v1:<sha256>` and binds that reservation to the complete FINAL voucher and pre-reservation frontier. Provider receipt, lifecycle, and retry identifiers are deliberately outside that shared economic digest and remain separately validated receipt metadata. The provider receipt is durable lifecycle evidence, but it is not the sole voucher binding and cannot replace either transaction instruction.
 
 ---
 
@@ -236,11 +296,22 @@ Endpoints paid through the facilitator are auto-discovered, named, and quality-t
 
 ## Migration
 
+### Migrating to 6.0.0
+
+1. Install the current tested pair: `npm install @dexterai/x402 @dexterai/vault`.
+2. Add `sessionVoucherVersion` to every custom `VaultAdapter`. Buyer-side V1 open and reconstruction are not supported in v6 and throw `HistoricalV1MigrationRequiredError`; settle or revoke a historical V1 session through the deployment that originally opened it, then create a context-bound V2 session. Seller-side verification remains available only for already-issued V1 vouchers.
+3. For V2, implement `verifyFinalVoucherV2Reservation` and replace boolean reservation callbacks with the complete versioned receipt.
+4. Treat `Tab.voucherVersion` as required. Missing or invalid runtime values fail closed.
+5. Node P-256 signers must resolve the current authorization state for revoke; unknown operations no longer silently use the legacy hash.
+6. Serialize access to a Tab at the application boundary as well. The runtime now rejects concurrent sign/close calls rather than allowing duplicate sequence issuance.
+
+`5.4.2` may be used only with its historical, compatible Vault range. Do not pair it with Vault `0.43.x`; its close wire predates exact-state V3 revocation.
+
 ### Migrating to 5.0.0 (breaking)
 
 Two changes, both about packaging and the passkey signer — the payment path itself is unchanged.
 
-1. **`@dexterai/vault` is now a peer dependency** (`>=0.19`), not bundled. The tab adapter and your app share ONE vault instance, so there are no duplicate copies and no `instanceof`/type mismatches across packages. Install it alongside: `npm install @dexterai/x402 @dexterai/vault`.
+1. **`@dexterai/vault` became a peer dependency** in v5, rather than a bundled dependency. Current v6 consumers must use the exact tested `0.43.1` pair described above.
 2. **The passkey signer contract is `signOperation(operationMessage)`**, replacing the old `sign(challenge)`. The adapter hands the signer the RAW operation message. A V7 signer must resolve the authoritative vault authorization nonce and build the canonical 200-byte challenge; bare `sha256(op)` is legacy-only and fails closed on V7. If you wrote a custom signer against `sign(challenge)`, pass the raw operation into Dexter's canonical challenge policy instead of accepting a caller-supplied challenge. Vault's browser signer and this package's `passkeySignerFromP256Keypair` node/agent signer already conform for the supported session operations.
 
 To pin the old surface, stay on `@dexterai/x402@^4`.

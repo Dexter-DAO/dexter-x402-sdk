@@ -5,9 +5,13 @@
  * post-open payment failure, onLiveSession passthrough, and no tab offered.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { PublicKey } from '@solana/web3.js';
 import { payUrlWithTab } from '../pay-url';
 import { openTab } from '../tab';
 import type { Tab, VaultAdapter } from '../types';
+import { sessionRegisterMessage } from '../messages';
+import { DEXTER_VAULT_PROGRAM_ID } from '../instructions';
+import { finalizedReservationReceipt } from './reservation-fixture';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -59,41 +63,53 @@ const fakeAdapter: VaultAdapter = {
   network: 'solana:mainnet',
   swigAddress: SELLER,
   vaultPda: SELLER,
-  authorizeSession: async scope => ({
-    publicKey: new Uint8Array(32).fill(1),
-    privateKey: new Uint8Array(64).fill(9),
-    scope,
-    registration: new Uint8Array(180).fill(2),
-  }),
-  signWithSession: async (_session, payload) => ({
-    payload,
-    sessionPublicKey: new Uint8Array(32).fill(1),
-    sessionRegistration: new Uint8Array(180).fill(2),
+  sessionVoucherVersion: 2,
+  authorizeSession: async scope => {
+    const publicKey = new Uint8Array(32).fill(1);
+    return {
+      publicKey,
+      privateKey: new Uint8Array(64).fill(9),
+      scope,
+      registration: sessionRegisterMessage({
+        programId: DEXTER_VAULT_PROGRAM_ID,
+        vaultPda: new PublicKey(SELLER),
+        sessionPubkey: publicKey,
+        maxAmount: BigInt(scope.maxAmountAtomic),
+        expiresAt: BigInt(scope.expiresAtUnix),
+        allowedCounterparty: new PublicKey(scope.allowedCounterparty),
+        nonce: 0x8000_0007,
+        maxRevolvingCapacity: BigInt(scope.revolvingCapacityAtomic!),
+      }),
+    };
+  },
+  signWithSession: async (session, payload) => ({
+    payload: {
+      ...payload,
+      sequenceNumber: (payload.sequenceNumber | 0x8000_0000) >>> 0,
+    },
+    sessionPublicKey: session.publicKey,
+    sessionRegistration: session.registration,
     sessionSignature: new Uint8Array(64).fill(3),
   }),
   signOpenTab: async () => new Uint8Array(0),
   signCloseTab: async () => new Uint8Array(0),
+  verifyFinalVoucherV2Reservation: async () => undefined,
 };
 
-/** Build an open tab for tab-reuse test (requires a stubbed fetch for /tab/open). */
+const reserveFinalVoucherV2 = async (
+  input: Parameters<NonNullable<import('../types').OpenTabOptions['reserveFinalVoucherV2']>>[0],
+) => finalizedReservationReceipt(input);
+
+/** Build an open V2 tab for the tab-reuse test. */
 async function buildOpenTab(): Promise<Tab> {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async () =>
-      new Response(
-        JSON.stringify({ success: true, armed: true, signature: 'x' }),
-        { status: 200 },
-      ),
-    ),
-  );
   const tab = await openTab({
     vault: fakeAdapter,
     network: 'solana:mainnet',
     seller: SELLER,
     perUnitCap: '0.02',
     totalCap: '0.02',
+    reserveFinalVoucherV2,
   });
-  vi.unstubAllGlobals();
   return tab;
 }
 
@@ -105,30 +121,18 @@ afterEach(() => {
 
 describe('payUrlWithTab', () => {
   it('1. happy path — resolves offer, opens tab, pays with voucher header, returns tab', async () => {
-    const tabOpenCalls: string[] = [];
     const voucherHeaders: string[] = [];
 
     // Scripted fetch sequence:
     //   (a) resolve probe → 402 challenge
-    //   (b) POST /tab/open → armed
-    //   (c) payAndFetch probe → 402 challenge
-    //   (d) request WITH x-tab-voucher → 200
+    //   (b) payAndFetch probe → 402 challenge
+    //   (c) request WITH x-tab-voucher → 200
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-        const url = inputToUrl(input);
+      vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
         const headers = new Headers(init?.headers ?? undefined);
 
-        // (b) arm call
-        if (url.includes('/tab/open')) {
-          tabOpenCalls.push(url);
-          return new Response(
-            JSON.stringify({ success: true, armed: true, signature: 'x' }),
-            { status: 200 },
-          );
-        }
-
-        // (d) voucher-carrying paid request
+        // (c) voucher-carrying paid request
         const voucher = headers.get('X-Tab-Voucher') ?? headers.get('x-tab-voucher');
         if (voucher) {
           voucherHeaders.push(voucher);
@@ -147,6 +151,7 @@ describe('payUrlWithTab', () => {
         vault: fakeAdapter,
         perUnitCap: '0.02',
         totalCap: '0.02',
+        reserveFinalVoucherV2,
       },
     );
 
@@ -180,6 +185,7 @@ describe('payUrlWithTab', () => {
         vault: fakeAdapter,
         perUnitCap: '0.02',
         totalCap: '0.02',
+        reserveFinalVoucherV2,
       },
     );
 
@@ -208,6 +214,7 @@ describe('payUrlWithTab', () => {
         vault: fakeAdapter,
         perUnitCap: '0.02',   // 20000 atomic
         totalCap: '0.02',
+        reserveFinalVoucherV2,
       },
     );
 
@@ -230,25 +237,14 @@ describe('payUrlWithTab', () => {
     const tabs = new Map<string, Tab>();
     tabs.set(SELLER, seededTab);
 
-    const tabOpenCalls: string[] = [];
-
     // Script for the second call (tab already seeded, no arm needed):
     //   (a) resolve probe → 402
     //   (b) payAndFetch probe → 402
     //   (c) voucher request → 200
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-        const url = inputToUrl(input);
+      vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
         const headers = new Headers(init?.headers ?? undefined);
-
-        if (url.includes('/tab/open')) {
-          tabOpenCalls.push(url);
-          return new Response(
-            JSON.stringify({ success: true, armed: true, signature: 'x' }),
-            { status: 200 },
-          );
-        }
 
         const voucher = headers.get('X-Tab-Voucher') ?? headers.get('x-tab-voucher');
         if (voucher) {
@@ -267,32 +263,23 @@ describe('payUrlWithTab', () => {
         perUnitCap: '0.02',
         totalCap: '0.02',
         tabs,
+        reserveFinalVoucherV2,
       },
     );
 
     expect(result.ok).toBe(true);
-
-    // No /tab/open was called during the second payUrlWithTab call.
-    expect(tabOpenCalls).toHaveLength(0);
 
     // The returned tab is the SAME object as the seeded one.
     expect(tab).toBe(seededTab);
   });
 
   it('6. payment fails AFTER the tab opened — tab is non-null so the caller can close it', async () => {
-    // Script: (a) resolve probe → 402, (b) /tab/open → armed,
-    //         (c) payAndFetch probe → 402, (d) voucher request → 500.
+    // Script: resolve probe → 402, payAndFetch probe → 402,
+    // then the voucher request → 500.
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-        const url = inputToUrl(input);
+      vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
         const headers = new Headers(init?.headers ?? undefined);
-        if (url.includes('/tab/open')) {
-          return new Response(
-            JSON.stringify({ success: true, armed: true, signature: 'x' }),
-            { status: 200 },
-          );
-        }
         const voucher = headers.get('X-Tab-Voucher') ?? headers.get('x-tab-voucher');
         if (voucher) {
           return new Response('seller exploded', { status: 500 });
@@ -308,6 +295,7 @@ describe('payUrlWithTab', () => {
         vault: fakeAdapter,
         perUnitCap: '0.02',
         totalCap: '0.02',
+        reserveFinalVoucherV2,
       },
     );
 
@@ -331,19 +319,12 @@ describe('payUrlWithTab', () => {
       },
     };
 
-    // Same script as the happy path: probe → 402, /tab/open → armed,
-    // probe → 402, voucher request → 200.
+    // Same script as the happy path: probe → 402, probe → 402,
+    // voucher request → 200.
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-        const url = inputToUrl(input);
+      vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
         const headers = new Headers(init?.headers ?? undefined);
-        if (url.includes('/tab/open')) {
-          return new Response(
-            JSON.stringify({ success: true, armed: true, signature: 'x' }),
-            { status: 200 },
-          );
-        }
         if (headers.get('X-Tab-Voucher') ?? headers.get('x-tab-voucher')) {
           return new Response('paid!', { status: 200 });
         }
@@ -359,6 +340,7 @@ describe('payUrlWithTab', () => {
         perUnitCap: '0.02',
         totalCap: '0.02',
         onLiveSession: 'replace',
+        reserveFinalVoucherV2,
       },
     );
 
@@ -388,6 +370,7 @@ describe('payUrlWithTab', () => {
         vault: fakeAdapter,
         perUnitCap: '0.02',
         totalCap: '0.02',
+        reserveFinalVoucherV2,
       },
     );
 

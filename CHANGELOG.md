@@ -7,8 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.0-rc.0] - 2026-08-16
+
+### Added
+
+- Context-bound FINAL V2 vouchers bind the Vault program, Vault, SessionAccount, seller, session generation, channel, cumulative amount, and sequence into the signed voucher.
+- FINAL V2 release now requires a complete versioned reservation receipt, finality for the exact Solana reservation transaction, and an independent finalized post-state verification. A merely confirmed transaction and the former `{ armed: true }` acknowledgement are rejected.
+- Live-session replacement uses one guard-bound V7 passkey ceremony and one atomic replacement transaction.
+- Tab voucher signing and close share one fail-fast local operation gate, preventing two concurrent calls from reserving the same sequence/cumulative frontier.
+
+### Changed
+
+- `@dexterai/vault` is pinned to the published `0.43.1` release. Close/revoke now signs the 252-byte V3 message over one coherent, authoritative Vault + SessionAccount snapshot, including all live meters and `pendingVoucherCount`.
+- `VaultAdapter.sessionVoucherVersion` and `Tab.voucherVersion` are required. Buyer-side V1 open and reconstruction now fail with `HistoricalV1MigrationRequiredError`; seller-side verification remains available only for already-issued V1 vouchers. Missing, invalid, or unsupported generations fail closed.
+- The Node P-256 signer no longer guesses a revoke authorization nonce. Revoke requires an authoritative `resolveAuthorizationContext`; unknown operations sign nothing unless the caller explicitly opts into the deprecated legacy operation hash.
+
+### Breaking
+
+- V2 reservation callbacks now return the full `FinalVoucherV2ReservationReceipt`; boolean acknowledgements are invalid.
+- V2 adapters must implement `verifyFinalVoucherV2Reservation`.
+- This release is a major-version candidate because its reservation, revocation, and adapter contracts are intentionally incompatible with the abandoned 5.4.3 candidate.
+
+### Compatibility notice
+
+- Public `@dexterai/x402@5.4.2` contains the historical V1 Native Tab rail. Its broad Vault peer range admits `0.43.1`, but its close wire predates Vault 0.43.x exact-state revocation. Existing 5.4.2 consumers should not upgrade Vault to 0.43.x until they move to this v6 line.
+
 ### Added (buyer, K-T4e)
-- **`openTab` / `authorizeSession` are now live-session-aware.** The session PDA is keyed by (vault, counterparty), so re-opening a tab against a seller you already hold a LIVE session with resolves to the same PDA. The on-chain program is gaining a `SessionAlreadyActive` guard that rejects the bare register which previously overwrote it silently. The adapter now reads the target PDA first: an absent/cleared/expired target registers exactly as before (legacy tx, unchanged bytes); a LIVE target either throws the new typed `LiveSessionExistsError` (default — carries the live session's on-chain evidence: spent, crystallized, outstanding, frontier) or, with the new `onLiveSession: 'replace'` option, composes ONE atomic transaction `[secp(revoke), revoke, secp(register), register]` so the buyer is never left sessionless mid-flow. The atomic path costs a second passkey ceremony and rides a v0 + address-lookup-table transaction (it does not fit a legacy transaction), sent via the new `createSelfPayingComposeSend` transport (priority-fee'd, expiry-rebroadcast, ALT lifecycle managed + deactivated).
+- **`openTab` / `authorizeSession` are now live-session-aware.** The session PDA is keyed by (vault, counterparty), so re-opening a tab against a seller you already hold a LIVE session with resolves to the same PDA. A live target either throws the typed `LiveSessionExistsError` (default — carrying spent, crystallized, outstanding, and frontier evidence) or, with `onLiveSession: 'replace'`, uses one guard-nonce-bound V7 passkey ceremony and one atomic `[secp(replace), replace_session_key_v1]` transaction. The buyer is never left sessionless mid-flow. The v0 + address-lookup-table transport manages priority fees, expiry rebroadcast, and ALT deactivation.
 - **BEHAVIOR CHANGE:** pre-5.3.1, `openTab` against a live same-seller session silently overwrote it on-chain — stranding any of the old session's signed-but-unsettled vouchers. That silent path is gone: you get the typed error (settle the old tab first, or acknowledge with `onLiveSession: 'replace'`).
 - `@dexterai/vault` peer/dev dependency raised `>=0.20.0` → `>=0.34.0` (the atomic compose primitive lives there).
 

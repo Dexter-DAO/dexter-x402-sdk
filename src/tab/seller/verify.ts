@@ -345,8 +345,9 @@ export function verifyVoucherSignature(
       sequenceNumber: voucher.payload.sequenceNumber,
     });
   } else {
-    // Historical V1 verification remains read-only for already-issued,
-    // owner-authorized recovery. New session admission requires V2.
+    // Historical V1 verification remains seller-side and read-only for
+    // obligations already issued by an older compatible deployment. V6 does
+    // not open or reconstruct a buyer-side V1 Tab; new admission requires V2.
     message = voucherPayloadMessage({
       channelId: channelIdBytes,
       cumulativeAmount: BigInt(voucher.payload.cumulativeAmount),

@@ -62,12 +62,12 @@ const buildIx = () =>
   });
 
 describe('buildAdapterRegisterInstruction (real vault builder)', () => {
-  test('builds against the vault program with the Vault 0.42.2 11-account list', () => {
+  test('builds against the vault program with the Vault 0.43.1 11-account list', () => {
     const ix = buildIx();
     expect(ix.programId.equals(DEXTER_VAULT_PROGRAM_ID)).toBe(true);
     // CANARY: if the vault program's register_session_key account list
     // changes again, this count (and the order checks below) must be
-    // revisited along with the adapter's arg construction. Vault 0.42.2 binds
+    // revisited along with the adapter's arg construction. Vault 0.43.1 binds
     // the permanent passkey guard, Swig/Vault identity, and graph config in
     // addition to the V6 session accounts (11 total with zero siblings).
     expect(ix.keys).toHaveLength(11);

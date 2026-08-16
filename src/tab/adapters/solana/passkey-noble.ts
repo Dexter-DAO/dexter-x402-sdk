@@ -131,6 +131,13 @@ export interface NodePasskeySignerOptions {
   resolveAuthorizationContext?: (
     operationMessage: Uint8Array,
   ) => Promise<NodePasskeyAuthorizationContext>;
+  /**
+   * Explicit opt-in for pre-V7 development fixtures whose challenge was the
+   * bare sha256(operation). The safe default is false: an unknown operation
+   * must never be signed under a weaker authorization envelope merely because
+   * the node helper did not recognize its wire format.
+   */
+  allowLegacyOperationHash?: boolean;
   /** Deterministic test seam. Production defaults to fresh random 32 bytes. */
   ceremonyNonce?: () => Uint8Array;
 }
@@ -174,7 +181,7 @@ export function signOperationWithPasskey(
  * assemble `precompileMessage` — that's x402-protocol assembly the adapter
  * rebuilds itself, identical on both the node and browser paths.
  *
- * `passkeySignerFromP256Keypair` wraps this with Vault 0.42.2's canonical
+ * `passkeySignerFromP256Keypair` wraps this with Vault 0.43.1's canonical
  * V7 challenge construction for supported session operations.
  */
 export function signChallenge(
@@ -201,7 +208,7 @@ export function signChallenge(
 }
 
 /**
- * Build a unified `PasskeySignerWithPublicKey` (Vault 0.42.2's canonical shape)
+ * Build a unified `PasskeySignerWithPublicKey` (Vault 0.43.1's canonical shape)
  * from a locally-held P-256 keypair — the node/CLI path. Returns
  * `{ credentialId, publicKey, signOperation(operationMessage) }`. The signer
  * owns canonical challenge construction for recognized V7 session operations,
@@ -225,9 +232,10 @@ export function passkeySignerFromP256Keypair(
         ? await options.resolveAuthorizationContext(operationMessage.slice())
         : inferSessionAuthorizationContext(operationMessage);
       if (!context) {
-        // Compatibility for non-V7 development fixtures. Real V7 operations
-        // must either be a recognized session message or supply a resolver.
-        return signChallenge(kp, sha256(operationMessage));
+        if (options.allowLegacyOperationHash === true) {
+          return signChallenge(kp, sha256(operationMessage));
+        }
+        throw new Error('passkey_authorization_context_required');
       }
       const ceremonyNonce = options.ceremonyNonce
         ? options.ceremonyNonce()
@@ -270,36 +278,9 @@ function inferSessionAuthorizationContext(
     };
   }
 
-  // The 220-byte V7 revoke message binds the V2 registration generation but
-  // predates the explicit authorization-nonce field. Immediately after that
-  // registration the guard is generation+1; callers that can interleave other
-  // passkey operations must provide resolveAuthorizationContext above.
-  if (
-    operationMessage.length === 220
-    && hasDomain(operationMessage, 'OTS_SESSION_REVOKE_V2')
-  ) {
-    const view = new DataView(
-      operationMessage.buffer,
-      operationMessage.byteOffset,
-      operationMessage.byteLength,
-    );
-    return {
-      programId: new PublicKey(operationMessage.subarray(32, 64)),
-      vault: new PublicKey(operationMessage.subarray(64, 96)),
-      nonce: BigInt(
-        sessionVoucherV2AuthorizationNonce(view.getUint32(208, true)),
-      ) + 1n,
-    };
-  }
+  // Revoke V2/V3 deliberately does not infer the live authorization nonce.
+  // Other passkey operations may have advanced the guard since session
+  // registration, so the caller must resolve the authoritative value at the
+  // moment of the close ceremony.
   return null;
-}
-
-function hasDomain(message: Uint8Array, label: string): boolean {
-  const expected = new Uint8Array(32);
-  expected.set(new TextEncoder().encode(label));
-  let difference = 0;
-  for (let index = 0; index < expected.length; index += 1) {
-    difference |= (message[index] ?? 0) ^ expected[index];
-  }
-  return difference === 0;
 }

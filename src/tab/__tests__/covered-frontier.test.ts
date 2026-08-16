@@ -24,7 +24,7 @@
  * ONLY after postSettle returns without throwing.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { openTab } from '../tab';
+import { TabImpl } from '../tab';
 import type { Tab, VaultAdapter } from '../types';
 
 // Any valid base58 pubkeys — never hit on chain in these tests.
@@ -41,6 +41,7 @@ function makeAdapterWithRevokeSpy(): { adapter: VaultAdapter; signCloseTab: Retu
     network: 'solana:mainnet',
     swigAddress: VAULT_PUBKEY,
     vaultPda: VAULT_PUBKEY,
+    sessionVoucherVersion: 1,
     authorizeSession: async scope => ({
       publicKey: new Uint8Array(32).fill(1),
       privateKey: new Uint8Array(64).fill(9),
@@ -66,22 +67,12 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-/** Success response for armTabOpen (/tab/open). */
-function armOpenResponse(): Response {
-  return jsonResponse({ success: true, armed: true, signature: 'arm-stub' });
-}
-
 /**
- * URL-routing fetch mock: /tab/open → arm success; everything else (i.e.
- * /tab/settle) → the supplied settle response factory (which may throw to
- * simulate a network error).
+ * URL-routing fetch mock for /tab/settle. The local V1 handle below represents
+ * an already-issued historical tab; v6 public open/recovery does not arm V1.
  */
 function makeRoutingFetch(settleResponse: () => Response) {
-  return vi.fn(async (input: string | URL | Request) => {
-    const url = String(input);
-    if (url.endsWith('/tab/open')) return armOpenResponse();
-    return settleResponse();
-  });
+  return vi.fn(async (_input: string | URL | Request) => settleResponse());
 }
 
 /** Open a tab (revoke-mode, the openTab default) and sign one voucher so
@@ -91,12 +82,26 @@ async function makeTabWithVoucher(
 ): Promise<{ tab: Tab; signCloseTab: ReturnType<typeof vi.fn> }> {
   const { adapter, signCloseTab } = makeAdapterWithRevokeSpy();
   vi.stubGlobal('fetch', mockFetch);
-  const tab = await openTab({
+  const expiresAtUnix = Math.floor(Date.now() / 1000) + 3600;
+  const channelIdHex = '11'.repeat(32);
+  const session = await adapter.authorizeSession({
+    channelId: channelIdHex,
+    maxAmountAtomic: '5000000',
+    revolvingCapacityAtomic: '5000000',
+    expiresAtUnix,
+    allowedCounterparty: SELLER_PUBKEY,
+  });
+  const tab = new TabImpl({
     vault: adapter,
     network: 'solana:mainnet',
     seller: SELLER_PUBKEY,
-    perUnitCap: '0.01', // 10000 atomic
-    totalCap: '5',
+    counterparty: SELLER_PUBKEY,
+    session,
+    channelIdHex,
+    channelIdBytes: Uint8Array.from(Buffer.from(channelIdHex, 'hex')),
+    perUnitCapAtomic: 10000n,
+    totalCapAtomic: 5000000n,
+    expiresAtUnix,
     facilitatorUrl: FACILITATOR_URL,
   });
   await tab.signNextVoucher('10000'); // cumulative → 10000
