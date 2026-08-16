@@ -444,6 +444,28 @@ describe('Tab.rollbackVoucher — internal honest-refusal rollback', () => {
     expect(reissued.payload.cumulativeAmount).toBe(second.payload.cumulativeAmount);
   });
 
+  it('restores the previous voucher attempted amount together with the voucher', async () => {
+    const tab = await makeTab(makeFakeAdapter());
+    const first = await tab.signNextVoucher('3000');
+    const second = await tab.signNextVoucher('5000');
+    expect(tab.rollbackVoucher(second)).toBe(true);
+
+    let settleBody: any;
+    vi.stubGlobal('fetch', vi.fn(async (_url, init?: RequestInit) => {
+      settleBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ settleTx: 'SETTLE_TX' }), {
+        status: 200,
+      });
+    }));
+    await tab.close();
+
+    expect(tab.lastSignedVoucher).toBe(first);
+    expect(settleBody).toMatchObject({
+      attemptedAmount: '3000',
+      cumulativeAmount: '3000',
+    });
+  });
+
   it('rolls a first-and-only voucher back to the pristine state', async () => {
     const tab = await makeTab(makeFakeAdapter());
 
