@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.0-rc.3] - 2026-08-17
+
 ### Added
 
 - Seller-owned delivery accounting is now restart- and takeover-safe. Every
