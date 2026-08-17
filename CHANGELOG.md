@@ -7,6 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Seller-owned delivery accounting is now restart- and takeover-safe. Every
+  channel lease carries an unguessable owner token plus a monotonically
+  increasing fence, and every ledger write, delete, renewal, and release is
+  conditional on that exact lease generation. The SSE meter writes each
+  charge to the fenced durable ledger before the corresponding service may be
+  sent; a crash can conservatively over-account an unsent unit, but cannot
+  erase delivered service and re-grant the same signed budget after restart.
+- `RedisChannelLedger` declares explicit restart/multi-instance capabilities,
+  performs authoritative reads on the Redis primary, renews live leases, and
+  fails closed on store or lease loss. Its `restartSafe` capability requires
+  both the exact AOF-always/no-data-loss/noeviction/dedicated-instance
+  durability attestation and
+  `writerCutover: 'all-legacy-writers-stopped'`.
+
+### Changed
+
+- Seller admission revalidates the current durable voucher registration,
+  cumulative amount, and reservation proof after acquiring the channel lease.
+  Delayed requests therefore cannot overwrite a newer process's accepted
+  state. A response that disconnects during proof work cannot later acquire or
+  indefinitely renew a lease.
+- Channel IDs are canonical lowercase 64-character hex at seller admission.
+  Every bundled ledger adapter also rejects noncanonical IDs before acquiring
+  a lock or touching storage, so direct adapter calls cannot recreate aliases.
+- `ledgerSafetyMode` must be explicit unless `NODE_ENV` is exactly `test` or
+  `development`. `production-single-instance` requires durable restart-safe
+  state plus the explicit channel-alias cutover; `production-multi-instance`
+  additionally requires cross-process atomic fencing. There is no production
+  fallback to memory or inferred single-process topology.
+
+### Breaking
+
+- Custom `ChannelLedger` adapters must expose `capabilities`, use the new
+  `ChannelLease { ownerToken, fence, heldUntilUnixMs }`, accept that lease on
+  every `set`, `update`, and `delete`, and implement conditional
+  `tryAcquireLease`, `renewLease`, and `releaseLease`. Adapters must reject
+  stale owner/fence mutations instead of silently applying them, reject every
+  non-lowercase/non-64-hex channel ID before locking or storage access, and
+  declare `canonicalChannelIds` only after historical aliases are migrated or
+  the durable store is proven empty.
+- `SseMeter.charge()` is asynchronous write-ahead accounting and must be
+  awaited before `send()`. Concurrent charges are serialized against the
+  signed cap; `send()` fails while a charge commit is pending.
+
+### Seller-ledger upgrade and Redis keyspace migration
+
+- **Canonical channel-ID cutover is mandatory for every durable adapter.** The
+  voucher signature covers the decoded 32 channel bytes, so historical SDKs
+  could persist the same signed channel under multiple case spellings. Before
+  setting `channelIdCutover: 'legacy-case-aliases-migrated-or-empty'`, stop all
+  seller writers and enumerate every ledger, lease, and fence key/file. Group
+  records by lowercase channel ID; wait for and remove every alias lease;
+  require exact session/public-key/registration compatibility (otherwise
+  quarantine the entire group for manual review); retain the highest valid
+  signed voucher by cumulative then sequence; **sum** delivered cumulative
+  across distinct aliases; take the maximum crystallized and gate-refused
+  watermarks; and publish the lowercase fence at least one greater than the
+  maximum alias fence. Overcounting a copied duplicate is safer than re-granting
+  delivered service. Verify the canonical record before deleting every alias
+  ledger/lease/fence. A brand-new proven-empty store may acknowledge the same
+  cutover without migration. Production middleware refuses File, Redis, or a
+  custom adapter until `canonicalChannelIds` attests this invariant.
+
+- The default Redis layout remains `legacy-v0` (`<prefix>ledger:<channelId>`,
+  `<prefix>lease:<channelId>`, `<prefix>fence:<channelId>`) so upgrading does
+  not hide existing ledger state or split leases during rollout. Before
+  asserting `writerCutover`, stop every pre-fencing seller process. A raw UUID
+  lease written by an older process is respected until it expires; the new
+  writer never renews or releases that foreign lease.
+- `cluster-v1` is opt-in and never supports a rolling mixed-layout deploy. Stop
+  all seller writers; wait for every legacy lease to expire; copy every legacy
+  canonical lowercase ledger record and fence counter to the corresponding hash-tagged
+  `<prefix>{<channelId>}:ledger|fence` keys (preserving or increasing each
+  fence); verify the copies; then remove all legacy ledger, lease, and fence
+  keys. Only after that stop-the-world procedure may the service start with
+  `keyLayout: 'cluster-v1'`,
+  `keyspaceCutover: 'legacy-state-migrated-or-empty'`, the writer cutover, and
+  the channel-ID cutover acknowledgements. Runtime admission rejects any
+  legacy ledger, lease, or fence remnant rather than treating the new keyspace
+  as empty.
+
 ## [6.0.0-rc.2] - 2026-08-16
 
 ### Fixed

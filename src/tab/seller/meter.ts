@@ -13,7 +13,7 @@
  *       await meter.charge();          // demand voucher; throws if cap exceeded
  *       meter.send(token);              // emit SSE event with the token
  *     }
- *     meter.end();
+ *     await meter.end();
  *   });
  *
  * NOTE on voucher cadence: this implementation treats EACH `charge()` as
@@ -27,15 +27,10 @@
  * the whole request" model, which is correct for any reasonable chunk
  * count under a single per-request increment.
  *
- * Concurrency note: delivered accounting is exact for requests that run
- * sequentially per channel (the normal case — an agent streams one request at
- * a time per tab). Two GENUINELY concurrent streams on the SAME channel each
- * read the same delivered baseline, so they can over-deliver in-flight up to
- * the sum of their budgets before either persists. The lifetime ledger stays
- * correct (additive under a per-channel lock), so the over-delivery is bounded
- * to the overlap and never compounds across future requests. Sellers needing
- * exact metering under parallel same-channel streams should serialize requests
- * per channel.
+ * Concurrency note: tabMiddleware holds one renewable fenced lease per channel,
+ * so a second same-channel stream is rejected before it can share a stale
+ * delivered baseline. Production multi-instance sellers must select the
+ * corresponding safety mode and a cross-process adapter such as Redis.
  */
 
 import type { Response } from 'express';
@@ -75,65 +70,68 @@ export function openSse(res: Response, options: OpenSseOptions): SseMeter {
     ? BigInt(humanToAtomic(options.perUnit))
     : null;
 
-  // Cumulative delivered DURING this request (resets per request, as before).
+  // Cumulative write-ahead delivery reservations DURING this request.
   let chargedAtomic = 0n;
   let ended = false;
+  let pendingCharges = 0;
+  let chargeTail: Promise<void> = Promise.resolve();
 
-  // Persist the lifetime delivered cumulative (baseline + this request's
-  // delivery) to the ledger. Called on EVERY terminal path — clean end,
-  // cap-exceeded, AND client disconnect/abort — so a buyer CANNOT grief the
-  // seller by consuming service then dropping the connection before end()
-  // (that would otherwise leave delivered un-advanced and re-grant the budget
-  // next request — a quadratic giveaway). The only unpersisted window left is a
-  // hard process crash: not buyer-controllable, bounded to in-flight requests,
-  // same class as the existing voucher-store crash window. Per-chunk
-  // checkpointing would only SHRINK that hard-crash window (never close it —
-  // you can always crash between chunk and write) at a write-per-token cost, so
-  // we persist per terminal event instead.
-  // Terminal path: persist what we delivered. The lease is NOT touched here —
-  // its release is owned by the request lifecycle in tabMiddleware (res.on
-  // 'close'/'finish'), so a handler that never opens a meter still releases.
-  // Called on EVERY terminal path (clean end, cap-reject, disconnect), each
-  // guarded by `ended` so it fires exactly once.
-  async function persistDelivered(): Promise<void> {
-    await tab.recordDelivered(chargedAtomic.toString());
-  }
-
-  // Buyer-controlled termination: if the client drops the connection mid-stream
-  // the underlying response emits 'close'; commit what we delivered. Best-effort
-  // (can't await in an event handler), but the ledger write completes because on
-  // a disconnect the process is still alive. Guarded by `ended` so a normal
-  // end() — which also emits 'close' via res.end() — doesn't double-write.
-  res.on('close', () => {
+  // Delivery truth is write-ahead, not terminal best-effort. Every successful
+  // charge durably advances the fenced ledger BEFORE the caller may send its
+  // chunk. A hard crash can therefore conservatively account a chunk that was
+  // not sent; it can never send service that disappears from restart state.
+  // Close only marks the local meter terminal; there is nothing left to flush.
+  res.prependListener('close', () => {
     if (ended) return;
     ended = true;
-    void persistDelivered().catch((err) => {
-      // Best-effort: a failed disconnect-persist must not crash the process. The
-      // residual unpersisted window is the documented hard-crash case.
-      console.error('[tab/seller] terminal persist failed on disconnect:', err);
-    });
   });
 
-  async function charge(units = 1): Promise<void> {
-    if (ended) throw new Error('meter ended');
-    if (perUnitAtomic === null) throw new Error('charge() needs options.perUnit');
-    const inc = perUnitAtomic * BigInt(units);
-    const next = chargedAtomic + inc;
-    if (next > budgetAtomic) {
-      ended = true; // terminate: no further send()/charge() past the cap
-      await persistDelivered(); // commit what we DID deliver before refusing
-      throw new ScopeViolationError(
-        'cumulative_exceeds_cap',
-        `chunk would push delivered to ${atomicToHuman((deliveredBaselineAtomic + next).toString())} ` +
-        `beyond signed cumulative ${atomicToHuman(signedAtomic.toString())} ` +
-        `(per-request budget ${atomicToHuman(budgetAtomic.toString())})`,
-      );
+  function charge(units = 1): Promise<void> {
+    if (ended) return Promise.reject(new Error('meter ended'));
+    if (perUnitAtomic === null) {
+      return Promise.reject(new Error('charge() needs options.perUnit'));
     }
-    chargedAtomic = next;
+    if (!Number.isSafeInteger(units) || units <= 0) {
+      return Promise.reject(new Error('charge() units must be a positive safe integer'));
+    }
+    const inc = perUnitAtomic * BigInt(units);
+    pendingCharges += 1;
+    const run = chargeTail.then(async () => {
+      // Re-check inside the serialized section: another queued charge may have
+      // consumed the remaining signed budget while this call was waiting.
+      if (ended) throw new Error('meter ended');
+      const next = chargedAtomic + inc;
+      if (next > budgetAtomic) {
+        ended = true; // terminate: no further send()/charge() past the cap
+        throw new ScopeViolationError(
+          'cumulative_exceeds_cap',
+          `chunk would push delivered to ${atomicToHuman((deliveredBaselineAtomic + next).toString())} ` +
+          `beyond signed cumulative ${atomicToHuman(signedAtomic.toString())} ` +
+          `(per-request budget ${atomicToHuman(budgetAtomic.toString())})`,
+        );
+      }
+      try {
+        await tab.recordDelivered(inc.toString());
+        chargedAtomic = next;
+      } catch (error) {
+        // Store/lease ambiguity fails closed before caller-controlled send().
+        // If the write committed but its acknowledgement was lost, conservative
+        // over-accounting is safer than re-delivering the same signed budget.
+        ended = true;
+        throw error;
+      }
+    });
+    chargeTail = run.catch(() => undefined);
+    return run.finally(() => {
+      pendingCharges -= 1;
+    });
   }
 
   function send(chunk: string | Uint8Array): void {
     if (ended) throw new Error('meter ended');
+    if (pendingCharges > 0) {
+      throw new Error('charge still pending; await meter.charge() before send()');
+    }
     const data = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
     // Escape backslashes BEFORE newlines so the client's unescape is a true
     // inverse. The old newline-only escape corrupted payloads that already
@@ -146,7 +144,6 @@ export function openSse(res: Response, options: OpenSseOptions): SseMeter {
   async function end(): Promise<void> {
     if (ended) return;
     ended = true;
-    await persistDelivered();
     res.write(`event: end\ndata: {"chargedAtomic":"${chargedAtomic}"}\n\n`);
     res.end();
   }

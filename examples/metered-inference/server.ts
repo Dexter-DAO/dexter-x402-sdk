@@ -43,7 +43,12 @@ import type { Request, Response } from 'express';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { Connection } from '@solana/web3.js';
-import { tabOrExactMiddleware, requireTab, openSse } from '@dexterai/x402/tab/seller';
+import {
+  FileChannelLedger,
+  tabOrExactMiddleware,
+  requireTab,
+  openSse,
+} from '@dexterai/x402/tab/seller';
 import type { X402Request } from '@dexterai/x402/server';
 import { encodeFrame } from './sse-frame.js';
 
@@ -73,6 +78,16 @@ const STICKER_HUMAN = microsToHuman(STICKER_MICROS); // '0.010000'
 // Receive-only payout pubkey. No key material anywhere in this process.
 const SELLER_PUBKEY = process.env.SELLER_PUBKEY ?? 'FKF63wLt122SLDNPBfpDgrMcQzxtdLfLyrUS1KziRR1h';
 const PORT = Number(process.env.PORT ?? 4021);
+const TAB_LEDGER_DIR = process.env.TAB_LEDGER_DIR ?? '.tab-ledger';
+function requireChannelIdCutover(): 'legacy-case-aliases-migrated-or-empty' {
+  if (process.env.TAB_CHANNEL_ID_CUTOVER !== 'legacy-case-aliases-migrated-or-empty') {
+    throw new Error(
+      'Set TAB_CHANNEL_ID_CUTOVER=legacy-case-aliases-migrated-or-empty only after ' +
+        'the seller ledger is empty or the documented legacy case-alias migration is complete',
+    );
+  }
+  return process.env.TAB_CHANNEL_ID_CUTOVER;
+}
 // One RPC read per buyer session (registration verify); never on the 402 path.
 const RPC_URL =
   process.env.HELIUS_RPC_URL ??
@@ -185,6 +200,9 @@ if (process.argv.includes('--selftest')) {
 // ── Payment middleware — the ONLY payment middleware on the route ────────────
 
 const connection = new Connection(RPC_URL, 'confirmed');
+const ledger = new FileChannelLedger(TAB_LEDGER_DIR, {
+  channelIdCutover: requireChannelIdCutover(),
+});
 
 const paywall = tabOrExactMiddleware({
   connection,
@@ -194,6 +212,8 @@ const paywall = tabOrExactMiddleware({
   // exact rail charges flat). The tab rail's per-token bill is set on openSse
   // in the handler below.
   perUnit: STICKER_HUMAN,
+  ledger,
+  ledgerSafetyMode: 'production-single-instance',
   description: `Metered Claude inference: ${PER_TOKEN_HUMAN} USDC per output token (tab) or ${STICKER_HUMAN} flat for up to ${MAX_OUTPUT_TOKENS} tokens (exact)`,
   // facilitatorUrl omitted -> https://x402.dexter.cash
   // lockCadence omitted -> facilitator-owned crystallization cadence (do not tune)
@@ -331,10 +351,9 @@ app.post('/v1/complete', express.json(), validateBody, paywall, async (req, res)
       await meter.end();
     } catch (streamErr) {
       // charge() throws ScopeViolationError when the buyer's voucher budget is
-      // exhausted mid-stream; the meter has already persisted what WAS
-      // delivered (recordDelivered fires on every terminal path). SSE headers
-      // are out, so just close the stream — the buyer settles the delivered
-      // amount at tab close.
+      // exhausted mid-stream; every successful charge was persisted before
+      // its send. SSE headers are out, so just close the stream — the buyer
+      // settles the durably accounted amount at tab close.
       console.error('[metered-inference] stream terminated:', (streamErr as Error).message);
       if (!res.writableEnded) res.end();
     }

@@ -25,6 +25,7 @@ import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import { Connection } from '@solana/web3.js';
 import {
+  FileChannelLedger,
   TAB_VOUCHER_HEADER,
   openSse,
   requireTab,
@@ -36,6 +37,16 @@ import type { X402Request } from '@dexterai/x402/server';
 // ─── Config (env is for secrets + deploy knobs; defaults run out of the box) ──
 
 const PORT = Number(process.env.PORT || 4880);
+const TAB_LEDGER_DIR = process.env.TAB_LEDGER_DIR || '.tab-ledger';
+function requireChannelIdCutover(): 'legacy-case-aliases-migrated-or-empty' {
+  if (process.env.TAB_CHANNEL_ID_CUTOVER !== 'legacy-case-aliases-migrated-or-empty') {
+    throw new Error(
+      'Set TAB_CHANNEL_ID_CUTOVER=legacy-case-aliases-migrated-or-empty only after ' +
+        'the seller ledger is empty or the documented legacy case-alias migration is complete',
+    );
+  }
+  return process.env.TAB_CHANNEL_ID_CUTOVER;
+}
 
 // Any Solana mainnet RPC. Used once per tab session (a registration read on
 // open) — never on the 402 path, never per send. Use a real provider
@@ -194,12 +205,17 @@ async function deliver(body: SendBody): Promise<DeliveryOutcome> {
 // ─── The paywall + the route ──────────────────────────────────────────────────
 
 const connection = new Connection(RPC_URL, 'confirmed');
+const ledger = new FileChannelLedger(TAB_LEDGER_DIR, {
+  channelIdCutover: requireChannelIdCutover(),
+});
 
 const paywall = tabOrExactMiddleware({
   connection,
   sellerPubkey: SELLER_PAYTO,
   network: 'solana:mainnet',
   perUnit: STICKER_HUMAN,
+  ledger,
+  ledgerSafetyMode: 'production-single-instance',
   description:
     'Page a human over Telegram or email. $0.01 per send. Tab-metered: open a ' +
     'non-custodial, hard-capped spend tab and page as you go, or pay one-shot.',

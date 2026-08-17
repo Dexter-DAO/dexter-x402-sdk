@@ -124,10 +124,17 @@ sticker honest for one-shot buyers.
 - **Do not set `lockCadence`.** It is omitted here on purpose: the facilitator
   owns crystallization cadence server-side as of 5.3.1. It is a risk dial, not
   a performance dial. Ship without it.
-- `tabOrExactMiddleware` keeps per-channel accounting in process memory. A
-  restart mid-tab is safe for funds (vouchers are verified on-chain
-  state + signatures) but forgets accrual counters; for durable, multi-instance
-  setups see `ChannelLedger` in the seller docs
+- This server uses `FileChannelLedger` + `production-single-instance`; mount
+  `TAB_LEDGER_DIR` on persistent storage and run exactly one process. Multiple
+  Set `TAB_CHANNEL_ID_CUTOVER` only for a proven-empty directory or after the
+  changelog's legacy case-alias merge. Multiple replicas require
+  `RedisChannelLedger` + `production-multi-instance`, its
+  exact durability attestation, and
+  `writerCutover: 'all-legacy-writers-stopped'`, and the channel-ID cutover. A
+  `cluster-v1` layout also requires the documented stop-the-world legacy
+  keyspace migration.
+  Owner-token/monotonic fences reject stale writes after crash takeover. See
+  `ChannelLedger` in the seller docs
   (https://docs.dexter.cash/docs/get-paid/sell-with-tabs).
 - Knowing you were paid: `tab.cumulative()` / receipts are **accrual**
   counters, not settlement confirmations. Settlement happens at tab close (the

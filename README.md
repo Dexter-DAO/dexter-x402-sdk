@@ -115,19 +115,50 @@ That `vault` drives [the tab loop above](#the-tab). To inspect a seller's price 
 You get paid for exactly what you serve, and you hold no key. As an agent spends against its tab, charges crystallize on-chain into a reservation against the buyer's wallet; one settle at close pays your address for everything metered. One middleware advertises both a tab and a one-shot price in a single `402`, so tab-native agents and one-shot callers pay at the same rate.
 
 ```ts
-import { tabOrExactMiddleware, requireTab, openSse } from '@dexterai/x402/tab/seller';
+import {
+  FileChannelLedger,
+  tabOrExactMiddleware,
+  requireTab,
+  openSse,
+} from '@dexterai/x402/tab/seller';
 import type { X402Request } from '@dexterai/x402/server';
 
+const ledgerDir = process.env.TAB_LEDGER_DIR;
+const channelIdCutover = process.env.TAB_CHANNEL_ID_CUTOVER;
+if (!ledgerDir) throw new Error('TAB_LEDGER_DIR must name persistent storage');
+if (channelIdCutover !== 'legacy-case-aliases-migrated-or-empty') {
+  throw new Error('prove the seller ledger empty or complete the documented alias migration first');
+}
+const ledger = new FileChannelLedger(ledgerDir, { channelIdCutover });
+
 app.get('/paid/tick',
-  tabOrExactMiddleware({ connection, sellerPubkey, network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', perUnit: '0.01' }),
+  tabOrExactMiddleware({
+    connection,
+    sellerPubkey,
+    network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+    perUnit: '0.01',
+    ledger,
+    ledgerSafetyMode: 'production-single-instance',
+  }),
   async (req, res) => {
     if ((req as X402Request).x402) { res.json({ data: '...' }); return; }   // one-shot caller, already paid
     const meter = openSse(res, { tab: requireTab(req), perUnit: '0.01' });  // tab caller
     await meter.charge(1);                  // demand a fresh voucher; throws if the cap is exceeded
     meter.send(JSON.stringify({ data: '...' }));
-    await meter.end();                      // always await — persists the final delivered amount
+    await meter.end();                      // always await — closes the metered response
   });
 ```
+
+`FileChannelLedger` is restart-safe for one seller process; keep its directory
+on persistent storage. `TAB_CHANNEL_ID_CUTOVER` is an operator assertion, never
+a copy/paste default: set it only for a proven-empty store or after completing
+the mixed-case alias merge in
+[CHANGELOG.md](./CHANGELOG.md#seller-ledger-upgrade-and-redis-keyspace-migration).
+Multiple replicas must use `RedisChannelLedger` with
+`ledgerSafetyMode: 'production-multi-instance'`, verified durability, and the
+documented writer/keyspace cutovers. Production configuration is explicit; the
+in-memory default is accepted only in exact `test` or `development`
+environments.
 
 Want a tab-only endpoint, or to compose the pieces yourself? The full seller surface is in [REFERENCE.md](./REFERENCE.md#sellers).
 

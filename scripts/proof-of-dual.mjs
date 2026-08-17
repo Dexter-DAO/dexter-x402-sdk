@@ -4,7 +4,10 @@
  *   resolve  -> resolveTabTerms(url): terms with zero payment
  *   exact    -> payAndFetch + keypair wallet (the catalog verifier's path)
  *   tab      -> payUrlWithTab -> close -> mainnet settle (the agent's path)
- * Run: node scripts/proof-of-dual.mjs   (ORCHESTRATOR ONLY — mainnet)
+ * Run (ORCHESTRATOR ONLY — mainnet, after empty-store/migration proof):
+ *   TAB_LEDGER_DIR=/absolute/persistent/proof-dual-ledger \
+ *   TAB_CHANNEL_ID_CUTOVER=legacy-case-aliases-migrated-or-empty \
+ *   node scripts/proof-of-dual.mjs
  */
 import { readFileSync } from 'node:fs';
 import express from 'express';
@@ -14,13 +17,36 @@ import {
   createAssociatedTokenAccountIdempotentInstruction,
 } from '@solana/spl-token';
 
-import { tabOrExactMiddleware, requireTab, openSse } from '@dexterai/x402/tab/seller';
+import {
+  FileChannelLedger,
+  tabOrExactMiddleware,
+  requireTab,
+  openSse,
+} from '@dexterai/x402/tab/seller';
 import { payUrlWithTab, resolveTabTerms } from '@dexterai/x402/tab';
 import { payAndFetch, createKeypairWallet } from '@dexterai/x402/client';
 import {
   createSolanaVaultAdapter,
   passkeySignerFromP256Keypair,
 } from '@dexterai/x402/tab/adapters/solana';
+
+function sellerLedger() {
+  const dir = process.env.TAB_LEDGER_DIR;
+  if (!dir || !dir.startsWith('/')) {
+    throw new Error('TAB_LEDGER_DIR must be an absolute persistent directory');
+  }
+  if (process.env.TAB_CHANNEL_ID_CUTOVER !== 'legacy-case-aliases-migrated-or-empty') {
+    throw new Error(
+      'set TAB_CHANNEL_ID_CUTOVER only after the ledger is empty or the legacy case-alias migration is complete',
+    );
+  }
+  return new FileChannelLedger(dir, {
+    channelIdCutover: process.env.TAB_CHANNEL_ID_CUTOVER,
+  });
+}
+// Module-level, side-effect-free fail-fast gate: no credential read, RPC call,
+// signature, or transaction can happen before seller durability is valid.
+const SELLER_LEDGER = sellerLedger();
 
 // ── Config (identical to proof-of-loop.mjs except seller seed + port) ──
 // Write-capable Solana RPC (the proofs SEND transactions; the public
@@ -98,6 +124,8 @@ async function main() {
     network: 'solana:mainnet',
     perUnit: PER_TICK,
     facilitatorUrl: FACILITATOR,
+    ledger: SELLER_LEDGER,
+    ledgerSafetyMode: 'production-single-instance',
   });
   app.get('/paid/tick', dual, async (req, res) => {
     if (req.x402) {
@@ -108,7 +136,7 @@ async function main() {
     const meter = openSse(res, { tab, perUnit: PER_TICK });
     await meter.charge(1);
     meter.send(JSON.stringify({ message: 'hello, paid world', paidVia: 'tab' }));
-    meter.end();
+    await meter.end();
   });
   const server = app.listen(PORT);
   const url = `http://127.0.0.1:${PORT}/paid/tick`;

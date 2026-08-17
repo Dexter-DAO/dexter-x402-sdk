@@ -40,11 +40,16 @@ const fakeConnection = {} as any;
 
 /** Base64-JSON voucher header the middleware can decode. cumulativeAmount is the
  *  signed cumulative for THIS channel — the value that must get crystallized. */
-function voucherHeader(channelId: string, cumulativeAmount: string, sequenceNumber = 1): string {
+function voucherHeader(
+  channelId: string,
+  cumulativeAmount: string,
+  sequenceNumber = 1,
+  registrationHex = '00'.repeat(188),
+): string {
   const voucher = {
     payload: { channelId, cumulativeAmount, sequenceNumber },
     sessionPublicKey: '00'.repeat(32),
-    sessionRegistration: '00'.repeat(188),
+    sessionRegistration: registrationHex,
     sessionSignature: '00'.repeat(64),
   };
   return Buffer.from(JSON.stringify(voucher), 'utf8').toString('base64');
@@ -276,5 +281,122 @@ describe('tabMiddleware close-path crystallize (FIX C2)', () => {
     await middleware(req2, res2, next2);
     expect(next2).toHaveBeenCalledTimes(1);
     expect(res2.statusCode).toBe(0);
+  });
+
+  it('allows V1 reconnect headroom only with a strictly newer durable sequence', async () => {
+    const ledger = new InMemoryChannelLedger();
+    const middleware = mw(ledger, {
+      thresholdAtomic: humanToAtomic('1000000'),
+      onClose: false,
+    });
+    const cumulative = humanToAtomic('0.05');
+
+    const first = fakeReqRes(voucherHeader(CHANNEL, cumulative, 1));
+    const firstNext = vi.fn();
+    await middleware(first.req, first.res, firstNext);
+    expect(firstNext).toHaveBeenCalledOnce();
+    first.res.emit('close');
+    await flushMicrotasks();
+
+    const replay = fakeReqRes(voucherHeader(CHANNEL, cumulative, 1));
+    const replayNext = vi.fn();
+    await middleware(replay.req, replay.res, replayNext);
+    expect(replayNext).not.toHaveBeenCalled();
+    expect(replay.res.body).toMatchObject({ reason: 'non_monotonic' });
+
+    const reconnect = fakeReqRes(voucherHeader(CHANNEL, cumulative, 2));
+    const reconnectNext = vi.fn();
+    await middleware(reconnect.req, reconnect.res, reconnectNext);
+    expect(reconnectNext).toHaveBeenCalledOnce();
+    reconnect.res.emit('close');
+    await flushMicrotasks();
+  });
+
+  it('rejects a case-flipped spelling of the same signed channel bytes', async () => {
+    const ledger = new InMemoryChannelLedger();
+    const middleware = mw(ledger, {
+      thresholdAtomic: humanToAtomic('1000000'),
+      onClose: false,
+    });
+    const cumulative = humanToAtomic('0.05');
+
+    const canonical = fakeReqRes(voucherHeader(CHANNEL, cumulative, 1));
+    await middleware(canonical.req, canonical.res, vi.fn());
+    canonical.res.emit('close');
+    await flushMicrotasks();
+
+    // Hex decoding would produce the same 32 signed bytes, but raw-case keys
+    // would create a second cache/lease/ledger identity without this guard.
+    const flippedChannel = CHANNEL.toUpperCase();
+    const replay = fakeReqRes(voucherHeader(flippedChannel, cumulative, 2));
+    const replayNext = vi.fn();
+    await middleware(replay.req, replay.res, replayNext);
+    expect(replayNext).not.toHaveBeenCalled();
+    expect(replay.res.body).toMatchObject({ reason: 'signature_invalid' });
+    await expect(ledger.get(flippedChannel)).rejects.toThrow(/canonical lowercase/);
+    expect((await ledger.get(CHANNEL))?.deliveredCumulativeAtomic).toBe('0');
+  });
+
+  it('does not cache a first-seen V1 registration that loses the durable lease', async () => {
+    const ledger = new InMemoryChannelLedger();
+    const acquire = ledger.tryAcquireLease.bind(ledger);
+    vi.spyOn(ledger, 'tryAcquireLease')
+      .mockResolvedValueOnce(null)
+      .mockImplementation(acquire);
+    const middleware = mw(ledger, {
+      thresholdAtomic: humanToAtomic('1000000'),
+      onClose: false,
+    });
+    const cumulative = humanToAtomic('0.01');
+
+    const loser = fakeReqRes(voucherHeader(
+      CHANNEL,
+      cumulative,
+      1,
+      '11'.repeat(188),
+    ));
+    await middleware(loser.req, loser.res, vi.fn());
+    expect(loser.res.body).toMatchObject({ reason: 'channel_busy' });
+
+    const legitimate = fakeReqRes(voucherHeader(
+      CHANNEL,
+      cumulative,
+      1,
+      '22'.repeat(188),
+    ));
+    const next = vi.fn();
+    await middleware(legitimate.req, legitimate.res, next);
+    expect(next).toHaveBeenCalledOnce();
+
+    legitimate.res.emit('close');
+    await flushMicrotasks();
+  });
+
+  it('caps two meters sharing one admitted SellerTab at the durable signed cumulative', async () => {
+    const ledger = new InMemoryChannelLedger();
+    const middleware = mw(ledger, {
+      thresholdAtomic: humanToAtomic('1000000'),
+      onClose: false,
+    });
+    const signedAtomic = humanToAtomic('0.01');
+    const admitted = fakeReqRes(voucherHeader(CHANNEL, signedAtomic, 1));
+    const next = vi.fn();
+    await middleware(admitted.req, admitted.res, next);
+    expect(next).toHaveBeenCalledOnce();
+
+    const tab = requireTab(admitted.req);
+    // Both meters snapshot the same zero delivered baseline and each locally
+    // sees the full signed remainder. The fenced ledger mutation is therefore
+    // the authoritative shared cap boundary, not either meter's local counter.
+    const first = openSse(fakeReqRes('').res, { tab, perUnit: '0.01' });
+    const second = openSse(fakeReqRes('').res, { tab, perUnit: '0.01' });
+    const results = await Promise.allSettled([first.charge(1), second.charge(1)]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect((await ledger.get(CHANNEL))?.deliveredCumulativeAtomic).toBe(signedAtomic);
+
+    admitted.res.emit('close');
+    await flushMicrotasks();
   });
 });

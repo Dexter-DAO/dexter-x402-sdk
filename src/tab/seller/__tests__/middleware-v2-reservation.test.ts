@@ -278,7 +278,9 @@ describe('Native Tab V2 seller reservation admission', () => {
 
     expect(legitimateNext).toHaveBeenCalledOnce();
     expect(mocks.inspectSolanaFinalVoucherV2Reservation).toHaveBeenCalledTimes(2);
-    expect(mocks.enforceScope).toHaveBeenCalledTimes(2);
+    // The legitimate request is checked once before and once after acquiring
+    // the durable lease; the rejected request fails its first scope check.
+    expect(mocks.enforceScope).toHaveBeenCalledTimes(3);
   });
 
   it('does not let a concurrent first-seen registration overwrite the channel winner', async () => {
@@ -350,11 +352,83 @@ describe('Native Tab V2 seller reservation admission', () => {
     expect(winnerRetryNext).toHaveBeenCalledOnce();
   });
 
+  it('revalidates durable registration after lease when a different process wins during proof', async () => {
+    const delayedProof = deferred<ReturnType<typeof chainState>>();
+    mocks.inspectSolanaFinalVoucherV2Reservation
+      .mockImplementationOnce(() => delayedProof.promise)
+      .mockResolvedValueOnce(chainState());
+    const ledger = new InMemoryChannelLedger();
+    const delayedProcess = middleware(ledger).handle;
+    const winningProcess = middleware(ledger).handle; // independent SessionCache
+
+    const delayed = requestResponse(voucherHeader(
+      '5000',
+      0x8000_0001,
+      reservationReceipt(),
+      true,
+      '11'.repeat(188),
+    ));
+    const delayedNext = vi.fn();
+    const delayedPending = delayedProcess(delayed.req, delayed.res, delayedNext);
+    await vi.waitFor(() => {
+      expect(mocks.inspectSolanaFinalVoucherV2Reservation).toHaveBeenCalledTimes(1);
+    });
+
+    const winner = requestResponse(voucherHeader(
+      '5000',
+      0x8000_0001,
+      reservationReceipt(),
+      true,
+      '22'.repeat(188),
+    ));
+    const winnerNext = vi.fn();
+    await winningProcess(winner.req, winner.res, winnerNext);
+    expect(winnerNext).toHaveBeenCalledOnce();
+    await release(winner.res);
+
+    delayedProof.resolve(chainState());
+    await delayedPending;
+    expect(delayedNext).not.toHaveBeenCalled();
+    expect(delayed.res.statusCode).toBe(402);
+    expect(delayed.res.body).toMatchObject({
+      error: 'invalid_voucher',
+      detail: expect.stringContaining('durable channel registration changed'),
+    });
+    expect(Array.from((await ledger.get(CHANNEL))!.lastVoucher!.sessionRegistration))
+      .toEqual(Array.from(new Uint8Array(188).fill(0x22)));
+  });
+
+  it('does not acquire or renew a lease after the response closes during deferred proof', async () => {
+    const delayedProof = deferred<ReturnType<typeof chainState>>();
+    mocks.inspectSolanaFinalVoucherV2Reservation.mockReturnValueOnce(delayedProof.promise);
+    const ledger = new InMemoryChannelLedger();
+    const renew = vi.spyOn(ledger, 'renewLease');
+    const { handle } = middleware(ledger);
+    const response = requestResponse(voucherHeader('5000', 0x8000_0001));
+    const next = vi.fn();
+
+    const pending = handle(response.req, response.res, next);
+    await vi.waitFor(() => {
+      expect(mocks.inspectSolanaFinalVoucherV2Reservation).toHaveBeenCalledOnce();
+    });
+    response.res.emit('close');
+    delayedProof.resolve(chainState());
+    await pending;
+
+    expect(next).not.toHaveBeenCalled();
+    expect(response.req.tab).toBeUndefined();
+    expect(renew).not.toHaveBeenCalled();
+    const available = await ledger.tryAcquireLease(CHANNEL, 60_000);
+    expect(available).not.toBeNull();
+    await ledger.releaseLease(CHANNEL, available!);
+  });
+
   it('does not cache a first-seen registration that loses the durable lease', async () => {
     const ledger = new InMemoryChannelLedger();
+    const originalAcquire = ledger.tryAcquireLease.bind(ledger);
     vi.spyOn(ledger, 'tryAcquireLease')
-      .mockResolvedValueOnce(false)
-      .mockResolvedValueOnce(true);
+      .mockResolvedValueOnce(null)
+      .mockImplementation(originalAcquire);
     const { handle } = middleware(ledger);
 
     const leaseLoser = requestResponse(voucherHeader(

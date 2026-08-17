@@ -129,11 +129,12 @@ parse-guarded buyer. Base64's alphabet has no backslash and no newline, so
 frames cross the meter byte-identical. The codec lives in `sse-frame.ts`;
 `npm run check:frames` proves both the corruption and the fix mechanically.
 
-If the buyer's voucher budget runs out mid-stream, `charge()` throws, the SDK
-has already persisted what WAS delivered (`recordDelivered` fires on every
-terminal path, including client disconnect), and the buyer settles the
-delivered amount at close. A buyer cannot consume tokens it didn't sign for; a
-seller cannot bill tokens it didn't serve.
+If the buyer's voucher budget runs out mid-stream, `charge()` throws. Each
+successful charge was already fenced into durable seller state before its SSE
+token was sent, so disconnect or process death cannot re-grant the same signed
+budget after restart. The conservative crash ambiguity is one charged unit
+that may not have reached the socket; service is never sent before accounting.
+A buyer cannot consume tokens it didn't sign for.
 
 ## What the seller needs (and doesn't)
 
@@ -147,11 +148,19 @@ seller cannot bill tokens it didn't serve.
 - **Do not tune `lockCadence`.** It is deliberately unset in this example: as
   of `@dexterai/x402@5.3.1` the facilitator owns crystallization cadence
   server-side. It is a risk dial, not a performance dial — ship without it.
-- **Durability:** `tabOrExactMiddleware` uses the in-memory channel ledger, so
-  delivered-counters reset on restart (buyer-signed vouchers remain the source
-  of truth for settlement — you can't lose money, only re-grant unspent
-  budget). For a production seller, compose `tabChallengeMiddleware` +
-  `tabMiddleware({ ledger: new FileChannelLedger(dir), ... })`.
+- **Durability:** this server uses `FileChannelLedger` with
+  `ledgerSafetyMode: 'production-single-instance'`; mount `TAB_LEDGER_DIR` on
+  persistent storage, run exactly one process, and set
+  `TAB_CHANNEL_ID_CUTOVER` only after proving the directory empty or completing
+  the changelog's legacy case-alias merge. Multiple replicas must use
+  `RedisChannelLedger` with `production-multi-instance`, the exact verified
+  AOF/no-loss/noeviction/dedicated-instance attestation, and
+  `writerCutover: 'all-legacy-writers-stopped'` after actually stopping every
+  pre-fencing writer plus the channel-ID cutover. A `cluster-v1` key layout
+  additionally requires the documented stop-the-world legacy keyspace
+  migration.
+  Every write/release is fenced by owner token + monotonic fence; a crashed
+  pre-takeover process cannot overwrite the new owner's delivered counters.
 
 ## How you observe that you were paid
 

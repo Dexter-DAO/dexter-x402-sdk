@@ -166,6 +166,8 @@ describe('chain-frontier baseline seeding', () => {
 
     const ledger = new InMemoryChannelLedger();
     // Pre-existing history: seller already delivered 0.02 on this channel.
+    const seedLease = await ledger.tryAcquireLease(CHANNEL, 60_000);
+    if (!seedLease) throw new Error('expected seed lease');
     await ledger.set(CHANNEL, {
       lastVoucher: {
         payload: { channelId: CHANNEL, cumulativeAmount: humanToAtomic('0.02'), sequenceNumber: 1 },
@@ -175,7 +177,8 @@ describe('chain-frontier baseline seeding', () => {
       },
       deliveredCumulativeAtomic: humanToAtomic('0.02'),
       lastCrystallizedCumulativeAtomic: '0',
-    });
+    }, seedLease);
+    await ledger.releaseLease(CHANNEL, seedLease);
 
     const middleware = mw(ledger);
     const { req, res } = fakeReqRes(voucherHeader(CHANNEL, humanToAtomic('0.10'), 2));
