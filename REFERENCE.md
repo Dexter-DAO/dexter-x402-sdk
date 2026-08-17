@@ -162,20 +162,84 @@ The Vault instruction proves the exact session and amount. The immediately follo
 `tabOrExactMiddleware` is the recommended default: one middleware that advertises a tab and a one-shot price in a single 402 challenge, so agents pay by tab and one-shot callers pay exact, at the same price.
 
 ```ts
-import { tabOrExactMiddleware, requireTab, openSse } from '@dexterai/x402/tab/seller';
+import {
+  FileChannelLedger,
+  tabOrExactMiddleware,
+  requireTab,
+  openSse,
+} from '@dexterai/x402/tab/seller';
 import type { X402Request } from '@dexterai/x402/server';
 
+const ledgerDir = process.env.TAB_LEDGER_DIR;
+const channelIdCutover = process.env.TAB_CHANNEL_ID_CUTOVER;
+if (!ledgerDir) throw new Error('TAB_LEDGER_DIR must name persistent storage');
+if (channelIdCutover !== 'legacy-case-aliases-migrated-or-empty') {
+  throw new Error('prove the seller ledger empty or complete the documented alias migration first');
+}
+const ledger = new FileChannelLedger(ledgerDir, { channelIdCutover });
+
 app.get('/paid/tick',
-  tabOrExactMiddleware({ connection, sellerPubkey, network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', perUnit: '0.01' }),
+  tabOrExactMiddleware({
+    connection,
+    sellerPubkey,
+    network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+    perUnit: '0.01',
+    ledger,
+    ledgerSafetyMode: 'production-single-instance',
+  }),
   async (req, res) => {
     if ((req as X402Request).x402) { res.json({ data: '...', paidVia: 'exact' }); return; } // exact rail
     const tab = requireTab(req);                                                            // tab rail
     const meter = openSse(res, { tab, perUnit: '0.01' });
     await meter.charge(1);                  // demand a fresh voucher; throws if the cap is exceeded
     meter.send(JSON.stringify({ data: '...' }));
-    await meter.end();                      // ALWAYS await — persists the final delivered amount
+    await meter.end();                      // ALWAYS await — closes the metered response
   });
 ```
+
+`FileChannelLedger` is restart-safe for exactly one seller process and its
+directory must live on persistent storage. `channelIdCutover` is an operator
+assertion supplied through `TAB_CHANNEL_ID_CUTOVER`, not an automatic or
+copy/paste default: use it immediately only for a
+proven-empty store, or after the changelog's case-alias merge. Multiple replicas
+require `RedisChannelLedger`, `production-multi-instance`, exact durability and
+writer/channel/keyspace cutover attestations.
+Outside exact `NODE_ENV=test` or `development`, `ledgerSafetyMode` is required;
+there is no silent production fallback to memory or a topology guess.
+
+For a replicated seller, use a fail-fast Redis client configured for primary
+reads and pass the exact operational attestations only after verifying them:
+
+```ts
+import { RedisChannelLedger } from '@dexterai/x402/tab/seller';
+
+const writerCutover = process.env.TAB_WRITER_CUTOVER;
+const channelIdCutover = process.env.TAB_CHANNEL_ID_CUTOVER;
+if (writerCutover !== 'all-legacy-writers-stopped') {
+  throw new Error('stop and verify every pre-fencing seller writer first');
+}
+if (channelIdCutover !== 'legacy-case-aliases-migrated-or-empty') {
+  throw new Error('prove the Redis store empty or complete the documented alias migration first');
+}
+const ledger = new RedisChannelLedger(redis, {
+  keyPrefix: 'tab:',
+  durability: {
+    persistence: 'aof-always',
+    failover: 'no-data-loss',
+    maxmemoryPolicy: 'noeviction',
+    isolation: 'dedicated-instance',
+  },
+  writerCutover,
+  channelIdCutover,
+});
+```
+
+The default `legacy-v0` layout preserves existing Redis ledger and lease keys.
+Do not select `cluster-v1` during a rolling deploy: first complete the
+stop-the-world ledger/fence copy and legacy-key removal procedure in
+[CHANGELOG.md](./CHANGELOG.md#seller-ledger-upgrade-and-redis-keyspace-migration), then add
+`keyLayout: 'cluster-v1'` and
+`keyspaceCutover: 'legacy-state-migrated-or-empty'`.
 
 For a tab-only endpoint, compose the two middlewares directly: `tabChallengeMiddleware` (answers voucher-less requests with the standard x402 challenge, so any agent can discover you) before `tabMiddleware` (verifies the per-charge vouchers). Both are exported from `@dexterai/x402/tab/seller`.
 

@@ -14,7 +14,10 @@
  *   buyer pays w/ voucher  -> seller verifies (V6 session PDA), charges, serves
  *   buyer close()          -> POST /tab/settle -> on-chain USDC swig->seller + fee split
  *
- * Run: node scripts/proof-of-loop.mjs
+ * Run (after proving the ledger path empty or migrating legacy case aliases):
+ *   TAB_LEDGER_DIR=/absolute/persistent/proof-loop-ledger \
+ *   TAB_CHANNEL_ID_CUTOVER=legacy-case-aliases-migrated-or-empty \
+ *   node scripts/proof-of-loop.mjs
  */
 import { readFileSync } from 'node:fs';
 import express from 'express';
@@ -26,12 +29,36 @@ import {
   createAssociatedTokenAccountIdempotentInstruction,
 } from '@solana/spl-token';
 
-import { tabMiddleware, tabChallengeMiddleware, requireTab, openSse } from '@dexterai/x402/tab/seller';
+import {
+  FileChannelLedger,
+  tabMiddleware,
+  tabChallengeMiddleware,
+  requireTab,
+  openSse,
+} from '@dexterai/x402/tab/seller';
 import { payUrlWithTab } from '@dexterai/x402/tab';
 import {
   createSolanaVaultAdapter,
   passkeySignerFromP256Keypair,
 } from '@dexterai/x402/tab/adapters/solana';
+
+function sellerLedger() {
+  const dir = process.env.TAB_LEDGER_DIR;
+  if (!dir || !dir.startsWith('/')) {
+    throw new Error('TAB_LEDGER_DIR must be an absolute persistent directory');
+  }
+  if (process.env.TAB_CHANNEL_ID_CUTOVER !== 'legacy-case-aliases-migrated-or-empty') {
+    throw new Error(
+      'set TAB_CHANNEL_ID_CUTOVER only after the ledger is empty or the legacy case-alias migration is complete',
+    );
+  }
+  return new FileChannelLedger(dir, {
+    channelIdCutover: process.env.TAB_CHANNEL_ID_CUTOVER,
+  });
+}
+// Module-level, side-effect-free fail-fast gate: no credential read, RPC call,
+// signature, or transaction can happen before seller durability is valid.
+const SELLER_LEDGER = sellerLedger();
 
 // ── Config ──────────────────────────────────────────────────────────────
 // Write-capable Solana RPC (the proofs SEND transactions; the public
@@ -118,6 +145,8 @@ async function main() {
     perUnit: PER_TICK,
     settle: 'on-close',
     facilitatorUrl: FACILITATOR,
+    ledger: SELLER_LEDGER,
+    ledgerSafetyMode: 'production-single-instance',
   });
   app.get('/paid/tick', challenge, mw, async (req, res) => {
     const tab = requireTab(req);
@@ -126,7 +155,7 @@ async function main() {
     await meter.charge(1);
     meter.send(JSON.stringify({ message: 'hello, paid world', servedBy: seller.publicKey.toBase58() }));
     log('seller: charged 1 tick, sent payload, closing');
-    meter.end();
+    await meter.end();
   });
   const server = app.listen(PORT);
   log('seller listening on', PORT);

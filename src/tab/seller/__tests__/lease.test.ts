@@ -77,7 +77,7 @@ function fakeReqRes(header: string) {
 
 const flushMicrotasks = () => new Promise((r) => setTimeout(r, 0));
 
-function mw(ledger: InMemoryChannelLedger) {
+function mw(ledger: InMemoryChannelLedger, leaseTtlMs?: number) {
   return tabMiddleware({
     connection: fakeConnection,
     sellerPubkey: SELLER,
@@ -85,6 +85,9 @@ function mw(ledger: InMemoryChannelLedger) {
     network: 'solana:mainnet',
     settle: 'on-close',
     ledger,
+    leaseTtlMs,
+    // Lease tests do not exercise facilitator crystallization.
+    lockCadence: { thresholdAtomic: '999999999999', onClose: false },
   });
 }
 
@@ -154,5 +157,35 @@ describe('channel lease — end-to-end through tabMiddleware', () => {
     await middleware(req2, res2, next2);
     expect(next2).toHaveBeenCalledTimes(1);
     expect(res2.statusCode).toBe(0);
+  });
+
+  it('renews a healthy stream beyond its original TTL so takeover stays closed', async () => {
+    const ledger = new InMemoryChannelLedger();
+    const middleware = mw(ledger, 30);
+    const { req: req1, res: res1 } = fakeReqRes(voucherHeader(CHANNEL, '1000'));
+    await middleware(req1, res1, vi.fn());
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const { req: req2, res: res2 } = fakeReqRes(voucherHeader(CHANNEL, '2000', 2));
+    const next2 = vi.fn();
+    await middleware(req2, res2, next2);
+    expect(next2).not.toHaveBeenCalled();
+    expect(res2.body).toMatchObject({ reason: 'channel_busy' });
+    res1.emit('close');
+    await flushMicrotasks();
+  });
+
+  it('destroys the response and stops renewing when the durable store heartbeat fails', async () => {
+    const ledger = new InMemoryChannelLedger();
+    vi.spyOn(ledger, 'renewLease').mockRejectedValue(new Error('store unavailable'));
+    const middleware = mw(ledger, 15);
+    const { req, res } = fakeReqRes(voucherHeader(CHANNEL, '1000'));
+    res.destroy = vi.fn();
+    await middleware(req, res, vi.fn());
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(res.destroy).toHaveBeenCalledWith(expect.objectContaining({ message: 'store unavailable' }));
+    res.emit('close');
+    await flushMicrotasks();
   });
 });

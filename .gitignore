@@ -5,6 +5,7 @@ dist/
 .env
 .env.local
 coverage/
+.tab-ledger/
 
 test-wallet-base.json
 

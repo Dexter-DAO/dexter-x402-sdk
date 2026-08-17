@@ -72,7 +72,7 @@ function fakeReqRes(headers: Record<string, string> = {}) {
     originalUrl: '/paid/tick',
     get: (h: string) => (h.toLowerCase() === 'host' ? '127.0.0.1:4455' : undefined),
   };
-  const res: any = {
+  const res: any = Object.assign(new EventEmitter(), {
     statusCode: 0,
     headers: {} as Record<string, string>,
     body: undefined as unknown,
@@ -80,7 +80,7 @@ function fakeReqRes(headers: Record<string, string> = {}) {
     setHeader(name: string, value: string) { this.headers[name] = value; return this; },
     status(c: number) { this.statusCode = c; return this; },
     json(b: unknown) { this.body = b; return this; },
-  };
+  });
   return { req, res };
 }
 

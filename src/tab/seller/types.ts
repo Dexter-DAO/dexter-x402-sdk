@@ -16,12 +16,10 @@ import type {
 import type { ChannelLedger } from './channel-ledger';
 
 /**
- * Persistent store for the seller's per-tab voucher state. The middleware
- * writes the latest accepted voucher after every chunk so a process crash
- * loses at most the last in-flight voucher's worth of revenue. Pluggable to
- * match `batch-settlement/store`'s ChannelStore pattern.
+ * Legacy voucher-only persistence surface.
+ * @deprecated Superseded by fenced ChannelLedger, which also durably accounts
+ * delivered cumulative service before each send.
  */
-/** @deprecated Superseded by ChannelLedger (channel-ledger.ts), which also persists deliveredCumulative. */
 export interface VoucherStore {
   get(channelId: string): Promise<SignedVoucher | null>;
   set(channelId: string, voucher: SignedVoucher): Promise<void>;
@@ -52,10 +50,10 @@ export interface SellerTab {
    */
   deliveredCumulative(): HumanAmount;
   /**
-   * Add `incrementAtomic` (this request's delivered amount, atomic) to the
-   * channel's durable lifetime delivered total, under a per-channel lock.
-   * Monotonic — a non-positive increment is a no-op. Called by the meter once
-   * per request on the terminal path (end / cap-reject / disconnect).
+   * Write-ahead reserve `incrementAtomic` in the channel's durable delivered
+   * total before the corresponding chunk may be sent. Monotonic; a
+   * non-positive increment is a no-op. Conservative ambiguity (persisted but
+   * process dies before send) is safe; service may never precede accounting.
    */
   recordDelivered(incrementAtomic: AtomicAmount): Promise<void>;
 }
@@ -74,11 +72,32 @@ export interface TabMiddlewareOptions {
    * Durable per-channel state (latest voucher + delivered cumulative).
    * Default: in-memory (loses state on restart). Pass a FileChannelLedger or
    * your own ChannelLedger for restart-safe revenue + resumeTab support.
+   * Production safety modes reject adapters whose declared capabilities do
+   * not match the deployment topology or whose historical channel case
+   * aliases have not been migrated; configured store errors always propagate
+   * and never fall back to memory.
    */
   ledger?: ChannelLedger;
   /**
+   * Ledger safety contract. Required explicitly unless `NODE_ENV` is exactly
+   * `test` or `development`, where it defaults to `development`. An unset or
+   * misspelled deployment environment never silently enables memory/File
+   * state in production.
+   *
+   * - development: permits the in-memory adapter for local/test use.
+   * - production-single-instance: requires restart-safe durable state and a
+   *   canonical channel-ID cutover acknowledgement.
+   * - production-multi-instance: additionally requires cross-process atomic
+   *   fencing (for example RedisChannelLedger).
+   */
+  ledgerSafetyMode?:
+    | 'development'
+    | 'production-single-instance'
+    | 'production-multi-instance';
+  /**
    * Max single-stream duration before a crashed holder's lease auto-expires.
-   * Default 300000 (5 min).
+   * Must be an integer from 3 through 2147483647 milliseconds. Default
+   * 300000 (5 min). Live middleware renews it every third of this interval.
    */
   leaseTtlMs?: number;
   /**

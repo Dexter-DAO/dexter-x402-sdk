@@ -42,6 +42,12 @@ export interface TabOrExactConfig {
   perUnit: HumanAmount;
   facilitatorUrl?: string;
   description?: string;
+  /** Durable seller-owned tab ledger. Required by production safety modes. */
+  ledger?: TabMiddlewareOptions['ledger'];
+  /** See TabMiddlewareOptions. Explicit outside exact test/development NODE_ENV. */
+  ledgerSafetyMode?: TabMiddlewareOptions['ledgerSafetyMode'];
+  /** Maximum stream lease duration before crash takeover is permitted. */
+  leaseTtlMs?: TabMiddlewareOptions['leaseTtlMs'];
   /**
    * Keyless crystallization cadence for the tab rail — forwarded verbatim to
    * `tabMiddleware` (see `TabMiddlewareOptions.lockCadence`). This is the
@@ -95,6 +101,9 @@ export function tabOrExactMiddleware(config: TabOrExactConfig): RequestHandler {
     perUnit: config.perUnit,
     settle: 'on-close',
     facilitatorUrl: config.facilitatorUrl,
+    ledger: config.ledger,
+    ledgerSafetyMode: config.ledgerSafetyMode,
+    leaseTtlMs: config.leaseTtlMs,
     lockCadence: config.lockCadence,
   });
 

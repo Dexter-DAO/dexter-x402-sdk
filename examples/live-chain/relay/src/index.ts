@@ -23,6 +23,7 @@ import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
 
 import {
+  FileChannelLedger,
   tabMiddleware,
   requireTab,
   openSse,
@@ -38,6 +39,16 @@ const SELLER_PRIVATE_KEY = required('SELLER_PRIVATE_KEY');
 const PORT = Number(process.env.PORT ?? 4400);
 const EVENT_PRICE_USDC = process.env.EVENT_PRICE_USDC ?? '0.0001';
 const MAX_TAB_USDC = process.env.MAX_TAB_USDC ?? '5.00';
+const TAB_LEDGER_DIR = process.env.TAB_LEDGER_DIR ?? '.tab-ledger';
+function requireChannelIdCutover(): 'legacy-case-aliases-migrated-or-empty' {
+  if (process.env.TAB_CHANNEL_ID_CUTOVER !== 'legacy-case-aliases-migrated-or-empty') {
+    throw new Error(
+      'Set TAB_CHANNEL_ID_CUTOVER=legacy-case-aliases-migrated-or-empty only after ' +
+        'the seller ledger is empty or the documented legacy case-alias migration is complete',
+    );
+  }
+  return process.env.TAB_CHANNEL_ID_CUTOVER;
+}
 
 function required(name: string): string {
   const v = process.env[name];
@@ -49,6 +60,9 @@ function required(name: string): string {
 
 const seller = Keypair.fromSecretKey(bs58.decode(SELLER_PRIVATE_KEY));
 const connection = new Connection(SOLANA_RPC_URL, 'confirmed');
+const ledger = new FileChannelLedger(TAB_LEDGER_DIR, {
+  channelIdCutover: requireChannelIdCutover(),
+});
 const mux = new LaserstreamMux(
   // Helius Laserstream endpoint (mainnet).
   'https://laserstream-mainnet.helius-rpc.com',
@@ -75,6 +89,8 @@ const sellerMiddleware = tabMiddleware({
   network: 'solana:mainnet',
   perUnit: EVENT_PRICE_USDC,
   settle: 'on-close',
+  ledger,
+  ledgerSafetyMode: 'production-single-instance',
 });
 
 app.get('/stream/:account', sellerMiddleware, async (req: Request, res: Response) => {

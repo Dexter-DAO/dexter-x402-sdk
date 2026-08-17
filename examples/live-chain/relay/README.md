@@ -38,3 +38,10 @@ curl http://localhost:4400/healthz
 - The `SELLER_PRIVATE_KEY` is just an identity (the public key ends up as `allowed_counterparty` in the buyer's session scope). It doesn't pay gas or hold funds — the facilitator pays settlement gas, vouchers settle from the buyer's vault. Generate a fresh Ed25519 keypair for the demo.
 - The relay subscribes to `mainnet.helius-rpc.com` (NOT the legacy `rpc.helius.xyz` which returns 429 on websockets).
 - The seller middleware does ONE on-chain RPC per session at first-voucher time (verifying the registration matches the vault's on-chain passkey). All subsequent vouchers verify in-memory. The amortized cost per voucher is dominated by ed25519 signature verification, which is cheap.
+- The relay stores seller delivery truth in `TAB_LEDGER_DIR` through
+  `FileChannelLedger`; mount it on persistent storage and run exactly one relay
+  process. Set `TAB_CHANNEL_ID_CUTOVER` only for a proven-empty directory or
+  after the changelog's legacy case-alias merge. Replicated deployments must
+  replace it with `RedisChannelLedger`,
+  select `production-multi-instance`, and complete the SDK's explicit
+  durability, writer-generation, and keyspace cutover gates.

@@ -49,7 +49,15 @@ import {
   ScopeViolationError,
 } from './verify';
 
-import { InMemoryChannelLedger, withChannelLock, type ChannelLedger, type ChannelLedgerEntry } from './channel-ledger';
+import {
+  ChannelLeaseLostError,
+  InMemoryChannelLedger,
+  normalizeLeaseTtlMs,
+  type ChannelLedger,
+  type ChannelLedgerEntry,
+  type ChannelLedgerUpdater,
+  type ChannelLease,
+} from './channel-ledger';
 import { atomicToHuman, humanToAtomic, DEFAULT_FACILITATOR_URL } from '../tab';
 import { finalVoucherV2ReservationIdentity } from '../reservation';
 import {
@@ -78,6 +86,63 @@ export interface TabMiddlewareConfig extends TabMiddlewareOptions {
 
 /** Header the buyer sends with each paid request. Base64 JSON voucher envelope. */
 export const TAB_VOUCHER_HEADER = 'x-tab-voucher';
+
+class ResponseTerminatedError extends Error {
+  constructor() {
+    super('response terminated before tab admission completed');
+    this.name = 'ResponseTerminatedError';
+  }
+}
+
+function resolveLedgerSafetyMode(
+  configured: TabMiddlewareOptions['ledgerSafetyMode'],
+): NonNullable<TabMiddlewareOptions['ledgerSafetyMode']> {
+  if (configured !== undefined) return configured;
+  if (process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'development') {
+    return 'development';
+  }
+  throw new Error(
+    'tab seller ledgerSafetyMode must be explicit outside NODE_ENV=test/development; ' +
+      'choose production-single-instance or production-multi-instance for deployment',
+  );
+}
+
+function assertLedgerSafety(
+  ledger: ChannelLedger,
+  mode: NonNullable<TabMiddlewareOptions['ledgerSafetyMode']>,
+): void {
+  if (![
+    'development',
+    'production-single-instance',
+    'production-multi-instance',
+  ].includes(mode)) {
+    throw new Error(`invalid tab seller ledgerSafetyMode: ${String(mode)}`);
+  }
+  const capabilities = ledger.capabilities;
+  if (!capabilities || capabilities.conditionalWrites !== true) {
+    throw new Error(
+      'tab seller ledger must declare conditional owner-token/fence writes',
+    );
+  }
+  if (mode !== 'development' && !capabilities.restartSafe) {
+    throw new Error(
+      `tab seller ${mode} requires restart-safe durable ledger state; ` +
+        `${capabilities.adapter} is not restart-safe`,
+    );
+  }
+  if (mode !== 'development' && !capabilities.canonicalChannelIds) {
+    throw new Error(
+      `tab seller ${mode} requires the legacy channel-id alias migration or an empty-store proof; ` +
+        `${capabilities.adapter} has no canonical channel-id cutover acknowledgement`,
+    );
+  }
+  if (mode === 'production-multi-instance' && !capabilities.multiInstanceSafe) {
+    throw new Error(
+      `tab seller production-multi-instance requires cross-process atomic fencing; ` +
+        `${capabilities.adapter} is single-instance only`,
+    );
+  }
+}
 
 // ── Session cache ──────────────────────────────────────────────────────
 //
@@ -217,10 +282,10 @@ function hexToBytes(hex: string): Uint8Array {
 // voucherPayloadMessage encodes it). We just hex-decode.
 
 function channelIdHexToBytes(hex: string): Uint8Array {
-  if (!/^[0-9a-f]{64}$/i.test(hex)) {
+  if (!/^[0-9a-f]{64}$/.test(hex)) {
     throw new InvalidVoucherError(
       'signature_invalid',
-      `channelId must be 64-char hex, got "${hex}"`,
+      `channelId must be canonical lowercase 64-char hex, got "${hex}"`,
     );
   }
   return hexToBytes(hex);
@@ -230,6 +295,11 @@ function channelIdHexToBytes(hex: string): Uint8Array {
 
 export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
   const ledger: ChannelLedger = config.ledger ?? new InMemoryChannelLedger();
+  const ledgerSafetyMode = resolveLedgerSafetyMode(config.ledgerSafetyMode);
+  // Construction-time fail-closed gate. A production typo cannot silently
+  // turn durable seller revenue state into an in-memory ledger.
+  assertLedgerSafety(ledger, ledgerSafetyMode);
+  const leaseTtlMs = normalizeLeaseTtlMs(config.leaseTtlMs ?? 300_000);
   const cache = new SessionCache();
   const sellerPubkey =
     typeof config.sellerPubkey === 'string'
@@ -250,10 +320,60 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
   };
 
   return async (req: Request, res: Response, next: NextFunction) => {
-    let provisionalV2CacheEntry: {
+    let provisionalCacheEntry: {
       channelId: string;
       entry: SessionCacheEntry;
     } | null = null;
+    let heldLease: {
+      channelId: string;
+      lease: ChannelLease;
+      releaseStarted: boolean;
+    } | null = null;
+    let leaseHeartbeat: ReturnType<typeof setInterval> | null = null;
+    let leaseRenewal: Promise<void> | null = null;
+    let leaseFailure: Error | null = null;
+    let responseTerminated = false;
+    let assertLeaseActive = async (): Promise<void> => {
+      if (leaseFailure) throw leaseFailure;
+    };
+
+    const releaseHeldLease = async (): Promise<void> => {
+      if (!heldLease || heldLease.releaseStarted) return;
+      const held = heldLease;
+      held.releaseStarted = true;
+      if (leaseHeartbeat) {
+        clearInterval(leaseHeartbeat);
+        leaseHeartbeat = null;
+      }
+      if (leaseRenewal) {
+        await leaseRenewal.catch(() => undefined);
+      }
+      try {
+        await ledger.releaseLease(held.channelId, heldLease?.lease ?? held.lease);
+      } catch (error) {
+        // Allow the response error path to retry once. Store failures surface
+        // loudly; no in-memory release/fallback is attempted.
+        held.releaseStarted = false;
+        throw error;
+      }
+    };
+    const onResponseTerminated = () => {
+      if (responseTerminated) return;
+      responseTerminated = true;
+      setImmediate(() => {
+        void releaseHeldLease().catch((error) => {
+          console.error('[tab/seller] failed to release channel lease on response termination:', error);
+        });
+      });
+    };
+    const assertResponseOpen = () => {
+      if (responseTerminated) throw new ResponseTerminatedError();
+    };
+    // Register before any registration/RPC proof. A close event is one-shot;
+    // waiting until after proof can miss it and leave a later-acquired heartbeat
+    // renewing a dead request forever.
+    res.on('close', onResponseTerminated);
+    res.on('finish', onResponseTerminated);
     try {
       // 1. Decode the voucher off the header.
       const decoded = decodeVoucherHeader(req.headers[TAB_VOUCHER_HEADER]);
@@ -268,20 +388,19 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
       // V2 refreshes it on every voucher together with currentOutstanding.
       let chainFrontierAtomic: string | null = null;
       let onChain: OnChainSessionFrontier | undefined;
-      let cacheEntryAfterV2Admission = false;
+      let cacheEntryAfterAdmission = false;
       if (!entry) {
         // First voucher for this channel. Historical V1 verifies the
-        // registration directly. V2 defers caching until its exact confirmed
-        // transaction + post-state proof and every local static scope check
-        // succeed, so a rejected request cannot poison the process cache for
-        // a legitimate channel.
+        // registration directly. Both generations defer caching until durable
+        // lease ownership, registration binding, and the accepted-voucher write
+        // succeed, so a rejected/losing request cannot poison this process for
+        // the channel's real owner.
+        cacheEntryAfterAdmission = true;
         const parsed = parseRegistration(voucher.sessionRegistration);
         if (nativeTabWireVersion(parsed.nonce) === 1) {
           onChain = await verifyRegistrationOnChain(config.connection, parsed);
           // Defensive `?.`: custom/mocked verifiers may still return void.
           chainFrontierAtomic = onChain?.frontierAtomic ?? null;
-        } else {
-          cacheEntryAfterV2Admission = true;
         }
         // Seed the monotonicity/increment baseline from the durable ledger's
         // last accepted voucher. Without this, a restarted process treats a
@@ -294,7 +413,6 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
           registrationBytes: voucher.sessionRegistration.slice(),
           lastCumulativeAtomic: persisted?.lastVoucher?.payload.cumulativeAmount ?? '0',
         };
-        if (!cacheEntryAfterV2Admission) cache.set(channelId, entry);
       } else if (!sameBytes(entry.registrationBytes, voucher.sessionRegistration)) {
         // Cache hits must not turn the buyer-chosen channel id into an
         // authorization oracle. Without this exact binding, an attacker can
@@ -347,6 +465,8 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
       const previous = BigInt(entry.lastCumulativeAtomic);
       let authorizationBaseline = previous;
       let reservationDelta: bigint | null = null;
+      let claimedReservation: bigint | null = null;
+      let verifiedCurrentOutstanding: bigint | null = null;
 
       if (registrationWireVersion === 2) {
         if (!reservationReceipt) {
@@ -355,7 +475,7 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
             'Native Tab V2 reservation proof was not carried through admission',
           );
         }
-        const claimedReservation = parseOnChainAtomic(
+        claimedReservation = parseOnChainAtomic(
           reservationReceipt.reservationAmountAtomic,
           'receipt.reservationAmountAtomic',
         );
@@ -442,6 +562,7 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
           onChain.currentOutstandingAtomic,
           'currentOutstandingAtomic',
         );
+        verifiedCurrentOutstanding = currentOutstanding;
         if (currentOutstanding !== reservationDelta) {
           throw new InvalidVoucherError(
             'reservation_mismatch',
@@ -457,18 +578,25 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
       }
 
       // 4. Enforce scope: cap, expiry, counterparty, monotonicity. V2 uses the
-      // authoritative covered baseline; V1 retains its cached seller baseline.
+      // authoritative covered baseline. Historical V1 may reconnect with a
+      // higher sequence at the same cumulative to consume previously
+      // under-delivered headroom; the exact durable sequence check happens
+      // after lease acquisition below.
+      const v1EqualCumulativeReconnect =
+        registrationWireVersion === 1 && cumulative === authorizationBaseline;
       enforceScope({
         registration: entry.registration,
         voucher,
         expectedCounterparty: sellerPubkey,
-        previousCumulativeAtomic: authorizationBaseline.toString(),
+        previousCumulativeAtomic: v1EqualCumulativeReconnect
+          ? undefined
+          : authorizationBaseline.toString(),
       });
 
       // 5. Bound per-voucher increment. Protects against a giant single
       //    voucher slipping through; the buyer's perUnitCap should prevent
       //    this from the client side but the seller still defends.
-      const increment = cumulative - authorizationBaseline;
+      let increment = cumulative - authorizationBaseline;
       if (increment > maxPerVoucherAtomic) {
         throw new ScopeViolationError(
           'cumulative_exceeds_cap',
@@ -479,7 +607,7 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
       // Re-read after all RPC awaits. A concurrently admitted winner may now
       // exist even though the cache was empty when this request began. Do not
       // bind a new entry yet: the durable lease must be acquired first.
-      if (cacheEntryAfterV2Admission) {
+      if (cacheEntryAfterAdmission) {
         const winner = cache.get(channelId);
         if (winner) {
           if (!sameBytes(winner.registrationBytes, entry.registrationBytes)) {
@@ -505,24 +633,160 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
 
       // 5b. One live stream per channel: acquire the lease or reject. Closes the
       //     concurrent-same-channel over-delivery rug.
-      const leaseTtlMs = config.leaseTtlMs ?? 300_000;
-      if (!(await ledger.tryAcquireLease(channelId, leaseTtlMs))) {
+      assertResponseOpen();
+      const lease = await ledger.tryAcquireLease(channelId, leaseTtlMs);
+      if (!lease) {
         throw new InvalidVoucherError(
           'channel_busy',
           'another stream is live on this channel; tabs serve one stream at a time',
         );
       }
+      heldLease = { channelId, lease, releaseStarted: false };
+      assertResponseOpen();
+
+      // A live stream may legitimately outlast one TTL. Renew the exact owner
+      // token + fence every third of the lease window. A renewal/store failure
+      // permanently fails this request closed and destroys the response; every
+      // charged chunk is already write-ahead persisted before delivery.
+      const heartbeatMs = Math.max(1, Math.floor(leaseTtlMs / 3));
+      const renewHeldLease = async (): Promise<void> => {
+        if (leaseFailure) throw leaseFailure;
+        if (!heldLease || heldLease.releaseStarted) {
+          throw new ChannelLeaseLostError(channelId);
+        }
+        if (leaseRenewal) return leaseRenewal;
+        leaseRenewal = (async () => {
+          const renewed = await ledger.renewLease(
+            channelId,
+            heldLease!.lease,
+            leaseTtlMs,
+          );
+          if (heldLease && !heldLease.releaseStarted) heldLease.lease = renewed;
+        })()
+          .catch((error: unknown) => {
+            const failure = error instanceof Error ? error : new Error(String(error));
+            leaseFailure = failure;
+            console.error(
+              `[tab/seller] channel lease renewal FAILED channel=${channelId.slice(0, 16)}…; ` +
+                'stream terminated before further delivery:',
+              failure,
+            );
+            if (typeof (res as any).destroy === 'function') {
+              (res as any).destroy(failure);
+            }
+            throw failure;
+          })
+          .finally(() => {
+            leaseRenewal = null;
+          });
+        return leaseRenewal;
+      };
+      assertLeaseActive = async (): Promise<void> => {
+        if (leaseFailure) throw leaseFailure;
+        if (!heldLease || heldLease.releaseStarted) {
+          throw new ChannelLeaseLostError(channelId);
+        }
+        if (heldLease.lease.heldUntilUnixMs - Date.now() <= heartbeatMs) {
+          await renewHeldLease();
+        }
+      };
+      leaseHeartbeat = setInterval(() => {
+        void renewHeldLease().catch(() => {
+          // renewHeldLease records/logs the terminal failure exactly once.
+        });
+      }, heartbeatMs);
+      (leaseHeartbeat as any).unref?.();
+
+      // The pre-proof snapshot can be stale: another seller process may have
+      // admitted and released this channel while our RPC proof was in flight.
+      // Ownership is now exclusive, so bind the exact durable registration and
+      // repeat every baseline-dependent check before any cache/ledger mutation.
+      const postLeasePrior = await ledger.get(channelId);
+      assertResponseOpen();
+      if (
+        postLeasePrior?.lastVoucher
+        && !sameBytes(
+          postLeasePrior.lastVoucher.sessionRegistration,
+          voucher.sessionRegistration,
+        )
+      ) {
+        throw new InvalidVoucherSignatureError(
+          'durable channel registration changed while reservation proof was in flight',
+        );
+      }
+      const durableCumulative = BigInt(
+        postLeasePrior?.lastVoucher?.payload.cumulativeAmount ?? '0',
+      );
+      let postLeaseBaseline = BigInt(entry.lastCumulativeAtomic);
+      if (durableCumulative > postLeaseBaseline) postLeaseBaseline = durableCumulative;
+      if (registrationWireVersion === 2 && chainFrontierAtomic !== null) {
+        const chainFrontier = parseOnChainAtomic(chainFrontierAtomic, 'frontierAtomic');
+        if (chainFrontier > postLeaseBaseline) postLeaseBaseline = chainFrontier;
+      }
+      const v1EqualPostLeaseReconnect =
+        registrationWireVersion === 1 && cumulative === postLeaseBaseline;
+      if (
+        cumulative < postLeaseBaseline
+        || (registrationWireVersion === 2 && cumulative === postLeaseBaseline)
+      ) {
+        throw new InvalidVoucherError(
+          registrationWireVersion === 2 ? 'voucher_already_covered' : 'non_monotonic',
+          `cumulative ${cumulative} is not above post-lease covered frontier ${postLeaseBaseline}`,
+        );
+      }
+      if (v1EqualPostLeaseReconnect) {
+        const durableVoucher = postLeasePrior?.lastVoucher;
+        if (
+          !durableVoucher
+          || BigInt(durableVoucher.payload.cumulativeAmount) !== cumulative
+          || voucher.payload.sequenceNumber <= durableVoucher.payload.sequenceNumber
+        ) {
+          throw new InvalidVoucherError(
+            'non_monotonic',
+            'same-cumulative V1 reconnect requires a strictly newer sequence than the durable voucher',
+          );
+        }
+      }
+      enforceScope({
+        registration: entry.registration,
+        voucher,
+        expectedCounterparty: sellerPubkey,
+        previousCumulativeAtomic: v1EqualPostLeaseReconnect
+          ? undefined
+          : postLeaseBaseline.toString(),
+      });
+      increment = cumulative - postLeaseBaseline;
+      if (increment > maxPerVoucherAtomic) {
+        throw new ScopeViolationError(
+          'cumulative_exceeds_cap',
+          `post-lease voucher increment ${increment} exceeds maxPerVoucherAtomic ${maxPerVoucherAtomic}`,
+        );
+      }
+      if (registrationWireVersion === 2) {
+        if (
+          claimedReservation === null
+          || verifiedCurrentOutstanding === null
+          || claimedReservation !== increment
+          || verifiedCurrentOutstanding !== increment
+        ) {
+          throw new InvalidVoucherError(
+            'reservation_mismatch',
+            'durable channel frontier advanced while reservation proof was in flight',
+          );
+        }
+      }
+      authorizationBaseline = postLeaseBaseline;
 
       // The durable lease serializes first-seen channel binding across all
       // requests sharing this ledger. Re-read once more after acquiring it,
       // then install only an exact provisional entry. If later durable ledger
       // I/O fails, the outer catch removes this exact object so a failed
       // admission cannot poison the process cache.
-      if (cacheEntryAfterV2Admission) {
+      if (cacheEntryAfterAdmission) {
         const winner = cache.get(channelId);
         if (winner) {
           if (!sameBytes(winner.registrationBytes, entry.registrationBytes)) {
-            await ledger.releaseLease(channelId);
+            await releaseHeldLease();
             throw new InvalidVoucherSignatureError(
               'voucher registration lost the channel lease race to a different verified registration',
             );
@@ -530,24 +794,32 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
           entry = winner;
         } else {
           cache.set(channelId, entry);
-          provisionalV2CacheEntry = { channelId, entry };
+          provisionalCacheEntry = { channelId, entry };
         }
       }
 
-      // Release the lease when the response completes for ANY reason (stream end,
-      // non-streaming response, handler error, client disconnect). Owned by the
-      // request lifecycle, not the meter — a handler that never opens a meter
-      // must not leak the lease for the whole TTL.
-      let leaseReleased = false;
-      const releaseOnce = () => {
-        if (leaseReleased) return;
-        leaseReleased = true;
-        void ledger.releaseLease(channelId).catch((err) => {
-          console.error('[tab/seller] failed to release channel lease:', err);
-        });
+      const persistBackgroundMutation = async (
+        updater: ChannelLedgerUpdater,
+      ): Promise<ChannelLedgerEntry> => {
+        try {
+          return await ledger.update(channelId, lease, updater);
+        } catch (error) {
+          if (!(error instanceof ChannelLeaseLostError)) throw error;
+          // Detached crystallization can finish after the response releases its
+          // stream lease. Reacquire a short fenced lease only if the channel is
+          // idle; never write through another request's ownership.
+          const maintenanceLease = await ledger.tryAcquireLease(
+            channelId,
+            Math.min(leaseTtlMs, 15_000),
+          );
+          if (!maintenanceLease) throw error;
+          try {
+            return await ledger.update(channelId, maintenanceLease, updater);
+          } finally {
+            await ledger.releaseLease(channelId, maintenanceLease);
+          }
+        }
       };
-      res.on('close', releaseOnce);
-      res.on('finish', releaseOnce);
 
       // Keyless crystallization (Step-4 lock-mode). Threshold-driven cadence,
       // invoked from the recordDelivered closure; persists any advance to the
@@ -564,15 +836,34 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
           // refused it below-cadence (gate-refused watermark advanced, §5
           // A12) — persist BOTH under the lock so the next request reads
           // them and doesn't re-fire on the same span.
-          await withChannelLock(channelId, async () => {
-            const cur = await ledger.get(channelId);
-            if (cur) {
-              await ledger.set(channelId, {
-                ...cur,
-                lastCrystallizedCumulativeAtomic: entry.lastCrystallizedCumulativeAtomic,
-                gateRefusedCumulativeAtomic: entry.gateRefusedCumulativeAtomic,
-              });
-            }
+          await persistBackgroundMutation((cur) => {
+            if (!cur) throw new Error('channel ledger entry missing during crystallize persist');
+            const crystallized = (
+              BigInt(cur.lastCrystallizedCumulativeAtomic ?? '0')
+              >= BigInt(entry.lastCrystallizedCumulativeAtomic ?? '0')
+            )
+              ? cur.lastCrystallizedCumulativeAtomic ?? '0'
+              : entry.lastCrystallizedCumulativeAtomic ?? '0';
+            const refusalCandidates = [
+              cur.gateRefusedCumulativeAtomic,
+              entry.gateRefusedCumulativeAtomic,
+            ].filter((value): value is string => value !== undefined);
+            const refused = refusalCandidates.reduce<string | undefined>(
+              (highest, value) => (
+                highest === undefined || BigInt(value) > BigInt(highest)
+                  ? value
+                  : highest
+              ),
+              undefined,
+            );
+            return {
+              ...cur,
+              lastCrystallizedCumulativeAtomic: crystallized,
+              gateRefusedCumulativeAtomic:
+                refused !== undefined && BigInt(refused) > BigInt(crystallized)
+                  ? refused
+                  : undefined,
+            };
           }).catch((err) => {
             // LOUD (no-silent-fallbacks): the outcome watermark didn't
             // persist — the next request will re-attempt the same span and
@@ -586,18 +877,30 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
         }
       };
 
+      // Threshold and close crystallization are detached from delivery, but
+      // they must observe one another's durable watermarks. Serialize this
+      // request's jobs and make each job re-read the ledger after the previous
+      // one persists; otherwise two rapid charges can both POST the same span
+      // before the first below-cadence refusal is visible.
+      let crystallizeTail: Promise<void> = Promise.resolve();
+      const queueCrystallize = (work: () => Promise<void>): Promise<void> => {
+        const run = crystallizeTail.then(work, work);
+        crystallizeTail = run.catch(() => undefined);
+        return run;
+      };
+
       // At close: crystallize the channel's FINAL signed voucher exactly once if
       // the cadence wants it. We read `lastVoucher` from the ledger at close —
       // NOT a `delivered` snapshot — which sidesteps the close-handler ordering
       // problem entirely: `lastVoucher` is persisted during the request (step 6,
       // before next()), so it is already the final signed voucher at close
-      // regardless of when the meter's own `persistDelivered` close handler
-      // writes `delivered`. We crystallize that voucher and advance the watermark
-      // to ITS cumulative (FIX C1/C2), so the watermark is truthful and never
-      // lies about a delivered span the lock didn't actually secure.
+      // while every delivered chunk was already written ahead before send. We
+      // crystallize that voucher and advance the watermark to ITS cumulative
+      // (FIX C1/C2), so the watermark is truthful and never lies about a
+      // delivered span the lock didn't actually secure.
       //
       // Fully best-effort: detached + swallows all errors. The `closeCrystallized`
-      // flag is INDEPENDENT of `leaseReleased` — they guard different concerns and
+      // flag is INDEPENDENT of `releaseOnce` — they guard different concerns and
       // must not be merged. Both handlers are registered on the same events; the
       // bodies are detached and run concurrently, so the lease release
       // (`releaseOnce`, registered earlier) is not gated on this crystallize.
@@ -605,7 +908,7 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
       const crystallizeOnClose = () => {
         if (!lockCadence.onClose || closeCrystallized) return;
         closeCrystallized = true;
-        void (async () => {
+        void queueCrystallize(async () => {
           const cur = await ledger.get(channelId);
           if (!cur || !cur.lastVoucher) return;
           // The cumulative we will lock is the FINAL signed voucher's — captured
@@ -623,32 +926,43 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
           }
           const result = await crystallizeNow(cur, channelId, facilitatorUrl, config.network);
           if (result.crystallized) {
-            await withChannelLock(channelId, async () => {
-              const latest = await ledger.get(channelId);
-              if (latest) {
-                await ledger.set(channelId, {
-                  ...latest,
-                  lastCrystallizedCumulativeAtomic: lockedCumulative,
-                  // A landed lock supersedes any stale refusal record.
-                  gateRefusedCumulativeAtomic: undefined,
-                });
-              }
+            await persistBackgroundMutation((latest) => {
+              if (!latest) throw new Error('channel ledger entry missing during close crystallize');
+              const crystallized = BigInt(latest.lastCrystallizedCumulativeAtomic ?? '0')
+                >= BigInt(lockedCumulative)
+                ? latest.lastCrystallizedCumulativeAtomic ?? '0'
+                : lockedCumulative;
+              return {
+                ...latest,
+                lastCrystallizedCumulativeAtomic: crystallized,
+                // A landed lock supersedes refusal state only through the
+                // amount it actually secured; never erase a newer watermark.
+                gateRefusedCumulativeAtomic:
+                  latest.gateRefusedCumulativeAtomic !== undefined
+                  && BigInt(latest.gateRefusedCumulativeAtomic) > BigInt(crystallized)
+                    ? latest.gateRefusedCumulativeAtomic
+                    : undefined,
+              };
             });
           } else if (isGateRefused(result.error)) {
             // Record the below-cadence refusal so later closes/deliveries of
             // the SAME span stay quiet (§5 A12). Benign — logged once by
             // crystallizeNow's outcome table.
-            await withChannelLock(channelId, async () => {
-              const latest = await ledger.get(channelId);
-              if (latest) {
-                await ledger.set(channelId, {
-                  ...latest,
-                  gateRefusedCumulativeAtomic: lockedCumulative,
-                });
-              }
+            await persistBackgroundMutation((latest) => {
+              if (!latest) throw new Error('channel ledger entry missing during close refusal persist');
+              const crystallized = BigInt(latest.lastCrystallizedCumulativeAtomic ?? '0');
+              const refused = latest.gateRefusedCumulativeAtomic !== undefined
+                && BigInt(latest.gateRefusedCumulativeAtomic) >= BigInt(lockedCumulative)
+                ? latest.gateRefusedCumulativeAtomic
+                : lockedCumulative;
+              return {
+                ...latest,
+                gateRefusedCumulativeAtomic:
+                  BigInt(refused) > crystallized ? refused : undefined,
+              };
             });
           }
-        })().catch((err) => {
+        }).catch((err) => {
           // LOUD (no-silent-fallbacks): the close-path crystallize is the last
           // chance to secure this request's final voucher — a crash here means
           // the seller's exposure stays unsecured with no on-chain claim.
@@ -663,15 +977,13 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
       res.on('finish', crystallizeOnClose);
 
       // 6. Read the durable delivered baseline for the budget, then persist the
-      //    accepted voucher WITHOUT touching delivered (delivered only advances
-      //    on the meter's terminal path). Locked so a concurrent request can't
-      //    interleave a stale write. Spread `...cur` so we PRESERVE the lease (and
-      //    onChain) we just acquired — omitting it would erase the lease one line
-      //    after acquiring it, reopening the concurrent-same-channel rug.
-      const prior = await ledger.get(channelId);
-      // A ledger entry is FRESH when it has never seen a voucher or delivery —
-      // tryAcquireLease auto-creates zeroed entries, so `prior != null` alone
-      // does not mean history exists. V1 retains the historical fresh-only
+      //    accepted voucher WITHOUT touching delivered (each later meter charge
+      //    advances delivered before its chunk is sent). Locked so a concurrent
+      //    request can't interleave a stale write. The adapter keeps lease
+      //    identity separate and conditionally commits on owner token + fence.
+      const prior = postLeasePrior;
+      // A ledger entry is FRESH when it has never seen a voucher or delivery.
+      // V1 retains the historical fresh-only
       // seed. V2 advances even an existing ledger's delivery floor when the
       // authoritative chain frontier has moved, preventing another process's
       // already-settled delivery from becoming fresh budget here.
@@ -698,10 +1010,8 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
           : prior
             ? BigInt(prior.deliveredCumulativeAtomic)
             : 0n;
-      await withChannelLock(channelId, async () => {
-        const cur = await ledger.get(channelId);
-        await ledger.set(channelId, {
-          ...cur,
+      await ledger.update(channelId, lease, (cur) => ({
+          ...(cur ?? {}),
           lastVoucher: voucher,
           deliveredCumulativeAtomic:
             seedAtomic ?? (cur ? cur.deliveredCumulativeAtomic : '0'),
@@ -710,9 +1020,9 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
           // starts at zero on a resume.
           lastCrystallizedCumulativeAtomic:
             seedAtomic ?? cur?.lastCrystallizedCumulativeAtomic ?? '0',
-        });
-      });
-      provisionalV2CacheEntry = null;
+        }));
+      provisionalCacheEntry = null;
+      assertResponseOpen();
 
       // 7. Update the hot-path registration cache and attach the SellerTab.
       cache.update(channelId, voucher.payload.cumulativeAmount);
@@ -721,35 +1031,48 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
         config.network,
         cumulative,
         deliveredBaselineAtomic,
-        // recordDelivered: the meter calls this on terminal events to persist
-        // the new lifetime delivered cumulative. Spread `...cur` to PRESERVE the
-        // lease (held by the request lifecycle until the response closes) and
-        // onChain — omitting them would erase the lease mid-stream.
+        // recordDelivered: the meter calls this for each write-ahead chunk
+        // before service using this request's exact owner token + fence. A
+        // post-takeover writer fails closed.
         async (incrementAtomic: string) => {
+          await assertLeaseActive();
           let updated: ChannelLedgerEntry | null = null;
-          await withChannelLock(channelId, async () => {
-            const cur = await ledger.get(channelId);
-            const base = cur ? BigInt(cur.deliveredCumulativeAtomic) : 0n;
+          updated = await ledger.update(channelId, lease, (cur) => {
+            if (!cur?.lastVoucher || !sameVoucherIdentity(cur.lastVoucher, voucher)) {
+              throw new InvalidVoucherSignatureError(
+                'durable voucher identity changed before delivery accounting',
+              );
+            }
+            const base = BigInt(cur.deliveredCumulativeAtomic);
             const inc = BigInt(incrementAtomic);
             const nextDelivered = inc > 0n ? base + inc : base; // monotonic, never backward
+            const signedCumulative = BigInt(cur.lastVoucher.payload.cumulativeAmount);
+            if (nextDelivered > signedCumulative) {
+              throw new ScopeViolationError(
+                'cumulative_exceeds_cap',
+                `durable delivered cumulative ${nextDelivered} exceeds signed cumulative ${signedCumulative}`,
+              );
+            }
             const next: ChannelLedgerEntry = {
               ...cur,
-              lastVoucher: cur?.lastVoucher ?? voucher,
+              lastVoucher: cur.lastVoucher,
               deliveredCumulativeAtomic: nextDelivered.toString(),
               lastCrystallizedCumulativeAtomic:
-                cur?.lastCrystallizedCumulativeAtomic ?? '0',
+                cur.lastCrystallizedCumulativeAtomic ?? '0',
             };
-            await ledger.set(channelId, next);
-            updated = next;
+            return next;
           });
           // Keyless crystallization cadence (Step-4). BEST-EFFORT: fire OUTSIDE
           // the channel lock so the network POST never serializes delivered
           // writes, and detach it so a slow/failed lock never blocks or rejects
-          // the meter's terminal path. maybeCrystallize advances
+          // the already-durable delivery charge. maybeCrystallize advances
           // `lastCrystallizedCumulativeAtomic` in memory on success; persist
           // that advance back so the next request doesn't re-fire.
           if (updated) {
-            void crystallizeCadence(updated).catch((err) => {
+            void queueCrystallize(async () => {
+              const latest = await ledger.get(channelId);
+              if (latest) await crystallizeCadence(latest);
+            }).catch((err) => {
               // LOUD (no-silent-fallbacks): the threshold cadence crashed
               // before it could even attempt the lock POST.
               console.error(
@@ -773,12 +1096,18 @@ export function tabMiddleware(config: TabMiddlewareConfig): RequestHandler {
       req.tab = tab;
       next();
     } catch (err) {
-      if (provisionalV2CacheEntry) {
+      if (heldLease && !heldLease.releaseStarted) {
+        await releaseHeldLease().catch((releaseError) => {
+          console.error('[tab/seller] failed to release channel lease after request error:', releaseError);
+        });
+      }
+      if (provisionalCacheEntry) {
         cache.deleteIfSame(
-          provisionalV2CacheEntry.channelId,
-          provisionalV2CacheEntry.entry,
+          provisionalCacheEntry.channelId,
+          provisionalCacheEntry.entry,
         );
       }
+      if (err instanceof ResponseTerminatedError) return;
       // Map our internal errors to 402 with a structured body.
       if (
         err instanceof InvalidVoucherError ||
@@ -806,6 +1135,15 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
     difference |= left[index] ^ right[index];
   }
   return difference === 0;
+}
+
+function sameVoucherIdentity(left: SignedVoucher, right: SignedVoucher): boolean {
+  return left.payload.channelId === right.payload.channelId
+    && left.payload.cumulativeAmount === right.payload.cumulativeAmount
+    && left.payload.sequenceNumber === right.payload.sequenceNumber
+    && sameBytes(left.sessionPublicKey, right.sessionPublicKey)
+    && sameBytes(left.sessionRegistration, right.sessionRegistration)
+    && sameBytes(left.sessionSignature, right.sessionSignature);
 }
 
 function parseOnChainAtomic(value: string, field: string): bigint {

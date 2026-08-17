@@ -1,8 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { openSse } from '../meter';
-import { InMemoryChannelLedger } from '../channel-ledger';
+import { FileChannelLedger, InMemoryChannelLedger } from '../channel-ledger';
 import type { SellerTab } from '../types';
 import { atomicToHuman, humanToAtomic } from '../../tab';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // Minimal SSE-capable fake Express Response that records writes and supports
 // the 'close' event (for the buyer-disconnect anti-grief test).
@@ -16,6 +19,7 @@ function fakeSseRes() {
     write(s: string) { writes.push(s); return true; },
     end() {},
     on(event: string, cb: () => void) { (listeners[event] ??= []).push(cb); return this; },
+    prependListener(event: string, cb: () => void) { (listeners[event] ??= []).unshift(cb); return this; },
     _emit(event: string) { (listeners[event] ?? []).forEach((cb) => cb()); },
     _writes: writes,
   } as any;
@@ -31,7 +35,9 @@ async function makeStubTab(
   channelId: string,
   signedCumulativeHuman: string,
   ledger: InMemoryChannelLedger,
-): Promise<SellerTab> {
+): Promise<SellerTab & { releaseLease(): Promise<void> }> {
+  const lease = await ledger.tryAcquireLease(channelId, 60_000);
+  if (!lease) throw new Error('expected test channel lease');
   const prior = await ledger.get(channelId);
   const deliveredBaselineAtomic = prior ? prior.deliveredCumulativeAtomic : '0';
   return {
@@ -41,17 +47,19 @@ async function makeStubTab(
     cumulative: () => signedCumulativeHuman,
     deliveredCumulative: () => atomicToHuman(deliveredBaselineAtomic),
     charge: async () => { throw new Error('tab.charge stub'); },
+    releaseLease: async () => { await ledger.releaseLease(channelId, lease); },
     recordDelivered: async (incrementAtomic: string) => {
-      const cur = await ledger.get(channelId);
-      const base = cur ? BigInt(cur.deliveredCumulativeAtomic) : 0n;
-      await ledger.set(channelId, {
-        lastVoucher: cur?.lastVoucher ?? ({
-          payload: { channelId, cumulativeAmount: humanToAtomic(signedCumulativeHuman), sequenceNumber: 1 },
-          sessionPublicKey: new Uint8Array(32),
-          sessionRegistration: new Uint8Array(188),
-          sessionSignature: new Uint8Array(64),
-        } as any),
-        deliveredCumulativeAtomic: (base + (BigInt(incrementAtomic) > 0n ? BigInt(incrementAtomic) : 0n)).toString(),
+      await ledger.update(channelId, lease, (cur) => {
+        const base = cur ? BigInt(cur.deliveredCumulativeAtomic) : 0n;
+        return {
+          lastVoucher: cur?.lastVoucher ?? ({
+            payload: { channelId, cumulativeAmount: humanToAtomic(signedCumulativeHuman), sequenceNumber: 1 },
+            sessionPublicKey: new Uint8Array(32),
+            sessionRegistration: new Uint8Array(188),
+            sessionSignature: new Uint8Array(64),
+          } as any),
+          deliveredCumulativeAtomic: (base + (BigInt(incrementAtomic) > 0n ? BigInt(incrementAtomic) : 0n)).toString(),
+        };
       });
     },
   };
@@ -78,6 +86,7 @@ describe('openSse delivered-ledger budget — no channel-reuse leak', () => {
     const m1 = openSse(fakeSseRes(), { tab: tab1, perUnit: '0.01' });
     for (let i = 0; i < 5; i++) await m1.charge(1); // 0.05 delivered
     await m1.end();
+    await tab1.releaseLease();
     expect((await ledger.get(channelId))?.deliveredCumulativeAtomic).toBe(humanToAtomic('0.05'));
 
     // Request 2: buyer bumps signed to 0.20. Correct budget = 0.20 − 0.05 = 0.15
@@ -128,6 +137,101 @@ describe('openSse delivered-ledger budget — no channel-reuse leak', () => {
     res._emit('close');    // would fire after res.end(); must be a no-op
     await flushMicrotasks();
     expect((await ledger.get(channelId))?.deliveredCumulativeAtomic).toBe(humanToAtomic('0.01'));
+  });
+
+  it('write-ahead persists a charged chunk across hard crash before send', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'meter-crash-ledger-'));
+    let nowSpy: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      const beforeCrash = new FileChannelLedger(dir);
+      const lease = await beforeCrash.tryAcquireLease(channelId, 60_000);
+      if (!lease) throw new Error('expected crash-test lease');
+      const tab: SellerTab = {
+        channelId,
+        network: 'solana:mainnet',
+        sessionPublicKey: new Uint8Array(32),
+        cumulative: () => '0.10',
+        deliveredCumulative: () => '0',
+        charge: async () => { throw new Error('unused'); },
+        recordDelivered: async (incrementAtomic) => {
+          await beforeCrash.update(channelId, lease, (cur) => ({
+            lastVoucher: cur?.lastVoucher ?? null,
+            deliveredCumulativeAtomic: (
+              BigInt(cur?.deliveredCumulativeAtomic ?? '0') + BigInt(incrementAtomic)
+            ).toString(),
+          }));
+        },
+      };
+      const meter = openSse(fakeSseRes(), { tab, perUnit: '0.01' });
+      await meter.charge(1);
+      // Process dies here: no send(), end(), close handler, or release.
+      // Advance beyond the abandoned lease deterministically; a wall-clock
+      // sleep made this regression flaky under the full parallel suite.
+      nowSpy = vi.spyOn(Date, 'now').mockReturnValue(lease.heldUntilUnixMs + 1);
+      const afterRestart = new FileChannelLedger(dir);
+      expect((await afterRestart.get(channelId))?.deliveredCumulativeAtomic)
+        .toBe(humanToAtomic('0.01'));
+      const takeover = await afterRestart.tryAcquireLease(channelId, 60_000);
+      expect(takeover).not.toBeNull();
+    } finally {
+      nowSpy?.mockRestore();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails before send when the write-ahead store mutation fails', async () => {
+    const res = fakeSseRes();
+    const tab: SellerTab = {
+      channelId,
+      network: 'solana:mainnet',
+      sessionPublicKey: new Uint8Array(32),
+      cumulative: () => '0.10',
+      deliveredCumulative: () => '0',
+      charge: async () => { throw new Error('unused'); },
+      recordDelivered: async () => { throw new Error('store unavailable'); },
+    };
+    const meter = openSse(res, { tab, perUnit: '0.01' });
+    await expect(meter.charge()).rejects.toThrow('store unavailable');
+    expect(() => meter.send('must-not-send')).toThrow('meter ended');
+    expect(res._writes).toEqual([]);
+  });
+
+  it('serializes concurrent charges so only signed budget reaches durable state', async () => {
+    const ledger = new InMemoryChannelLedger();
+    const tab = await makeStubTab(channelId, '0.01', ledger);
+    const meter = openSse(fakeSseRes(), { tab, perUnit: '0.01' });
+
+    const results = await Promise.allSettled([meter.charge(1), meter.charge(1)]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect((await ledger.get(channelId))?.deliveredCumulativeAtomic)
+      .toBe(humanToAtomic('0.01'));
+  });
+
+  it('send fails synchronously while an un-awaited write-ahead charge is pending', async () => {
+    let finishWrite!: () => void;
+    const writePending = new Promise<void>((resolve) => {
+      finishWrite = resolve;
+    });
+    const res = fakeSseRes();
+    const tab: SellerTab = {
+      channelId,
+      network: 'solana:mainnet',
+      sessionPublicKey: new Uint8Array(32),
+      cumulative: () => '0.01',
+      deliveredCumulative: () => '0',
+      charge: async () => { throw new Error('unused'); },
+      recordDelivered: async () => writePending,
+    };
+    const meter = openSse(res, { tab, perUnit: '0.01' });
+
+    const chargePending = meter.charge();
+    expect(() => meter.send('too-early')).toThrow(/charge still pending/);
+    expect(res._writes).toEqual([]);
+    finishWrite();
+    await chargePending;
+    meter.send('after-commit');
+    expect(res._writes).toHaveLength(1);
   });
 });
 

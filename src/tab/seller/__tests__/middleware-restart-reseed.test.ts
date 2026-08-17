@@ -100,6 +100,13 @@ function persistedEntry(cumulative: string) {
 
 const mockedEnforceScope = vi.mocked(enforceScope);
 
+async function seedLedger(ledger: InMemoryChannelLedger, cumulative: string): Promise<void> {
+  const lease = await ledger.tryAcquireLease(CHANNEL, 60_000);
+  if (!lease) throw new Error('expected seed lease');
+  await ledger.set(CHANNEL, persistedEntry(cumulative), lease);
+  await ledger.releaseLease(CHANNEL, lease);
+}
+
 describe('restart baseline reseeding from the durable ledger', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -109,7 +116,7 @@ describe('restart baseline reseeding from the durable ledger', () => {
     const ledger = new InMemoryChannelLedger();
     // Lifetime cumulative $1.50 — ABOVE the $1.00 per-voucher cap. Pre-patch,
     // a fresh process treats 1.50→1.51 as a 1.51 increment and 402s.
-    await ledger.set(CHANNEL, persistedEntry(humanToAtomic('1.50')));
+    await seedLedger(ledger, humanToAtomic('1.50'));
 
     const middleware = mw(ledger); // fresh middleware = fresh SessionCache = restarted process
     const { req, res } = fakeReqRes(voucherHeader(CHANNEL, humanToAtomic('1.51'), 8));
@@ -126,7 +133,7 @@ describe('restart baseline reseeding from the durable ledger', () => {
 
   it('still rejects a genuinely oversized increment after reseed', async () => {
     const ledger = new InMemoryChannelLedger();
-    await ledger.set(CHANNEL, persistedEntry(humanToAtomic('1.50')));
+    await seedLedger(ledger, humanToAtomic('1.50'));
 
     const middleware = mw(ledger);
     // 1.50 → 2.90 is a $1.40 single-voucher increment > the $1.00 cap.
