@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.0-rc.5] - 2026-08-17
+
+### Fixed
+
+- Fresh Native Tab registration now preserves the complete sibling-session
+  account set and falls back from legacy serialization to the existing v0+ALT
+  transport when that exact register exceeds Solana's 1232-byte packet cap.
+
 ## [6.0.0-rc.4] - 2026-08-17
 
 ### Changed

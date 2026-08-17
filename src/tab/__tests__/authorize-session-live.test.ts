@@ -9,8 +9,9 @@
  * adapter must therefore:
  *
  *   1. read the target PDA before registering;
- *   2. NOT live (absent / cleared / expired)  → the bare legacy register,
- *      byte-identical to the pre-K-T4e path (937 B — legacy-safe, K-T4a);
+ *   2. NOT live (absent / cleared / expired)  → the same bare register
+ *      pair, legacy when it fits and reviewed v0+ALT when required siblings
+ *      push legacy serialization past the wire cap;
  *   3. LIVE + no acknowledgement             → throw LiveSessionExistsError
  *      carrying the on-chain evidence (never silently strand the tail);
  *   4. LIVE + onLiveSession:'replace'        → compose the ATOMIC same-tx
@@ -28,6 +29,7 @@ import {
   deriveSessionPda,
   fetchSessionAccount,
   fetchVaultSessionAccounts,
+  resolveVaultUsdcAta,
 } from '@dexterai/vault/session';
 import {
   sessionRegisterMessage,
@@ -60,6 +62,8 @@ import { sha256 } from '@noble/hashes/sha256';
 const VAULT = Keypair.generate().publicKey;
 const SWIG = Keypair.generate().publicKey;
 const SELLER = Keypair.generate().publicKey;
+const OTHER_SELLER = Keypair.generate().publicKey;
+const VAULT_USDC_ATA = Keypair.generate().publicKey;
 const FEE_PAYER = Keypair.generate();
 const NOW = Math.floor(Date.now() / 1000);
 
@@ -78,6 +82,7 @@ function sessionAccountData(args: {
   spent?: bigint;
   currentOutstanding?: bigint;
   crystallized?: bigint;
+  allowedCounterparty?: PublicKey;
 }): Buffer {
   const buf = Buffer.alloc(162);
   Buffer.from([74, 34, 65, 133, 96, 163, 80, 69]).copy(buf, 0); // discriminator
@@ -87,7 +92,7 @@ function sessionAccountData(args: {
   Buffer.from(args.sessionPubkey ?? new Uint8Array(32).fill(0xd1)).copy(buf, 42);
   buf.writeBigUInt64LE(2_000_000n, 74); // max_amount
   buf.writeBigInt64LE(BigInt(args.expiresAt ?? NOW + 3600), 82);
-  SELLER.toBuffer().copy(buf, 90);
+  (args.allowedCounterparty ?? SELLER).toBuffer().copy(buf, 90);
   buf.writeUInt32LE(7, 122); // nonce
   buf.writeBigUInt64LE(args.spent ?? 0n, 126);
   buf.writeBigUInt64LE(args.currentOutstanding ?? 0n, 134);
@@ -98,6 +103,7 @@ function sessionAccountData(args: {
 }
 
 const SESSION_PDA = deriveSessionPda(VAULT, SELLER)[0];
+const OTHER_SESSION_PDA = deriveSessionPda(VAULT, OTHER_SELLER)[0];
 
 /** Minimal Connection double: getAccountInfo from a map, getProgramAccounts
  *  returns every map entry that parses as a SessionAccount for VAULT, plus
@@ -138,6 +144,7 @@ function makeAdapter(
     fetchSession?: typeof fetchSessionAccount;
     fetchSessions?: typeof fetchVaultSessionAccounts;
     fetchPasskeyAuthorization?: typeof fetchPasskeyAuthorizationState;
+    resolveUsdcAta?: typeof resolveVaultUsdcAta;
   } = {},
 ) {
   return createSolanaVaultAdapter({
@@ -239,6 +246,87 @@ describe('authorizeSession — target NOT live (absent / cleared / expired)', ()
     expect(Buffer.from(tx.instructions[1].data).equals(Buffer.from(expected.data))).toBe(true);
     expect(tx.instructions[1].keys.map((k) => k.pubkey.toBase58()))
       .toEqual(expected.keys.map((k) => k.pubkey.toBase58()));
+  });
+
+  it('preserves an unrelated expired sibling and falls back to v0+ALT when legacy is 1253 B', async () => {
+    const accounts = new Map([
+      [OTHER_SESSION_PDA.toBase58(), sessionAccountData({
+        allowedCounterparty: OTHER_SELLER,
+        expiresAt: NOW - 10,
+        currentOutstanding: 0n,
+        crystallized: 50_000n,
+      })],
+    ]);
+    const conn = fakeConnection(accounts);
+    const captured: TransactionInstruction[][] = [];
+    const composeSend = vi.fn(async (ixs: TransactionInstruction[]) => {
+      captured.push(ixs);
+      return 'ComposeSig111';
+    });
+    const adapter = makeAdapter(conn, {
+      composeSend,
+      resolveUsdcAta: vi.fn(async () => VAULT_USDC_ATA),
+    });
+
+    const session = await adapter.authorizeSession(scopeFor(), { onLiveSession: 'replace' });
+
+    expect(conn.legacySends).toHaveLength(0);
+    expect(composeSend).toHaveBeenCalledTimes(1);
+    expect(captured[0]).toHaveLength(2);
+    expect(captured[0][0].programId.equals(SECP256R1_PROGRAM_ID)).toBe(true);
+    expect(captured[0][1].programId.equals(DEXTER_VAULT_PROGRAM_ID)).toBe(true);
+
+    // Reproduce the live failure exactly: funded ATA + one unrelated sibling
+    // makes the otherwise-valid legacy transaction 1253 B (> 1232 B).
+    const legacy = new Transaction().add(...captured[0]);
+    legacy.feePayer = FEE_PAYER.publicKey;
+    legacy.recentBlockhash = 'EETubP5AKHgjPAhzPAFcb8BAY1hMH639CWCFTqi3hq1k';
+    legacy.sign(FEE_PAYER);
+    expect(() => legacy.serialize()).toThrow('Transaction too large: 1253 > 1232');
+
+    // The fallback transports the exact registration instruction, including
+    // the expired-but-unswept sibling the program needs for atomic sweeping.
+    const message = sessionRegisterMessage({
+      programId: DEXTER_VAULT_PROGRAM_ID,
+      vaultPda: VAULT,
+      sessionPubkey: session.publicKey,
+      maxAmount: 1000000n,
+      maxRevolvingCapacity: 900000n,
+      expiresAt: BigInt(NOW + 1800),
+      allowedCounterparty: SELLER,
+      nonce: EXPECTED_NONCE,
+    });
+    const ceremony = canonicalCeremony(message);
+    const expected = buildRegisterSessionKeyInstruction({
+      vaultPda: VAULT,
+      sessionPubkey: session.publicKey,
+      maxAmount: 1000000n,
+      maxRevolvingCapacity: 900000n,
+      expiresAt: BigInt(NOW + 1800),
+      allowedCounterparty: SELLER,
+      nonce: EXPECTED_NONCE,
+      swigAddress: SWIG,
+      vaultUsdcAta: VAULT_USDC_ATA,
+      payer: FEE_PAYER.publicKey,
+      siblingSessionPdas: [OTHER_SESSION_PDA],
+      clientDataJSON: ceremony.clientDataJSON,
+      authenticatorData: ceremony.authenticatorData,
+    });
+    expect(Buffer.from(captured[0][1].data).equals(Buffer.from(expected.data))).toBe(true);
+    expect(captured[0][1].keys.map((k) => ({
+      pubkey: k.pubkey.toBase58(),
+      isSigner: k.isSigner,
+      isWritable: k.isWritable,
+    }))).toEqual(expected.keys.map((k) => ({
+      pubkey: k.pubkey.toBase58(),
+      isSigner: k.isSigner,
+      isWritable: k.isWritable,
+    })));
+    expect(captured[0][1].keys).toContainEqual(expect.objectContaining({
+      pubkey: OTHER_SESSION_PDA,
+      isSigner: false,
+      isWritable: true,
+    }));
   });
 });
 
