@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.0-rc.4] - 2026-08-17
+
+### Changed
+
+- Rebound the exact Vault peer and development dependency to
+  `@dexterai/vault@0.43.3-rc.1`. This is a package-metadata-only successor to
+  rc.3 so the canonical archive-mode Vault release resolves as one dependency
+  graph; x402 runtime source and declarations are unchanged.
+
 ## [6.0.0-rc.3] - 2026-08-17
 
 ### Added
