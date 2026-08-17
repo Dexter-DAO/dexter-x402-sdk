@@ -8,7 +8,8 @@
  * register] measures 1347 B legacy at ZERO siblings — past the 1232 B wire
  * cap; web3.js serialize() itself throws. With the per-vault statics AND
  * sibling session PDAs ALT-resident it lands at 1166–1174 B. The
- * register-only path stays legacy (937 B) and never routes here.
+ * register-only stays legacy while it fits, but reuses this transport when a
+ * complete sibling-account set pushes it past the packet cap.
  *
  * The MAINNET-HARDENING mirrored from dexter-api's proven K-T4b transport
  * (src/vault/revokeRegisterCompose.ts, live-tested 2026-07-06):

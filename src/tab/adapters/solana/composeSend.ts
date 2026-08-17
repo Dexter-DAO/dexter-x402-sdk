@@ -10,8 +10,9 @@
  * table holding every non-signer account of the composed instructions
  * (vault, target session PDA, vaultUsdcAta, swig, swig wallet PDA, sysvar,
  * system program, sibling session PDAs) — 1166–1174 B on-chain-proven. The
- * register-only (not-live) path stays on the adapter's legacy send (937 B)
- * and never routes here.
+ * register-only (not-live) path stays on the adapter's legacy send while it
+ * fits and reuses this transport when required sibling accounts push it past
+ * the packet cap.
  *
  * SELF-PAYING vs SPONSORED: this is the buyer-side twin of dexter-api's
  * sponsor-owned K-T4b transport (dexter-api src/vault/revokeRegisterCompose.ts,

@@ -631,8 +631,9 @@ class SolanaVaultAdapter implements VaultAdapter {
    * pre-guard program silently overwrote it — stranding the old session's
    * unsettled tail). So the adapter reads the PDA FIRST:
    *
-   *  - NOT live (absent / cleared / expired) → the bare legacy register,
-   *    exactly the pre-K-T4e bytes (937 B — legacy-size safe, K-T4a);
+   *  - NOT live (absent / cleared / expired) → the same bare register
+   *    instruction pair, legacy when it fits or v0+ALT when the complete
+   *    sibling-account set pushes the legacy wire past 1232 B;
    *  - LIVE + default policy → LiveSessionExistsError (stranding guard;
    *    thrown BEFORE any passkey ceremony is burned);
    *  - LIVE + onLiveSession:'replace' → ONE atomic transaction
@@ -794,9 +795,12 @@ class SolanaVaultAdapter implements VaultAdapter {
   }
 
   /**
-   * The NOT-live path: the bare [secp256r1, register_session_key] legacy
-   * transaction — byte-identical to the pre-K-T4e adapter (937 B, fits
-   * legacy comfortably; K-T4a proved only the revoke-composed tx overflows).
+   * The NOT-live path: the bare [secp256r1, register_session_key] instruction
+   * pair. It stays on the byte-identical legacy transport while it fits; if
+   * the complete sibling-account set makes legacy serialization exceed
+   * Solana's 1232-byte wire cap, the exact same pair uses the reviewed v0+ALT
+   * transport. Siblings may include expired-but-unswept sessions required by
+   * the on-chain admission/sweep contract and must never be dropped for size.
    */
   private async sendBareRegister(
     scope: SessionScope,
@@ -857,7 +861,32 @@ class SolanaVaultAdapter implements VaultAdapter {
     tx.recentBlockhash = blockhash;
     tx.sign(this.feePayer);
 
-    const sig = await this.connection.sendRawTransaction(tx.serialize(), {
+    let raw: Uint8Array;
+    try {
+      raw = tx.serialize();
+    } catch (err) {
+      // web3.js enforces Solana's 1232-byte packet cap at legacy
+      // serialization. Only that exact local size failure changes transport;
+      // every other signing/serialization fault remains fail-closed.
+      if (!/^Transaction too large: \d+ > 1232$/i.test(String((err as Error)?.message ?? err))) {
+        throw err;
+      }
+
+      const transport = this.seams.composeSend
+        ? { send: this.seams.composeSend, deactivateAlt: async () => {} }
+        : createSelfPayingComposeSend(this.connection, this.feePayer, {
+            commitment: this.confirmOptions.commitment,
+          });
+      try {
+        await transport.send([precompileIx, registerIx]);
+      } finally {
+        // Cleanup never gates (or fails) the registration that already landed.
+        void transport.deactivateAlt();
+      }
+      return;
+    }
+
+    const sig = await this.connection.sendRawTransaction(raw, {
       skipPreflight: false,
       preflightCommitment: this.confirmOptions.preflightCommitment ?? this.confirmOptions.commitment,
     });
