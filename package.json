@@ -6,6 +6,11 @@
   "license": "MIT",
   "type": "module",
   "exports": {
+    "./mcp": {
+      "types": "./dist/mcp/index.d.ts",
+      "import": "./dist/mcp/index.js",
+      "require": "./dist/mcp/index.cjs"
+    },
     "./client": {
       "types": "./dist/client/index.d.ts",
       "import": "./dist/client/index.js",
@@ -62,6 +67,8 @@
     "README.md",
     "REFERENCE.md",
     "CHANGELOG.md",
+    "docs/mcp.md",
+    "examples/mcp-paid-tool.ts",
     "LICENSE",
     "assets/*.svg"
   ],
@@ -93,10 +100,12 @@
   },
   "devDependencies": {
     "@dexterai/vault": "0.43.3-rc.1",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@types/aws-lambda": "^8.10.161",
     "@types/express": "^5.0.6",
     "@types/node": "^22.10.0",
     "@types/react": "^18.0.0",
+    "@x402/mcp": "2.26.0",
     "ethers": "^6.13.0",
     "express": "^5.2.1",
     "react": "^18.0.0",
