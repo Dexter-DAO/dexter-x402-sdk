@@ -1,92 +1,280 @@
-name: Publish to npm
+name: Publish x402 package
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: x402-npm-production
+  cancel-in-progress: false
+
+env:
+  NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+  NPM_CONFIG_USERCONFIG: /dev/null
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  build:
+    name: Test, build, and qualify the packed package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      artifact: ${{ steps.package.outputs.artifact }}
+      filename: ${{ steps.package.outputs.filename }}
+      sha256: ${{ steps.package.outputs.sha256 }}
+      integrity: ${{ steps.package.outputs.integrity }}
+      version: ${{ steps.context.outputs.version }}
+      dist_tag: ${{ steps.context.outputs.dist_tag }}
+      vault_version: ${{ steps.context.outputs.vault_version }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Use isolated npm configuration
+        run: echo "NPM_CONFIG_GLOBALCONFIG=$RUNNER_TEMP/x402-empty-global.npmrc" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
         with:
-          node-version: '22'
-          cache: 'npm'
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Install dependencies
-        run: npm ci
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
 
-      - name: Typecheck
-        run: npm run typecheck
+      - name: Use the pinned npm publisher
+        run: npm install --global npm@11.19.1 --ignore-scripts --no-audit --no-fund
 
-      - name: Build
-        run: npm run build
+      - name: Check tag, version, and main ancestry
+        id: context
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = tag
+          git -c credential.helper= fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "$GITHUB_REF^{commit}")"
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync, appendFileSync } from 'node:fs';
+          const p = JSON.parse(readFileSync('package.json', 'utf8'));
+          assert.equal(process.env.GITHUB_REPOSITORY, 'Dexter-DAO/dexter-x402-sdk');
+          assert.equal(p.name, '@dexterai/x402');
+          assert.match(p.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+          assert.equal(process.env.GITHUB_REF_NAME, `v${p.version}`);
+          const vault = p.peerDependencies['@dexterai/vault'];
+          assert.match(vault, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+          appendFileSync(process.env.GITHUB_OUTPUT,
+            `version=${p.version}\ndist_tag=${p.version.includes('-') ? 'next' : 'latest'}\nvault_version=${vault}\n`);
+          NODE
 
-      - name: Test
-        run: npm test
+      - name: Install, typecheck, test, and build
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run typecheck
+          npm test -- --maxWorkers=2 --minWorkers=1
+          npm run build
+
+      - name: Pack once and test fresh-installed Tab and MCP entrypoints
+        env:
+          DEXTER_X402_PACKAGE_PROOF_DIR: ${{ runner.temp }}/x402-package
+        run: npm run verify:tab:package
+
+      - name: Record the verified archive
+        id: package
+        env:
+          PACKAGE_DIR: ${{ runner.temp }}/x402-package
+          RELEASE_VERSION: ${{ steps.context.outputs.version }}
+          RELEASE_DIST_TAG: ${{ steps.context.outputs.dist_tag }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
+          import { join, basename } from 'node:path';
+          import { execFileSync } from 'node:child_process';
+          const proof = JSON.parse(readFileSync(join(process.env.PACKAGE_DIR, 'proof.json'), 'utf8'));
+          const p = proof.package;
+          assert.equal(p.name, '@dexterai/x402');
+          assert.equal(p.version, process.env.RELEASE_VERSION);
+          assert.equal(basename(p.filename), p.filename);
+          assert.equal(proof.sourceCommit, execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim());
+          const bytes = readFileSync(join(process.env.PACKAGE_DIR, p.filename));
+          const integrity = `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
+          assert.equal(integrity, p.integrity);
+          const sha256 = createHash('sha256').update(bytes).digest('hex');
+          const artifact = `x402-package-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`;
+          writeFileSync(join(process.env.PACKAGE_DIR, 'release.json'), JSON.stringify({
+            name: p.name, version: p.version, filename: p.filename, sourceCommit: proof.sourceCommit,
+            distTag: process.env.RELEASE_DIST_TAG, integrity, sha256,
+          }, null, 2) + '\n');
+          appendFileSync(process.env.GITHUB_OUTPUT,
+            `artifact=${artifact}\nfilename=${p.filename}\nsha256=${sha256}\nintegrity=${integrity}\n`);
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            `Package: ${p.name}@${p.version}\n\nSource: ${proof.sourceCommit}\n\nTag: ${process.env.RELEASE_DIST_TAG}\n\nSHA-256: ${sha256}\n\nFresh-installed Tab and MCP checks passed. The protected job publishes this archive.\n`);
+          NODE
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.artifact }}
+          path: |
+            ${{ runner.temp }}/x402-package/*.tgz
+            ${{ runner.temp }}/x402-package/proof.json
+            ${{ runner.temp }}/x402-package/release.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+          overwrite: false
 
   publish:
-    needs: test
-    runs-on: ubuntu-latest
+    name: Approve and publish the tested archive
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: x402-npm-production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PACKAGE_FILENAME: ${{ needs.build.outputs.filename }}
+      EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
+      EXPECTED_INTEGRITY: ${{ needs.build.outputs.integrity }}
+      RELEASE_VERSION: ${{ needs.build.outputs.version }}
+      RELEASE_DIST_TAG: ${{ needs.build.outputs.dist_tag }}
+      VAULT_VERSION: ${{ needs.build.outputs.vault_version }}
+    steps:
+      - name: Use isolated npm configuration
+        run: |
+          echo "NPM_CONFIG_GLOBALCONFIG=$RUNNER_TEMP/x402-empty-global.npmrc" >> "$GITHUB_ENV"
+          echo "PACKAGE_DIR=$RUNNER_TEMP/x402-package" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - run: npm install --global npm@11.19.1 --ignore-scripts --no-audit --no-fund
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: ${{ runner.temp }}/x402-package
+
+      - name: Verify archive and detect an identical previous publication
+        id: registry
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          import { readFileSync, appendFileSync } from 'node:fs';
+          import { join, basename } from 'node:path';
+          assert.equal(basename(process.env.PACKAGE_FILENAME), process.env.PACKAGE_FILENAME);
+          const bytes = readFileSync(join(process.env.PACKAGE_DIR, process.env.PACKAGE_FILENAME));
+          assert.equal(createHash('sha256').update(bytes).digest('hex'), process.env.EXPECTED_SHA256);
+          assert.equal(`sha512-${createHash('sha512').update(bytes).digest('base64')}`, process.env.EXPECTED_INTEGRITY);
+          const response = await fetch(`https://registry.npmjs.org/@dexterai%2fx402/${encodeURIComponent(process.env.RELEASE_VERSION)}`, { headers: { 'cache-control': 'no-cache' } });
+          if (response.status === 404) {
+            appendFileSync(process.env.GITHUB_OUTPUT, 'publish=true\n');
+          } else {
+            assert.equal(response.status, 200, `Registry check failed: ${response.status}`);
+            const published = await response.json();
+            assert.equal(published.dist?.integrity, process.env.EXPECTED_INTEGRITY, 'Existing version has different package bytes');
+            appendFileSync(process.env.GITHUB_OUTPUT, 'publish=false\n');
+          }
+          NODE
+
+      - name: Publish the tested tarball with GitHub OIDC
+        if: steps.registry.outputs.publish == 'true'
+        shell: bash
+        working-directory: ${{ runner.temp }}/x402-package
+        run: |
+          set -euo pipefail
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+          npm publish "$PACKAGE_FILENAME" --ignore-scripts --access public --provenance \
+            --registry https://registry.npmjs.org --strict-ssl=true --tag "$RELEASE_DIST_TAG"
+
+      - name: Verify published integrity and distribution tag
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { setTimeout } from 'node:timers/promises';
+          let lastError;
+          for (let attempt = 0; attempt < 6; attempt++) {
+            try {
+              const response = await fetch('https://registry.npmjs.org/@dexterai%2fx402', { headers: { 'cache-control': 'no-cache' } });
+              assert.equal(response.status, 200);
+              const registry = await response.json();
+              const published = registry.versions?.[process.env.RELEASE_VERSION];
+              assert.equal(published?.dist?.integrity, process.env.EXPECTED_INTEGRITY);
+              assert.equal(registry['dist-tags']?.[process.env.RELEASE_DIST_TAG], process.env.RELEASE_VERSION);
+              writeFileSync(join(process.env.PACKAGE_DIR, 'registry.json'), JSON.stringify({
+                version: published.version, integrity: published.dist.integrity,
+                distTag: process.env.RELEASE_DIST_TAG, tarball: published.dist.tarball,
+                attestations: published.dist.attestations ?? null,
+              }, null, 2) + '\n');
+              lastError = undefined;
+              break;
+            } catch (error) { lastError = error; }
+            if (attempt < 5) await setTimeout(5000);
+          }
+          if (lastError) throw lastError;
+          NODE
+
+      - name: Test a fresh installation from the registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          consumer="$RUNNER_TEMP/x402-registry-consumer"
+          mkdir "$consumer"
+          printf '{"private":true,"type":"module"}\n' > "$consumer/package.json"
+          npm install --prefix "$consumer" --ignore-scripts --no-audit --no-fund \
+            "@dexterai/x402@$RELEASE_VERSION" "@dexterai/vault@$VAULT_VERSION"
+          CONSUMER_DIR="$consumer" node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const lock = JSON.parse(readFileSync(join(process.env.CONSUMER_DIR, 'package-lock.json'), 'utf8'));
+          const installed = lock.packages['node_modules/@dexterai/x402'];
+          assert.equal(installed.version, process.env.RELEASE_VERSION);
+          assert.equal(installed.integrity, process.env.EXPECTED_INTEGRITY);
+          NODE
+          node scripts/verify-tab-package.mjs "$consumer"
+          node scripts/verify-mcp-package.mjs "$consumer"
+          echo "Published @dexterai/x402@$RELEASE_VERSION to $RELEASE_DIST_TAG; registry integrity and fresh-install Tab/MCP checks passed." >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x402-registry-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/x402-package/registry.json
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Record the verified GitHub release
+    needs: [build, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      # The repo's release motion publishes from the maintainer's machine first
-      # (verify gate + npm publish + tag push). This job is the backstop: publish
-      # only if the version is NOT already on the registry, so the normal motion
-      # doesn't end in a red run (E403 publish-over-existing) on every release.
-      - name: Check if version already published
-        id: check
-        run: |
-          PKG=$(node -p "require('./package.json').name")
-          VERSION=$(node -p "require('./package.json').version")
-          if npm view "${PKG}@${VERSION}" version >/dev/null 2>&1; then
-            echo "${PKG}@${VERSION} already on the registry — skipping npm publish."
-            echo "already=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "already=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Publish to npm
-        if: steps.check.outputs.already != 'true'
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          if [[ "$VERSION" == *-* ]]; then
-            npm publish --access public --tag next
-          else
-            npm publish --access public
-          fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Create GitHub Release
-        run: |
-          VERSION="${GITHUB_REF#refs/tags/}"
-          # Extract changelog for this version
-          BODY=$(awk "/^## \[${VERSION#v}\]/{found=1; next} /^## \[/{if(found) exit} found{print}" CHANGELOG.md)
-          if [ -z "$BODY" ]; then
-            BODY="Release ${VERSION}"
-          fi
-          if gh release view "$VERSION" >/dev/null 2>&1; then
-            echo "Release ${VERSION} already exists — skipping."
-          else
-            gh release create "$VERSION" --title "$VERSION" --notes "$BODY"
-          fi
+      - name: Create the release if it does not exist
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_DIST_TAG: ${{ needs.build.outputs.dist_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            exit 0
+          fi
+          args=(--repo "$GITHUB_REPOSITORY" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes)
+          if [[ "$RELEASE_DIST_TAG" == next ]]; then args+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" "${args[@]}"
