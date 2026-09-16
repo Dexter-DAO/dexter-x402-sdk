@@ -23,6 +23,7 @@ jobs:
     timeout-minutes: 20
     outputs:
       artifact: ${{ steps.package.outputs.artifact }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
       filename: ${{ steps.package.outputs.filename }}
       sha256: ${{ steps.package.outputs.sha256 }}
       integrity: ${{ steps.package.outputs.integrity }}
@@ -33,12 +34,12 @@ jobs:
       - name: Use isolated npm configuration
         run: echo "NPM_CONFIG_GLOBALCONFIG=$RUNNER_TEMP/x402-empty-global.npmrc" >> "$GITHUB_ENV"
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
           package-manager-cache: false
@@ -115,7 +116,8 @@ jobs:
             `Package: ${p.name}@${p.version}\n\nSource: ${proof.sourceCommit}\n\nTag: ${process.env.RELEASE_DIST_TAG}\n\nSHA-256: ${sha256}\n\nFresh-installed Tab and MCP checks passed. The protected job publishes this archive.\n`);
           NODE
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v4
+        id: upload
         with:
           name: ${{ steps.package.outputs.artifact }}
           path: |
@@ -126,9 +128,6 @@ jobs:
           retention-days: 30
           compression-level: 0
           overwrite: false
-
-      - name: Verify installed Tab package
-        run: npm run verify:tab:package
 
   publish:
     name: Approve and publish the tested archive
@@ -152,21 +151,22 @@ jobs:
           echo "NPM_CONFIG_GLOBALCONFIG=$RUNNER_TEMP/x402-empty-global.npmrc" >> "$GITHUB_ENV"
           echo "PACKAGE_DIR=$RUNNER_TEMP/x402-package" >> "$GITHUB_ENV"
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
           package-manager-cache: false
 
       - run: npm install --global npm@11.19.1 --ignore-scripts --no-audit --no-fund
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
-          name: ${{ needs.build.outputs.artifact }}
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
           path: ${{ runner.temp }}/x402-package
+          merge-multiple: true
 
       - name: Verify archive and detect an identical previous publication
         id: registry
@@ -197,6 +197,8 @@ jobs:
         working-directory: ${{ runner.temp }}/x402-package
         run: |
           set -euo pipefail
+          test -z "${NPM_TOKEN:-}"
+          test -z "${NODE_AUTH_TOKEN:-}"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
           npm publish "$PACKAGE_FILENAME" --ignore-scripts --access public --provenance \
@@ -253,7 +255,7 @@ jobs:
           node scripts/verify-mcp-package.mjs "$consumer"
           echo "Published @dexterai/x402@$RELEASE_VERSION to $RELEASE_DIST_TAG; registry integrity and fresh-install Tab/MCP checks passed." >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v4
         with:
           name: x402-registry-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/x402-package/registry.json
