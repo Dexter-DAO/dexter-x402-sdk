@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Updates `@x402/core`, `@x402/evm`, and `@x402/extensions` from 2.12.0 to 2.26.0
+  and uses the upstream file-storage entrypoints.
+- Batch buyers preserve the exact USDC deposit specified by the caller. Each
+  handle uses one channel configuration and refuses automatic top-ups or a
+  second initial funding attempt. Requests and cumulative vouchers stay within
+  the authorized budget, including when recovering a larger existing escrow.
+- `resumeBatchChannel` accepts `maxAmountPerPayment` in USDC, with a default of
+  `"1"`. Resume spends existing escrow and refuses new funding. Deposit and
+  per-call amounts exceeding six decimal places are rejected before signing.
+
 ## [6.0.0] - 2026-09-16
 
 ### Added
