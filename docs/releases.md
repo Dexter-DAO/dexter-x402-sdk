@@ -4,6 +4,8 @@ Releases use GitHub Actions and npm trusted publishing. Merge the release change
 
 After those checks pass, approve the `x402-npm-production` deployment in GitHub. That is the release approval. The protected job publishes the tested archive using GitHub OIDC, checks npm's integrity and distribution tag, and tests a fresh installation from the registry. It then records a GitHub release. Stable versions use `latest`; prereleases use `next`. The former local `release*` npm scripts have been removed; use the tag workflow for publication.
 
+npm can accept a publication while it is still processing the package. Registry verification makes up to 40 checks, 15 seconds apart, with a 10-second request timeout. Completion requires the expected archive integrity, distribution tag, and fresh-install checks.
+
 The workflow also supports **Run workflow** on an existing version tag. Running it on a branch is rejected. A retry accepts an already-published version only when its integrity matches the tested archive. A mismatched version or distribution tag fails without overwriting a package or moving a tag backward.
 
 ## Publisher configuration
