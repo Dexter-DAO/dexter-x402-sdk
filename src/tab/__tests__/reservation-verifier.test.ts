@@ -132,10 +132,11 @@ function bindingData(args: {
   swig: PublicKey;
   vault: PublicKey;
   bump: number;
+  version?: number;
 }): Buffer {
   const data = Buffer.alloc(74);
   Buffer.from(BINDING_DISCRIMINATOR).copy(data, 0);
-  data.writeUInt8(1, 8);
+  data.writeUInt8(args.version ?? 1, 8);
   data.writeUInt8(args.bump, 9);
   args.swig.toBuffer().copy(data, 10);
   args.vault.toBuffer().copy(data, 42);
@@ -346,6 +347,37 @@ describe('Solana FINAL V2 reservation verifier', () => {
       minContextSlot: CONFIRMATION_SLOT,
     });
   });
+
+  it.each([1, 2, 3, 4])(
+    'accepts known SwigVaultBinding identity version %i in confirmed coherent reads',
+    async (version) => {
+      const fixture = makeFixture();
+      fixture.bindingData.writeUInt8(version, 8);
+
+      await expect(verifySolanaFinalVoucherV2Reservation(
+        fixture.connection,
+        fixture.input,
+        fixture.receipt,
+      )).resolves.toBeUndefined();
+    },
+  );
+
+  it.each([0, 5, 255])(
+    'rejects unknown SwigVaultBinding identity version %i at the raw account boundary',
+    async (version) => {
+      const fixture = makeFixture();
+      fixture.bindingData.writeUInt8(version, 8);
+
+      await expectCode(
+        verifySolanaFinalVoucherV2Reservation(
+          fixture.connection,
+          fixture.input,
+          fixture.receipt,
+        ),
+        'binding_version',
+      );
+    },
+  );
 
   it('never lets an untrusted receipt postStateSlot control the RPC wait fence', async () => {
     const fixture = makeFixture();
