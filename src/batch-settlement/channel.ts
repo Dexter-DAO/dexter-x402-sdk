@@ -318,7 +318,7 @@ function toChannelState(
  * Pulls the channelId out of a payment payload built by
  * `x402HTTPClient.createPaymentPayload`. For batch-settlement the payload is a
  * deposit or voucher payload, and BOTH carry `voucher.channelId` (a bytes32
- * hex string) — verified against `@x402/evm` 2.12 `BatchSettlementVoucherFields`.
+ * hex string) — verified against `@x402/evm` 2.26 `BatchSettlementVoucherFields`.
  * Returns `''` if the payload is not a recognised batch-settlement shape.
  */
 function channelIdFromPayload(paymentPayload: unknown): string {
@@ -333,7 +333,7 @@ function channelIdFromPayload(paymentPayload: unknown): string {
 /**
  * Pulls the `channelConfig` tuple out of a batch-settlement payment payload.
  * Both deposit and voucher payloads carry `channelConfig` alongside
- * `voucher.channelId` — verified against `@x402/evm` 2.12
+ * `voucher.channelId` — verified against `@x402/evm` 2.26
  * `BatchSettlementDepositPayload` / `BatchSettlementVoucherPayload`. The
  * escape hatch (`forceWithdraw` / `finalizeWithdraw`) needs the full config to
  * call the contract. Returns `undefined` for an unrecognised payload shape.
@@ -542,10 +542,9 @@ function makeChannelHandle(input: ChannelHandleInput): BatchSettlementChannel {
  * does not collide with any existing channel between the same buyer and
  * seller.
  *
- * `crypto` is only a global in browsers and Node 19+. The SDK supports Node
- * 18 (`engines: >=18`), where the WebCrypto API must be imported from
- * `node:crypto` — so resolve `globalThis.crypto` with a `webcrypto` fallback,
- * matching the pattern already used in `src/adapters/evm.ts`.
+ * Use the environment's WebCrypto when available, with Node's `webcrypto`
+ * fallback for hosts that do not expose the global. This matches the
+ * resolution used in `src/adapters/evm.ts`; the SDK requires Node 22 or newer.
  */
 async function generateChannelSalt(): Promise<`0x${string}`> {
   const webCrypto =
