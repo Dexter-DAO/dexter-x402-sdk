@@ -42,7 +42,7 @@ import { createSolanaAdapter, createEvmAdapter } from '@dexterai/x402/adapters';
 import { toAtomicUnits, fromAtomicUnits } from '@dexterai/x402/utils';
 ```
 
-> `@dexterai/vault` is an exact **peer dependency** at `0.43.2`: install it alongside the matching v6 x402 package so the adapter, revocation wire, and your app use one tested Vault contract.
+> `@dexterai/vault` is an exact **peer dependency** at `0.43.4`: install it alongside the matching v6 x402 package so the adapter, revocation wire, and your app use one tested Vault contract.
 
 ---
 
@@ -105,7 +105,7 @@ Builds the `vault` adapter the buyer calls drive through.
 | `passkeySigner` | `PasskeySignerWithPublicKey` | A `signOperation(operationMessage)` signer (see below) |
 | `feePayer` | `Signer` | Lamport fee payer |
 
-The `passkeySigner` uses Vault 0.43.2's canonical shape: `{ credentialId, publicKey, signOperation(operationMessage) }`. The adapter passes the raw operation bytes. The signer obtains the canonical V7 200-byte challenge binding the fixed program, exact vault, current monotonic authorization nonce, operation hash, and fresh ceremony entropy; the adapter owns only the precompile assembly. Do not substitute a bare `sha256(operationMessage)` challenge for V7 operations.
+The `passkeySigner` uses Vault 0.43.4's canonical shape: `{ credentialId, publicKey, signOperation(operationMessage) }`. The adapter passes the raw operation bytes. The signer obtains the canonical V7 200-byte challenge binding the fixed program, exact vault, current monotonic authorization nonce, operation hash, and fresh ceremony entropy; the adapter owns only the precompile assembly. Do not substitute a bare `sha256(operationMessage)` challenge for V7 operations.
 
 - **Browser:** vault's `DexterApiBrowserPasskeySigner` — drops in with no shim.
 - **CLI / server agent:** `passkeySignerFromP256Keypair(kp, { resolveAuthorizationContext })` from `@dexterai/x402/tab/adapters/solana`, wrapping a locally-held P-256 keypair. The resolver must read the current `PasskeyAuthorization` state immediately before a revoke ceremony; the helper never guesses that nonce.

@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@dexterai/x402"><img src="https://img.shields.io/npm/v/@dexterai/x402.svg" alt="npm"></a>
-  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E=18-brightgreen.svg" alt="Node"></a>
+  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E=22-brightgreen.svg" alt="Node"></a>
   <img src="https://img.shields.io/badge/non--custodial-passkey-brightgreen" alt="Non-custodial">
   <a href="https://dexter.cash/sdk"><img src="https://img.shields.io/badge/Try_it-real_payments-blueviolet" alt="Live Demo"></a>
 </p>

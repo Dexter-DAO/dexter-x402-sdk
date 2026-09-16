@@ -28,6 +28,9 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Verify installed Tab package
+        run: npm run verify:tab:package
+
   publish:
     needs: test
     runs-on: ubuntu-latest

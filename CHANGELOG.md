@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.0] - 2026-09-16
+
+### Changed
+
+- Promotes the V2 Tab buyer and seller contracts from the v6 release candidates.
+  Install with the exact peer `@dexterai/vault@0.43.4` and Node.js 22 or newer.
+- Fresh grants require a `reserveFinalVoucherV2` provider that returns a confirmed,
+  voucher-bound reservation receipt. The SDK verifies the transaction and account
+  state before releasing the voucher. Historical V1 buyer grants require migration.
+- Existing seller integrations must adopt the fenced ledger and asynchronous
+  metering contracts described under 6.0.0-rc.3 before upgrading from v5.
+
+### Fixed
+
+- Reservation verification accepts the known Swig binding versions, including
+  attested V3 and automation V4 identities, using the Vault SDK's identity check.
+  Unknown versions remain rejected. This preserves the V3 fix previously used in
+  the unpublished 6.0.0-rc.6 artifact.
+- CI now installs the packed release in a fresh consumer and verifies the public
+  ESM and CommonJS Tab exports, V2 signatures, reservation checks and retry identity.
+
+These checks use local fixtures. Hosted checkout and live settlement require
+their own deployment and transaction verification.
+
 ## [6.0.0-rc.5] - 2026-08-17
 
 ### Fixed
