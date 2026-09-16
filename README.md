@@ -176,6 +176,8 @@ The screen is hosted for a structural reason, not a stylistic one: the vault's p
 
 Tabs are the headline. The same install carries the rest of the x402 surface — each documented in full in [REFERENCE.md](./REFERENCE.md).
 
+Paid MCP tools use the `@dexterai/x402/mcp` entrypoint. The [MCP guide](./docs/mcp.md) covers the seller adapter, durable storage contract, and buyer dispatch with complete result preservation.
+
 - **One-shot payments** — a single discrete purchase over HTTP `402`, USDC on Solana and the major EVM chains. `payAndFetch` (client), `x402Middleware` (server), `useX402Payment` (React).
 - **Batch settlement (EVM)** — prepay an escrow once, make many paid calls with off-chain vouchers, settle in a handful of transactions to amortize gas. `openBatchChannel`.
 - **Discovery** — make any protected route findable by capability through the x402 bazaar spec. `bazaarExtension()`.

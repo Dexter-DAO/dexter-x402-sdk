@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [6.0.0] - 2026-09-16
 
+### Added
+
+- `@dexterai/x402/mcp` provides native x402 v2 MCP challenge, object proof and
+  receipt helpers, a seller adapter with required durable admission storage,
+  and a buyer helper that dispatches one approved payment while retaining the
+  complete tool result. Uncertain outcomes require recovery of the original
+  operation. The default processor supports exact authorization payments on
+  explicitly configured networks; Tasks and other payment flows require
+  application integration. See [the MCP guide](./docs/mcp.md).
+
 ### Changed
 
 - Promotes the V2 Tab buyer and seller contracts from the v6 release candidates.
