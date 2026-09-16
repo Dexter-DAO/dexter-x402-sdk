@@ -1,7 +1,8 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Request, Response, NextFunction } from 'express';
-import { FileChannelStorage, type ChannelStorage } from '@x402/evm/batch-settlement/server';
+import type { ChannelStorage } from '@x402/evm/batch-settlement/server';
+import { FileChannelStorage } from '@x402/evm/batch-settlement/server/file-storage';
 import type { CloseReceipt } from '../types';
 import type {
   BatchSettlementSeller,

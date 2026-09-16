@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Updates `@x402/core`, `@x402/evm`, and `@x402/extensions` from 2.12.0 to 2.26.0
+  and uses the upstream file-storage entrypoints.
+- Batch buyers preserve the exact USDC deposit specified by the caller. Each
+  handle uses one channel configuration and refuses automatic top-ups or a
+  second initial funding attempt. Requests and cumulative vouchers stay within
+  the authorized budget, including when recovering a larger existing escrow.
+- `resumeBatchChannel` accepts `maxAmountPerPayment` in USDC, with a default of
+  `"1"`. Resume spends existing escrow and refuses new funding. Deposit and
+  per-call amounts exceeding six decimal places are rejected before signing.
+
+## [6.0.0] - 2026-09-16
+
+### Added
+
+- `@dexterai/x402/mcp` provides native x402 v2 MCP challenge, object proof and
+  receipt helpers, a seller adapter with required durable admission storage,
+  and a buyer helper that dispatches one approved payment while retaining the
+  complete tool result. Uncertain outcomes require recovery of the original
+  operation. The default processor supports exact authorization payments on
+  explicitly configured networks; Tasks and other payment flows require
+  application integration. See [the MCP guide](./docs/mcp.md).
+
+### Changed
+
+- Promotes the V2 Tab buyer and seller contracts from the v6 release candidates.
+  Install with the exact peer `@dexterai/vault@0.43.4` and Node.js 22 or newer.
+- Fresh grants require a `reserveFinalVoucherV2` provider that returns a confirmed,
+  voucher-bound reservation receipt. The SDK verifies the transaction and account
+  state before releasing the voucher. Historical V1 buyer grants require migration.
+- Existing seller integrations must adopt the fenced ledger and asynchronous
+  metering contracts described under 6.0.0-rc.3 before upgrading from v5.
+
+### Fixed
+
+- Reservation verification accepts the known Swig binding versions, including
+  attested V3 and automation V4 identities, using the Vault SDK's identity check.
+  Unknown versions remain rejected. This preserves the V3 fix previously used in
+  the unpublished 6.0.0-rc.6 artifact.
+- CI now installs the packed release in a fresh consumer and verifies the public
+  ESM and CommonJS Tab exports, V2 signatures, reservation checks and retry identity.
+
+These checks use local fixtures. Hosted checkout and live settlement require
+their own deployment and transaction verification.
+
 ## [6.0.0-rc.5] - 2026-08-17
 
 ### Fixed

@@ -16,6 +16,7 @@ import {
 import { x402Client, x402HTTPClient } from '@x402/core/client';
 import type { ChannelConfig } from '@x402/evm';
 import type { EvmWallet } from '../adapters/evm';
+import { USDC_ADDRESSES } from '../constants';
 import { getDefaultChannelStore } from './store';
 import {
   UnsupportedNetworkError,
@@ -57,8 +58,10 @@ export interface ClientStackInput {
   network: string;
   rpcUrl?: string;
   store: ChannelStore;
-  /** Atomic-units deposit amount; the deposit strategy returns this on the first request. */
+  /** Fixed escrow budget in atomic units; zero means resume without funding. */
   depositAtomic: string;
+  /** Per-call atomic limit on resume. Defaults to one USDC. */
+  maxPaymentAtomic?: string;
   /**
    * 32-byte channel-config salt. The salt is one of the inputs to the
    * deterministic `channelId` (payer, payerAuthorizer, receiver,
@@ -108,6 +111,10 @@ function buildClientStack(input: ClientStackInput): ClientStack {
     );
   }
   const rpcUrl = input.rpcUrl ?? entry.defaultRpc;
+  const budget = BigInt(input.depositAtomic);
+  const resuming = budget === 0n;
+  const maxPaymentAtomic = resuming ? (input.maxPaymentAtomic ?? '1000000') : input.depositAtomic;
+  const usdc = USDC_ADDRESSES[input.network];
 
   // The scheme signs EIP-712 vouchers and ERC-3009 deposit authorizations; a
   // wallet without signTypedData cannot participate in batch-settlement.
@@ -183,7 +190,15 @@ function buildClientStack(input: ClientStackInput): ClientStack {
       types: Record<string, unknown[]>;
       primaryType: string;
       message: Record<string, unknown>;
-    }) => walletSignTypedData.call(input.wallet, args),
+    }) => {
+      // A recovered channel may contain more escrow than this handle's budget.
+      // Enforce the cumulative ceiling as well as the core per-call limit.
+      if (!resuming && args.primaryType === 'Voucher'
+        && BigInt(args.message.maxClaimableAmount as bigint) > budget) {
+        throw new Error('batch-settlement voucher exceeds the authorized deposit budget');
+      }
+      return walletSignTypedData.call(input.wallet, args);
+    },
     // Override `sendTransaction` so `writeContract` (escape hatch) submits via
     // the consumer wallet instead of the keyless RPC. Only the escape hatch
     // calls `writeContract`; the batch-settlement scheme uses `signTypedData`.
@@ -193,10 +208,34 @@ function buildClientStack(input: ClientStackInput): ClientStack {
     signerClient as Parameters<typeof toClientEvmSigner>[0],
   );
 
+  let fundingAttempted = false;
   const scheme = new BatchSettlementEvmScheme(clientSigner, {
     storage: input.store,
     depositPolicy: { depositMultiplier: 4 },
-    depositStrategy: () => input.depositAtomic,
+    depositStrategy: (context) => {
+      if (resuming) {
+        throw new Error('batch-settlement resume requires funded escrow; resume never authorizes a deposit');
+      }
+      if (BigInt(context.currentBalance) > 0n
+        || BigInt(context.clientContext.chargedCumulativeAmount ?? '0') > 0n) {
+        throw new Error('batch-settlement escrow is exhausted; automatic top-ups are disabled');
+      }
+      if (fundingAttempted) {
+        throw new Error('batch-settlement initial funding was already attempted; reconcile its outcome and resume the channel before spending again');
+      }
+      const minimum = context.paymentRequirements.extra?.minDeposit;
+      if (typeof minimum === 'string' && /^\d+$/.test(minimum) && BigInt(minimum) > budget) {
+        throw new Error('batch-settlement seller minimum deposit exceeds the authorized deposit budget');
+      }
+      if (BigInt(context.minimumDepositAmount) > budget
+        || (context.maxDeposit !== undefined && BigInt(context.maxDeposit) < budget)) {
+        throw new Error('batch-settlement cannot fund the exact authorized deposit');
+      }
+      // Mark before either deposit or voucher signing. A rejected signature or
+      // uncertain transport result must not produce a second deposit nonce.
+      fundingAttempted = true;
+      return input.depositAtomic;
+    },
     // Without an explicit salt the upstream scheme falls back to its
     // zero-valued DEFAULT_SALT, making `channelId` identical for every channel
     // between the same parties — so a second openBatchChannel silently reopens
@@ -206,6 +245,26 @@ function buildClientStack(input: ClientStackInput): ClientStack {
 
   const x402Cli = new x402Client();
   x402Cli.register(input.network as `${string}:${string}`, scheme);
+  x402Cli.setSpendControls({
+    allowedAssets: [{ network: input.network as `${string}:${string}`, asset: usdc, maxAmountPerPayment: maxPaymentAtomic }],
+  });
+  // allowedAssets adds entries to the upstream defaults; it is not an
+  // exclusive allowlist. This API's amounts and accounting are USDC-only.
+  x402Cli.registerPolicy((_version, requirements) => {
+    const supported = requirements.filter((requirement) => requirement.asset.toLowerCase() === usdc.toLowerCase());
+    if (supported.length === 0) throw new Error('batch-settlement channels support only USDC on the selected network');
+    return supported;
+  });
+  let pinnedConfig: string | undefined;
+  x402Cli.onBeforePaymentCreation(async ({ selectedRequirements }) => {
+    const config = JSON.stringify(scheme.buildChannelConfig(selectedRequirements), (_key, value: unknown) => (
+      typeof value === 'string' ? value.toLowerCase() : value
+    ));
+    if (pinnedConfig !== undefined && config !== pinnedConfig) {
+      throw new Error('batch-settlement handle is already bound to a different channel configuration');
+    }
+    pinnedConfig = config;
+  });
   const httpClient = new x402HTTPClient(x402Cli);
 
   // The escape hatch submits real transactions; `signerClient` is a viem wallet
@@ -222,6 +281,20 @@ export const __test_buildClientStack = buildClientStack;
 
 /** USDC has 6 decimals on every batch-settlement-supported chain. */
 const USDC_DECIMALS = 6;
+
+function parsePositiveUsdc(value: string, field: string): bigint {
+  let atomic: bigint;
+  try {
+    // parseUnits rounds excess decimal places. Authorization must preserve the
+    // caller's amount exactly, so reject precision that USDC cannot represent.
+    if (!/^(?:\d+(?:\.\d{0,6})?|\.\d{1,6})$/.test(value)) throw new Error('invalid decimal');
+    atomic = parseUnits(value, USDC_DECIMALS);
+  } catch {
+    throw new Error(`${field} must be a valid USDC amount with at most six decimal places (e.g. "0.30"), got "${value}"`);
+  }
+  if (atomic <= 0n) throw new Error(`${field} must be a positive amount, got "${value}"`);
+  return atomic;
+}
 
 /**
  * Converts atomic-unit channel accounting into the public {@link ChannelState}
@@ -245,7 +318,7 @@ function toChannelState(
  * Pulls the channelId out of a payment payload built by
  * `x402HTTPClient.createPaymentPayload`. For batch-settlement the payload is a
  * deposit or voucher payload, and BOTH carry `voucher.channelId` (a bytes32
- * hex string) — verified against `@x402/evm` 2.12 `BatchSettlementVoucherFields`.
+ * hex string) — verified against `@x402/evm` 2.26 `BatchSettlementVoucherFields`.
  * Returns `''` if the payload is not a recognised batch-settlement shape.
  */
 function channelIdFromPayload(paymentPayload: unknown): string {
@@ -260,7 +333,7 @@ function channelIdFromPayload(paymentPayload: unknown): string {
 /**
  * Pulls the `channelConfig` tuple out of a batch-settlement payment payload.
  * Both deposit and voucher payloads carry `channelConfig` alongside
- * `voucher.channelId` — verified against `@x402/evm` 2.12
+ * `voucher.channelId` — verified against `@x402/evm` 2.26
  * `BatchSettlementDepositPayload` / `BatchSettlementVoucherPayload`. The
  * escape hatch (`forceWithdraw` / `finalizeWithdraw`) needs the full config to
  * call the contract. Returns `undefined` for an unrecognised payload shape.
@@ -469,10 +542,9 @@ function makeChannelHandle(input: ChannelHandleInput): BatchSettlementChannel {
  * does not collide with any existing channel between the same buyer and
  * seller.
  *
- * `crypto` is only a global in browsers and Node 19+. The SDK supports Node
- * 18 (`engines: >=18`), where the WebCrypto API must be imported from
- * `node:crypto` — so resolve `globalThis.crypto` with a `webcrypto` fallback,
- * matching the pattern already used in `src/adapters/evm.ts`.
+ * Use the environment's WebCrypto when available, with Node's `webcrypto`
+ * fallback for hosts that do not expose the global. This matches the
+ * resolution used in `src/adapters/evm.ts`; the SDK requires Node 22 or newer.
  */
 async function generateChannelSalt(): Promise<`0x${string}`> {
   const webCrypto =
@@ -489,19 +561,7 @@ export async function openBatchChannel(
   // A unique salt per channel by default — see OpenBatchChannelOptions.salt.
   const salt = options.salt ?? (await generateChannelSalt());
 
-  let depositAtomic: bigint;
-  try {
-    depositAtomic = parseUnits(options.deposit, USDC_DECIMALS);
-  } catch {
-    throw new Error(
-      `deposit must be a valid USDC amount in decimal units (e.g. "0.30"), got "${options.deposit}"`,
-    );
-  }
-  if (depositAtomic <= 0n) {
-    throw new Error(
-      `deposit must be a positive amount, got "${options.deposit}"`,
-    );
-  }
+  const depositAtomic = parsePositiveUsdc(options.deposit, 'deposit');
 
   // buildClientStack throws UnsupportedNetworkError before any signing.
   const stack = buildClientStack({
@@ -539,8 +599,9 @@ export async function resumeBatchChannel(
 ): Promise<BatchSettlementChannel> {
   const store = options.store ?? getDefaultChannelStore();
 
-  // Resume never opens a fresh deposit — the deposit strategy returns 0; the
-  // upstream scheme recovers the existing channel from storage / on-chain.
+  const maxPaymentAtomic = parsePositiveUsdc(options.maxAmountPerPayment ?? '1', 'maxAmountPerPayment');
+  // Resume refuses any funding attempt. The upstream scheme recovers the
+  // existing channel from storage / on-chain.
   // The salt MUST match the channel being resumed: it is one of the inputs to
   // `channelId`, so the wrong salt resumes the wrong (or a non-existent)
   // channel.
@@ -550,6 +611,7 @@ export async function resumeBatchChannel(
     rpcUrl: options.rpcUrl,
     store,
     depositAtomic: '0',
+    maxPaymentAtomic: maxPaymentAtomic.toString(),
     salt: options.salt,
   });
 

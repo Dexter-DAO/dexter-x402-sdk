@@ -23,6 +23,7 @@ import {
 import {
   DEXTER_VAULT_PROGRAM_ID,
   DISCRIMINATORS,
+  isSwigVaultBindingIdentityVersion,
 } from '@dexterai/vault/constants';
 import { deriveSwigWalletAddress } from '@dexterai/vault/instructions';
 import { decodeVaultFull } from '@dexterai/vault/reader';
@@ -45,7 +46,6 @@ const SWIG_VAULT_BINDING_DISCRIMINATOR = Uint8Array.from([
   56, 67, 4, 209, 238, 143, 0, 129,
 ]);
 const SWIG_VAULT_BINDING_BYTES = 8 + 1 + 1 + 32 + 32;
-const SUPPORTED_BINDING_VERSIONS = new Set([1, 2]);
 const SESSION_REGISTRATION_BYTES = 188;
 const SPL_MEMO_V2_PROGRAM_ID = new PublicKey(
   'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',
@@ -242,7 +242,7 @@ function decodeBinding(
   }
   const version = data.readUInt8(8);
   const bump = data.readUInt8(9);
-  if (!SUPPORTED_BINDING_VERSIONS.has(version)) invalid('binding_version');
+  if (!isSwigVaultBindingIdentityVersion(version)) invalid('binding_version');
   if (bump !== expectedBump) invalid('binding_bump');
   return {
     address: address.toBase58(),
@@ -503,7 +503,7 @@ function inspectPostState(
     state.binding.address !== bindingPda.toBase58()
     || state.binding.owner !== input.programId
     || state.binding.bump !== bindingBump
-    || !SUPPORTED_BINDING_VERSIONS.has(state.binding.version)
+    || !isSwigVaultBindingIdentityVersion(state.binding.version)
     || state.binding.swig !== input.buyerSwigAddress
     || state.binding.vault !== input.vaultPda
   ) {

@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     'client/index': 'src/client/index.ts',
     'server/index': 'src/server/index.ts',
+    'mcp/index': 'src/mcp/index.ts',
     'react/index': 'src/react/index.ts',
     'adapters/index': 'src/adapters/index.ts',
     'utils/index': 'src/utils/index.ts',

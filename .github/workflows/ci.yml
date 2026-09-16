@@ -32,3 +32,6 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Verify installed Tab package
+        run: npm run verify:tab:package

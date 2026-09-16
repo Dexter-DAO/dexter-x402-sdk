@@ -26,7 +26,7 @@ export interface OpenBatchChannelOptions {
   wallet: EvmWallet;
   /** CAIP-2 network: eip155:8453 (Base), eip155:42161 (Arbitrum), eip155:137 (Polygon). */
   network: string;
-  /** Total escrow for the channel, USDC human units, e.g. "0.30". */
+  /** Fixed escrow budget in USDC, e.g. "0.30". Funds once; exhaustion requires a new channel. */
   deposit: string;
   /** Facilitator base URL. Default: https://x402.dexter.cash */
   facilitatorUrl?: string;
@@ -53,6 +53,8 @@ export interface ResumeBatchChannelOptions {
   facilitatorUrl?: string;
   rpcUrl?: string;
   store?: ChannelStore;
+  /** Per-call USDC limit, e.g. "2.00". Defaults to "1". Resume never adds escrow. */
+  maxAmountPerPayment?: string;
   /**
    * 32-byte hex channel-config salt of the channel being resumed — REQUIRED.
    * `channelId` cannot be reversed to a salt, so resuming a channel needs the

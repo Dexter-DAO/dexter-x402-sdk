@@ -9,6 +9,8 @@ import {
 } from '../store';
 
 /** A representative upstream channel context value. */
+const channelId = `0x${'ab'.repeat(32)}`;
+const missingChannelId = `0x${'cd'.repeat(32)}`;
 const sampleContext = { balance: '300000', chargedCumulativeAmount: '160000' };
 
 /** Minimal in-memory localStorage stand-in for tests. */
@@ -25,14 +27,28 @@ function fakeLocalStorage(): Storage {
 }
 
 describe('createFileChannelStore', () => {
+  it('rejects malformed channel paths before reading or writing files', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bs-store-'));
+    try {
+      const store = createFileChannelStore(dir);
+      for (const key of ['../outside', '0xchan', `0x${'zz'.repeat(32)}`]) {
+        await expect(store.get(key)).rejects.toThrow('channel_id');
+        await expect(store.set(key, sampleContext)).rejects.toThrow('channel_id');
+        await expect(store.delete(key)).rejects.toThrow('channel_id');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('round-trips a channel context through get/set/delete', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bs-store-'));
     try {
       const store = createFileChannelStore(dir);
-      await store.set('0xchan', sampleContext);
-      expect(await store.get('0xchan')).toEqual(sampleContext);
-      await store.delete('0xchan');
-      expect(await store.get('0xchan')).toBeUndefined();
+      await store.set(channelId, sampleContext);
+      expect(await store.get(channelId)).toEqual(sampleContext);
+      await store.delete(channelId);
+      expect(await store.get(channelId)).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -41,7 +57,7 @@ describe('createFileChannelStore', () => {
   it('get of a missing key returns undefined', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bs-store-'));
     try {
-      expect(await createFileChannelStore(dir).get('0xmissing')).toBeUndefined();
+      expect(await createFileChannelStore(dir).get(missingChannelId)).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -50,7 +66,7 @@ describe('createFileChannelStore', () => {
   it('delete of a missing key does not throw', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bs-store-'));
     try {
-      await expect(createFileChannelStore(dir).delete('0xmissing')).resolves.toBeUndefined();
+      await expect(createFileChannelStore(dir).delete(missingChannelId)).resolves.toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -60,14 +76,14 @@ describe('createFileChannelStore', () => {
 describe('createLocalStorageChannelStore', () => {
   it('round-trips a channel context via a Storage object', async () => {
     const store = createLocalStorageChannelStore(fakeLocalStorage());
-    await store.set('0xchan', sampleContext);
-    expect(await store.get('0xchan')).toEqual(sampleContext);
-    await store.delete('0xchan');
-    expect(await store.get('0xchan')).toBeUndefined();
+    await store.set(channelId, sampleContext);
+    expect(await store.get(channelId)).toEqual(sampleContext);
+    await store.delete(channelId);
+    expect(await store.get(channelId)).toBeUndefined();
   });
 
   it('get of a missing key returns undefined', async () => {
-    expect(await createLocalStorageChannelStore(fakeLocalStorage()).get('0xmissing'))
+    expect(await createLocalStorageChannelStore(fakeLocalStorage()).get(missingChannelId))
       .toBeUndefined();
   });
 });
