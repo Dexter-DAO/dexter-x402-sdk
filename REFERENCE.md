@@ -346,7 +346,37 @@ console.log(escrow.state); // { deposited: '0.3', spent: '0.16', remaining: '0.1
 await escrow.close();
 ```
 
-State auto-persists and resumes with `resumeBatchChannel({ wallet, network, salt })`. If the seller never settles, reclaim unspent escrow with `forceWithdraw()` then `finalizeWithdraw()`. The seller mounts `createBatchSettlementSeller(config)` as an Express handler; Dexter operates the authorizer, so the seller manages no signing key. The returned handler exposes `.stop()`, `.closeAll()`, `.closeChannel(id)`.
+`deposit` is a fixed USDC budget. Opening with `deposit: '10'` authorizes one
+$10 deposit and purchases within that total, including a single purchase above
+$1. Amounts support at most six decimal places. The handle binds to the first
+channel configuration it uses and rejects a different seller, token, or
+withdrawal delay. Exhaustion stops spending; funding another channel requires a
+new `openBatchChannel` call.
+
+Give each channel one owner and persist its salt and channel store. After a
+funding attempt with an uncertain outcome, the handle refuses another deposit
+signature. Reconcile that attempt before resuming the existing channel. Use
+`resumeBatchChannel` after a process restart; it spends existing escrow and
+refuses requests that require more funding. Its default per-call limit is one
+USDC. Set a higher limit explicitly when needed:
+
+```typescript
+import { resumeBatchChannel } from '@dexterai/x402/batch-settlement';
+
+const resumed = await resumeBatchChannel({
+  wallet: evmWallet,
+  network: 'eip155:8453',
+  salt: savedSalt,
+  store: savedChannelStore,
+  maxAmountPerPayment: '2.00',
+});
+```
+
+If the seller never settles, reclaim unspent escrow with `forceWithdraw()` then
+`finalizeWithdraw()`. The seller mounts `createBatchSettlementSeller(config)` as
+an Express handler; Dexter operates the authorizer, so the seller manages no
+signing key. The returned handler exposes `.stop()`, `.closeAll()`, and
+`.closeChannel(id)`.
 
 ---
 

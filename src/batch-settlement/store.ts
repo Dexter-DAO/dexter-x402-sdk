@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { FileClientChannelStorage } from '@x402/evm/batch-settlement/client';
+import { FileClientChannelStorage } from '@x402/evm/batch-settlement/client/file-storage';
 import type { ChannelStore } from './types';
 
 /**
