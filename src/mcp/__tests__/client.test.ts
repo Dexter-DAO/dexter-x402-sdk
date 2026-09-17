@@ -5,6 +5,27 @@ import { output, payment, receipt, request, requirements } from './fixtures';
 import type { McpToolCall, McpToolResult } from '../types';
 
 describe('MCP buyer exchange', () => {
+  it('refuses required payment identifiers before recording or dispatching a new payment', async () => {
+    const transport = vi.fn(async () => output);
+    const beforeDispatch = vi.fn(async () => {});
+    await expect(callMcpToolWithPayment({ transport, request, payment, beforeDispatch,
+      paymentRequired: { ...requirements, extensions: { 'payment-identifier': { info: { required: true } } } },
+    })).rejects.toThrow('unsupported_required_payment_identifier');
+    expect(transport).not.toHaveBeenCalled();
+    expect(beforeDispatch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { 'payment-identifier': { info: { required: false } } },
+    { 'other-extension': { info: { required: true } } },
+  ])('preserves optional and unrelated extensions: %j', async extensions => {
+    const transport = vi.fn(async () => ({ ...output, _meta: { 'x402/payment-response': receipt } }));
+    expect(await callMcpToolWithPayment({ transport, request, payment, beforeDispatch: async () => {},
+      paymentRequired: { ...requirements, extensions },
+    })).toMatchObject({ paymentStatus: 'seller_reported_settled' });
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
   // Hand-written peer fixture, deliberately independent of our seller encoder.
   const challenge: McpToolResult = { isError: true, content: [{ type: 'text', text: JSON.stringify(requirements) }] };
 

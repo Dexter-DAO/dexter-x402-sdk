@@ -301,6 +301,7 @@ export interface AccessPassClientConfig {
  * SDK error codes
  */
 export type X402ErrorCode =
+  | 'unsupported_required_payment_identifier'
   // Client errors
   | 'missing_payment_required_header'
   | 'invalid_payment_required'

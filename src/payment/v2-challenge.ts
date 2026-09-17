@@ -58,6 +58,8 @@ export async function parseV2Challenge(res: Response): Promise<PaymentChallenge 
   return {
     x402Version: 2,
     options: toChallengeOptions(accepts),
+    extensions: decoded.extensions && typeof decoded.extensions === 'object' && !Array.isArray(decoded.extensions)
+      ? decoded.extensions as Record<string, unknown> : undefined,
     resourceUrl:
       decoded.resource && typeof decoded.resource === 'object'
         ? String((decoded.resource as Record<string, unknown>).url ?? '')

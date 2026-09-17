@@ -19,15 +19,18 @@ export function isValidRouteTemplate(value: string | undefined): value is string
   if (!value) return false;
   if (!ROUTE_TEMPLATE_REGEX.test(value)) return false;
 
-  // Decode percent-encoding before the traversal/scheme checks so that
-  // e.g. %2e%2e is caught.
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(value);
-  } catch {
-    return false;
+  // Decode to a fixed point: an encoded percent sign can hide a second layer
+  // of traversal or a URL scheme. Bound the work and reject unresolved input.
+  let decoded = value;
+  for (let depth = 0; depth < 5; depth++) {
+    if (decoded.includes('..') || decoded.includes('://')) return false;
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) return true;
+      decoded = next;
+    } catch {
+      return false;
+    }
   }
-  if (decoded.includes('..')) return false;
-  if (decoded.includes('://')) return false;
-  return true;
+  return false;
 }

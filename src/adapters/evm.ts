@@ -5,6 +5,7 @@
  * Uses EIP-712 typed data signing for x402 v2 payments.
  */
 
+import { exactPaymentCapabilityError } from '../payment/exact-capability';
 import type {
   ChainAdapter,
   AdapterConfig,
@@ -412,6 +413,8 @@ export class EvmAdapter implements ChainAdapter {
     wallet: unknown,
     rpcUrl?: string
   ): Promise<SignedTransaction> {
+    const unsupported = exactPaymentCapabilityError(accept, 'evm');
+    if (unsupported) throw new Error(unsupported);
     if (!isEvmWallet(wallet)) {
       throw new Error('Invalid EVM wallet');
     }
@@ -1047,4 +1050,3 @@ export class EvmAdapter implements ChainAdapter {
 export function createEvmAdapter(config?: AdapterConfig): EvmAdapter {
   return new EvmAdapter(config);
 }
-

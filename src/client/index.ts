@@ -103,8 +103,8 @@ export type {
 // Reads the payment receipt from a paid `Response`. Works with `payAndFetch`
 // and the legacy clients. NOT deprecated.
 
-export { getPaymentReceipt } from './x402-client';
-export type { PaymentReceipt } from './x402-client';
+export { getPaymentReceipt, capturePaymentReceipt } from './x402-client';
+export type { PaymentReceipt, PaymentReceiptAttempt } from './x402-client';
 
 // ─── Shared types / constants ──────────────────────────────────────────────
 

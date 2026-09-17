@@ -7,6 +7,7 @@
 
 import type { WalletSet } from '../adapters/types';
 import type { Tab } from '../tab/types';
+import type { PaymentReceipt } from '../client/x402-client';
 
 /** A network reference, kept in BOTH forms so neither version loses info. */
 export interface NetworkRef {
@@ -37,6 +38,8 @@ export interface PaymentChallenge {
   x402Version: 1 | 2;
   options: ChallengeOption[];
   resourceUrl?: string;
+  /** Extension requirements advertised by the merchant. */
+  extensions?: Record<string, unknown>;
 }
 
 /**
@@ -72,6 +75,8 @@ export type PayResult =
       amountPaid: string;
       network: NetworkRef;
       txSignature?: string;
+      /** Merchant settlement evidence, when a receipt was returned. */
+      paymentReceipt?: PaymentReceipt;
     }
   | {
       ok: true;
@@ -90,20 +95,29 @@ export type PayResult =
          *  failed (their facilitator errored). Not our payload — a
          *  merchant-side defect. `detail` carries their verbatim error. */
         | 'settlement_failed'
+        /** Settlement succeeded, but the merchant returned an unsuccessful HTTP
+         *  response. Recover the same result; another authorization can charge again. */
+        | 'delivery_failed'
         | 'no_payment_options'
         /** No payment was sent before the deadline — the unpaid probe (or
          *  build/sign) ran past the pre-payment timeout. No money moved;
          *  safe to retry. */
         | 'timeout'
-        /** The payment authorization WAS sent to the merchant, the merchant
-         *  did not respond before the deadline, and settlement could not be
-         *  confirmed. The payment MAY have settled on-chain. DO NOT
+        /** The payment authorization WAS sent, but settlement could not be
+         *  confirmed: the response may be absent, pending, malformed or
+         *  inconsistent with the dispatched payment. It MAY have settled. DO NOT
          *  blind-retry — a retry signs a fresh authorization and can pay
          *  again. `detail` explains the state. */
         | 'payment_unconfirmed'
         | 'budget_exceeded'
         | 'error';
       detail?: string;
+      /** Original response, retained even when HTTP succeeded but settlement did not. */
+      response?: Response;
+      /** Transaction identifier reported by the merchant; not proof of settlement. */
+      txSignature?: string;
+      /** Saved settlement evidence for recovery of this same payment. */
+      paymentReceipt?: PaymentReceipt;
     };
 
 /** A funded wallet set (re-uses the SDK's existing WalletSet shape). */

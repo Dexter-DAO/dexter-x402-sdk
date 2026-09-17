@@ -15,22 +15,14 @@ import type {
 } from './types';
 import type { WalletSet, SettlementProbe } from '../adapters/types';
 import type { Tab, SignedVoucher } from '../tab/types';
-import { createX402Client } from '../client/x402-client';
+import { createX402Client, getPaymentReceipt } from '../client/x402-client';
+import type { PaymentAccept } from '../types';
 import { voucherToHeader } from '../tab/tab';
 import { classifyPaidFailure } from './errors';
 import { confirmSettlement } from './confirm-settlement';
-import { parseV2Challenge, decodePaymentRequiredHeader } from './v2-challenge';
-
-/**
- * Schemes the GENERIC per-request path can actually construct a payment
- * for: 'exact' (EIP-3009 / signed SPL transfer) and 'exact-approval'
- * (approval-based chains, routed inside the EVM adapter). Session-object
- * schemes — 'batch-settlement', 'tab' — are payable only through their own
- * live objects (openBatchChannel / openTab), never by signing a one-shot
- * transfer, so the generic picker must skip them rather than submit a
- * plain transfer against them.
- */
-const GENERIC_PAYABLE_SCHEMES = new Set(['exact', 'exact-approval']);
+import { parseV2Challenge } from './v2-challenge';
+import { exactPaymentCapabilityError, requiresPaymentIdentifier } from './exact-capability';
+import { toNetworkRef } from './network-map';
 
 /**
  * Attempt to pay a `tab`-scheme option with the caller's open tab by
@@ -156,6 +148,9 @@ export const v2Strategy: PaymentStrategy = {
     wallets: WalletSet,
     opts: PayAndFetchOptions,
   ): Promise<PayResult> {
+    if (requiresPaymentIdentifier(challenge.extensions)) {
+      return { ok: false, reason: 'no_payment_options', detail: 'unsupported_required_payment_identifier' };
+    }
     // ── Tab negotiation ────────────────────────────────────────────────
     // When the caller holds an open tab and the merchant offers scheme
     // 'tab' (SVM-only) paying TO the tab's counterparty, pay by voucher
@@ -180,13 +175,13 @@ export const v2Strategy: PaymentStrategy = {
     // option without opts.tab (or 'batch-settlement' without a channel) is
     // skipped, never paid as a plain transfer.
     const payable = challenge.options.filter(o =>
-      GENERIC_PAYABLE_SCHEMES.has(o.scheme),
+      !exactPaymentCapabilityError(o, o.network.family),
     );
     if (payable.length === 0) {
       return {
         ok: false,
         reason: 'no_payment_options',
-        detail: `no generically payable scheme offered (got: ${challenge.options.map(o => o.scheme).join(', ')})`,
+        detail: `no supported payment capability offered: ${challenge.options.map(o => exactPaymentCapabilityError(o, o.network.family)).join('; ')}`,
       };
     }
 
@@ -222,15 +217,17 @@ export const v2Strategy: PaymentStrategy = {
     let timeoutId = setTimeout(() => controller.abort(), preTimeoutMs);
     let paymentDispatched = false;
     let settlementProbe: SettlementProbe | undefined;
+    let dispatchedAccept: PaymentAccept | undefined;
 
     const onPaymentDispatched = (
-      _accept: unknown,
+      accept: PaymentAccept,
       probe?: SettlementProbe,
     ) => {
       // Crossing the seam: the payment is leaving our hands. Swap the short
       // pre-payment deadline for the long post-payment one, and keep the
       // probe so a post-payment abort can confirm settlement on-chain.
       paymentDispatched = true;
+      dispatchedAccept = accept;
       settlementProbe = probe;
       clearTimeout(timeoutId);
       timeoutId = setTimeout(() => controller.abort(), postTimeoutMs);
@@ -266,37 +263,49 @@ export const v2Strategy: PaymentStrategy = {
       const response = await client.fetch(url, freshInit);
       clearTimeout(timeoutId);
 
-      if (!response.ok) {
-        // Paid retry still failed — distinguish "merchant rejected our
-        // payment" from "merchant accepted it, their settlement failed",
-        // and carry their verbatim error so the caller sees whose fault.
-        return { ok: false, ...(await classifyPaidFailure(response)) };
+      if (!paymentDispatched) {
+        // The second probe may now be free. No authorization left this client.
+        return response.ok ? { ok: true, paid: false, response }
+          : { ok: false, response, ...(await classifyPaidFailure(response)) };
       }
 
-      // The PAYMENT-RESPONSE header is a base64-encoded JSON blob of the form
-      // {"success":true,"transaction":"<hash>","network":"..."}.
-      // Extract the `transaction` field as the actual tx hash; fall back to
-      // undefined rather than exposing the raw base64 blob to callers.
-      let txSignature: string | undefined;
-      const paymentResponseHeader = response.headers.get('PAYMENT-RESPONSE');
-      if (paymentResponseHeader) {
-        try {
-          const decoded = decodePaymentRequiredHeader(paymentResponseHeader) as Record<string, unknown>;
-          if (decoded && typeof decoded.transaction === 'string') {
-            txSignature = decoded.transaction;
-          }
-        } catch {
-          // Malformed header — leave txSignature undefined.
-        }
+      const paymentReceipt = getPaymentReceipt(response);
+      const txSignature = typeof paymentReceipt?.transaction === 'string'
+        ? paymentReceipt.transaction : undefined;
+      if (paymentReceipt?.settlementStatus !== 'settled') {
+        const failed = paymentReceipt?.settlementStatus === 'failed';
+        return {
+          ok: false,
+          reason: failed ? 'settlement_failed' : 'payment_unconfirmed',
+          detail: `${failed ? 'Merchant reports settlement failure' : 'Settlement is unconfirmed'}${
+            paymentReceipt?.errorReason || paymentReceipt?.errorCode
+              ? ` (${paymentReceipt.errorReason ?? paymentReceipt.errorCode})` : ''
+          }. Recover or reconcile this same payment; do not create a new authorization.`,
+          response,
+          txSignature,
+          paymentReceipt,
+        };
+      }
+
+      if (!response.ok) {
+        return {
+          ok: false,
+          reason: 'delivery_failed',
+          detail: `Payment settled, but the merchant returned HTTP ${response.status}. Recover the result for this same payment; do not create a new authorization.`,
+          response,
+          txSignature,
+          paymentReceipt,
+        };
       }
 
       return {
         ok: true,
         paid: true,
         response,
-        amountPaid: option.amount,
-        network: option.network,
+        amountPaid: dispatchedAccept?.amount ?? dispatchedAccept?.maxAmountRequired ?? option.amount,
+        network: toNetworkRef(dispatchedAccept?.network ?? '') ?? option.network,
         txSignature,
+        paymentReceipt,
       };
     } catch (err: unknown) {
       clearTimeout(timeoutId);
@@ -334,6 +343,13 @@ export const v2Strategy: PaymentStrategy = {
           ok: false,
           reason: 'payment_unconfirmed',
           detail: confirmation.detail,
+        };
+      }
+      if (paymentDispatched) {
+        return {
+          ok: false,
+          reason: 'payment_unconfirmed',
+          detail: `${e?.message ?? String(err)}. Recover or reconcile this same payment; do not create a new authorization.`,
         };
       }
       return { ok: false, reason: 'error', detail: e?.message ?? String(err) };

@@ -7,17 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+## [6.0.1] - 2026-09-17
 
-- Updates `@x402/core`, `@x402/evm`, and `@x402/extensions` from 2.12.0 to 2.26.0
-  and uses the upstream file-storage entrypoints.
-- Batch buyers preserve the exact USDC deposit specified by the caller. Each
-  handle uses one channel configuration and refuses automatic top-ups or a
-  second initial funding attempt. Requests and cumulative vouchers stay within
-  the authorized budget, including when recovering a larger existing escrow.
-- `resumeBatchChannel` accepts `maxAmountPerPayment` in USDC, with a default of
-  `"1"`. Resume spends existing escrow and refuses new funding. Deposit and
-  per-call amounts exceeding six decimal places are rejected before signing.
+### Fixed
+
+- HTTP buyers reject unsupported payment flows and transfer methods before
+  signing. HTTP and MCP buyers refuse required payment identifiers until the
+  client can satisfy them.
+- `payAndFetch` keeps pending, missing, malformed or mismatched receipts
+  unconfirmed. Failures retain the merchant response, transaction identifier
+  and receipt so callers can recover the same purchase. Receipts expose the
+  authorized amount as `attemptedAmountAtomic`; `amountAtomic` requires a
+  matching successful settlement receipt.
+- Paid HTTP error responses retain their original receipts, including HTTP
+  402. `capturePaymentReceipt` lets prepared-purchase clients apply the same
+  classification. A settled payment with an unsuccessful merchant response
+  returns `delivery_failed`, with its receipt available for result recovery.
+- Bazaar route validation rejects nested percent-encoded traversal and URL
+  schemes.
 
 ## [6.0.0] - 2026-09-16
 
@@ -32,6 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   application integration. See [the MCP guide](./docs/mcp.md).
 
 ### Changed
+
+- Updates `@x402/core`, `@x402/evm`, and `@x402/extensions` from 2.12.0 to 2.26.0
+  and uses the upstream file-storage entrypoints.
+- Batch buyers preserve the exact USDC deposit specified by the caller. Each
+  handle uses one channel configuration and refuses automatic top-ups or a
+  second initial funding attempt. Requests and cumulative vouchers stay within
+  the authorized budget, including when recovering a larger existing escrow.
+- `resumeBatchChannel` accepts `maxAmountPerPayment` in USDC, with a default of
+  `"1"`. Resume spends existing escrow and refuses new funding. Deposit and
+  per-call amounts exceeding six decimal places are rejected before signing.
 
 - Promotes the V2 Tab buyer and seller contracts from the v6 release candidates.
   Install with the exact peer `@dexterai/vault@0.43.4` and Node.js 22 or newer.
