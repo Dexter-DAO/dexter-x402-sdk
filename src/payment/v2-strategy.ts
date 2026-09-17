@@ -63,6 +63,7 @@ async function payWithTab(
   const headers = new Headers(requestInit.headers ?? undefined);
   headers.set('X-Tab-Voucher', voucherToHeader(signed));
   const freshInit: RequestInit = {
+    ...(requestInit.redirect !== undefined ? { redirect: requestInit.redirect } : {}),
     method: requestInit.method ?? 'GET',
     headers,
   };
@@ -251,6 +252,7 @@ export const v2Strategy: PaymentStrategy = {
 
     // Build a fresh RequestInit — never reuse a potentially-consumed body.
     const freshInit: RequestInit = {
+      ...(requestInit.redirect !== undefined ? { redirect: requestInit.redirect } : {}),
       method: requestInit.method ?? 'GET',
       headers: requestInit.headers,
       signal: composedSignal,
