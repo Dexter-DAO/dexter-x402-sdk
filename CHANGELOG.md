@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.2] - 2026-09-17
+
+### Fixed
+
+- CommonJS client imports require `@dexterai/x402-core` 1.5.2 or newer.
+  The earlier dependency range allowed installed versions without a CommonJS
+  export. Package qualification now checks client imports with the declared
+  minimum core version, alongside the existing Tab and MCP checks.
+
 ## [6.0.1] - 2026-09-17
 
 ### Fixed

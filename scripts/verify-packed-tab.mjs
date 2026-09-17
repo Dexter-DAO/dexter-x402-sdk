@@ -31,18 +31,22 @@ function run(command, args, cwd, capture = false) {
 // A pre-publication Vault artifact can be supplied explicitly. Its installed
 // version must still match the exact peer contract in the release manifest.
 const vault = process.argv[2] ? resolve(process.argv[2]) : `@dexterai/vault@${manifest.peerDependencies['@dexterai/vault']}`;
+const coreMinimum = manifest.dependencies['@dexterai/x402-core'].match(/^\^(\d+\.\d+\.\d+)$/)?.[1];
+if (!coreMinimum) throw new Error('x402-core dependency must declare an explicit caret minimum');
 const packed = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', proof], root, true))[0];
-run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', join(proof, packed.filename), vault], consumer);
+run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', join(proof, packed.filename), vault,
+  `@dexterai/x402-core@${coreMinimum}`], consumer);
 for (const name of ['@dexterai/x402', '@dexterai/vault']) {
   const installed = JSON.parse(readFileSync(join(consumer, 'node_modules', name, 'package.json'), 'utf8'));
   const expected = name === manifest.name ? manifest.version : manifest.peerDependencies[name];
   if (installed.version !== expected) throw new Error(`${name}: expected ${expected}, found ${installed.version}`);
 }
+run(process.execPath, [join(root, 'scripts/verify-client-package.mjs'), consumer, coreMinimum], root);
 run(process.execPath, [join(root, 'scripts/verify-tab-package.mjs'), consumer], root);
 run(process.execPath, [join(root, 'scripts/verify-mcp-package.mjs'), consumer], root);
 writeFileSync(join(proof, 'proof.json'), JSON.stringify({
   sourceCommit: run('git', ['rev-parse', 'HEAD'], root, true).trim(),
-  package: packed, vault, consumer,
-  scope: 'Installed ESM/CJS Tab and MCP compatibility with local fixtures; no payment or deployment proof',
+  package: packed, vault, consumer, coreMinimum,
+  scope: 'Installed ESM/CJS client, Tab and MCP compatibility at the declared core minimum; local fixtures only',
 }, null, 2) + '\n');
 console.log(`Package proof: ${join(proof, 'proof.json')}`);
