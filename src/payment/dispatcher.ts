@@ -11,6 +11,8 @@ import { v2Strategy } from './v2-strategy';
 import { v1Strategy } from './v1-strategy';
 import { toSiwxSigner } from './siwx-signer';
 import { errorDetail } from './errors';
+import { decodePaymentRequiredHeader } from '@x402/core/http';
+import type { SIWxExtension } from '@x402/extensions/sign-in-with-x';
 
 // v2 first: it is the current protocol version. v1 is the fallback.
 const STRATEGIES: PaymentStrategy[] = [v2Strategy, v1Strategy];
@@ -29,32 +31,82 @@ export async function detectStrategy(
   return null;
 }
 
-/**
- * Build the fetch used for the probe. When the WalletSet can produce a
- * SIW-X signer, the probe goes through @x402/extensions' wrapFetchWithSIWx,
- * which signs + retries Sign-In-With-X challenges and is a transparent
- * pass-through for everything else. When no signer is derivable, the bare
- * global fetch is used. wrapFetchWithSIWx is imported dynamically so
- * consumers that never hit SIW-X do not pay its bundle cost.
- */
-async function buildProbeFetch(wallets: WalletSet): Promise<typeof fetch> {
+type ProbeResult = {
+  response: Response;
+  paymentUrl: string;
+  paymentInit: RequestInit;
+};
+
+/** Keep a wallet proof and any following payment at the challenged endpoint. */
+async function buildProbeFetch(
+  wallets: WalletSet,
+): Promise<(url: string, init: RequestInit) => Promise<ProbeResult>> {
+  const bareProbe = async (url: string, init: RequestInit): Promise<ProbeResult> => ({
+    response: await fetch(url, init), paymentUrl: url, paymentInit: init,
+  });
   const signer = toSiwxSigner(wallets);
-  if (!signer) return fetch;
+  if (!signer) return bareProbe;
+  let mod: typeof import('@x402/extensions/sign-in-with-x');
   try {
-    const mod = await import('@x402/extensions/sign-in-with-x');
-    return mod.wrapFetchWithSIWx(fetch, signer) as typeof fetch;
+    mod = await import('@x402/extensions/sign-in-with-x');
   } catch (err) {
-    // If the extension cannot load, fall back to bare fetch — SIW-X
-    // merchants will then fail their challenge, but payment still works.
-    // Warn loudly: a broken @x402/extensions install must not silently
-    // degrade every SIW-X merchant to no-auth with zero signal.
     console.warn(
       `[x402] SIW-X unavailable — @x402/extensions failed to load; ` +
         `SIW-X merchants will not authenticate. ` +
         `${errorDetail(err)}`,
     );
-    return fetch;
+    return bareProbe;
   }
+  return async (url, init) => {
+    const request = new Request(url, init);
+    const retry = request.clone();
+    const response = await fetch(request);
+    const original = { response, paymentUrl: url, paymentInit: init };
+    if (response.status !== 402) return original;
+    const header = response.headers.get('PAYMENT-REQUIRED');
+    if (!header) return original;
+    const required = decodePaymentRequiredHeader(header);
+    const extension = required.extensions?.[mod.SIGN_IN_WITH_X] as SIWxExtension | undefined;
+    if (!extension?.supportedChains) return original;
+    if (retry.headers.has(mod.SIGN_IN_WITH_X)) {
+      throw new Error('SIWX authentication already attempted');
+    }
+    const network = required.accepts?.[0]?.network;
+    const chain = extension.supportedChains.find((candidate) => candidate.chainId === network);
+    if (!chain) return original;
+    const finalUrl = response.url || request.url;
+    if (response.redirected && !['GET', 'HEAD'].includes(request.method)) {
+      throw new Error('SIWX cannot safely replay a redirected non-GET/HEAD request; use the final resource URL');
+    }
+    const info = { ...extension.info, chainId: chain.chainId, type: chain.type };
+    // A rejected origin must not become permission to pay another endpoint.
+    mod.assertSIWxChallengeBoundToOrigin(info, finalUrl);
+    if (response.redirected || new URL(finalUrl).origin !== new URL(request.url).origin) {
+      // The response does not reveal intermediate origins. Never restore
+      // credentials that Fetch may have removed anywhere along the redirect.
+      for (const name of ['authorization', 'cookie', 'cookie2', 'proxy-authorization', 'host']) {
+        retry.headers.delete(name);
+      }
+    }
+    const paymentHeaders = new Headers(retry.headers);
+    const bound = {
+      response,
+      paymentUrl: finalUrl,
+      paymentInit: { ...init, headers: Object.fromEntries(paymentHeaders), redirect: 'error' as const },
+    };
+    try {
+      const payload = await mod.createSIWxPayload(info, signer, finalUrl);
+      retry.headers.set(mod.SIGN_IN_WITH_X, mod.encodeSIWxHeader(payload));
+    } catch {
+      // Signing may be unavailable; the ordinary paid option stays bound to
+      // the same validated merchant. No signed request has been dispatched.
+      return bound;
+    }
+    // Fetch failures (including redirects) escape to payAndFetch's typed
+    // error. They must not trigger a new payment or forward the proof.
+    const signedRequest = new Request(new Request(finalUrl, retry), { redirect: 'error' });
+    return { ...bound, response: await fetch(signedRequest) };
+  };
 }
 
 /**
@@ -86,12 +138,17 @@ export async function payAndFetch(
   }
 
   let probe: Response;
+  let paymentUrl = url;
+  let paymentInit = requestInit;
   try {
     // Probe through a SIW-X-aware fetch — it signs Sign-In-With-X
     // challenges transparently and is a pass-through otherwise. Body is
     // guaranteed string-or-nullish by the guard above, safe to re-send.
     const probeFetch = await buildProbeFetch(wallets);
-    probe = await probeFetch(url, { ...requestInit });
+    const result = await probeFetch(url, { ...requestInit });
+    probe = result.response;
+    paymentUrl = result.paymentUrl;
+    paymentInit = result.paymentInit;
   } catch (err) {
     return {
       ok: false,
@@ -116,7 +173,7 @@ export async function payAndFetch(
   for (const strategy of STRATEGIES) {
     const challenge = await strategy.parseChallenge(probe.clone());
     if (challenge) {
-      return strategy.pay(url, requestInit, challenge, wallets, opts);
+      return strategy.pay(paymentUrl, paymentInit, challenge, wallets, opts);
     }
   }
   return { ok: false, reason: 'no_payment_options' };

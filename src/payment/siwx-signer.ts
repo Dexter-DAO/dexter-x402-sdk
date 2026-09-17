@@ -1,7 +1,7 @@
 /**
  * SIW-X signer adapter.
  *
- * wrapFetchWithSIWx (from @x402/extensions) needs a SIWxSigner. The
+ * createSIWxPayload (from @x402/extensions) needs a SIWxSigner. The
  * payment seam carries a WalletSet of wallet *objects*; this maps that
  * WalletSet to a SIWxSigner so the dispatcher can offer Sign-In-With-X
  * to every payAndFetch caller.
@@ -18,7 +18,7 @@ import type { WalletSet } from '../adapters/types';
 import { KEYPAIR_SYMBOL } from '../client/keypair-wallet';
 
 /**
- * Map a WalletSet to a SIWxSigner for wrapFetchWithSIWx, or null when
+ * Map a WalletSet to a SIWxSigner for createSIWxPayload, or null when
  * neither wallet can sign SIW-X proofs.
  */
 export function toSiwxSigner(wallets: WalletSet): SIWxSigner | null {

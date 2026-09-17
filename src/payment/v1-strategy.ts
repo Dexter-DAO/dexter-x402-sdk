@@ -110,6 +110,7 @@ export const v1Strategy: PaymentStrategy = {
           : controller.signal;
 
       const freshInit: RequestInit = {
+        ...(requestInit.redirect !== undefined ? { redirect: requestInit.redirect } : {}),
         method: requestInit.method,
         headers,
         signal,
