@@ -87,7 +87,7 @@ describe('x402 client — Request-object input', () => {
 
     // No wallet for "unobtainium" → throws no_matching_payment_option.
     // It must NOT throw the Request-reuse TypeError.
-    await expect(client.fetch(request)).rejects.toThrow(/no_matching_payment_option|No connected wallet/);
+    await expect(client.fetch(request)).rejects.toMatchObject({ code: 'no_matching_payment_option' });
     expect(calls).toBe(1); // probe happened; payment-option lookup failed before retry
     expect(bodies[0]).toBe(JSON.stringify({ token: 'abc' }));
   });

@@ -38,6 +38,8 @@ import type {
   AccessPassClientConfig,
 } from '../types';
 import { X402Error } from '../types';
+import { exactPaymentCapabilityError, requiresPaymentIdentifier } from '../payment/exact-capability';
+import { decodePaymentRequiredHeader } from '../payment/v2-challenge';
 import { createSolanaAdapter, createEvmAdapter, isSolanaWallet, isEvmWallet, isKnownUSDC } from '../adapters';
 
 /**
@@ -96,7 +98,7 @@ import { getChainDisplayName as canonicalGetChainDisplayName } from '../utils';
 const receiptStore = new WeakMap<Response, PaymentReceipt>();
 
 /**
- * Payment receipt attached to a successful x402 response.
+ * Settlement evidence attached to a response after payment dispatch.
  * Access via `getPaymentReceipt(response)`.
  */
 export interface PaymentReceipt {
@@ -110,10 +112,18 @@ export interface PaymentReceipt {
   payer?: string;
   /** Protocol extensions (e.g., sponsored-access recommendations) */
   extensions?: Record<string, unknown>;
+  /** Merchant-reported settlement error. This alone does not prove no debit occurred. */
+  errorReason?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  /** Interpretation of the receipt for the exact dispatched requirements. */
+  settlementStatus?: 'settled' | 'pending' | 'failed' | 'unconfirmed';
+  /** Amount authorized for this attempt, whether or not settlement is confirmed. */
+  attemptedAmountAtomic?: string;
   /**
    * Amount actually paid, in atomic units (e.g. '10000' for 0.01 USDC).
-   * Sourced from the payment requirement the client settled — the facilitator's
-   * PAYMENT-RESPONSE receipt does not echo the amount, so the client records it.
+   * Set from the dispatched requirement only when the matching receipt reports
+   * successful settlement. An unknown outcome exposes attemptedAmountAtomic.
    */
   amountAtomic?: string;
   /**
@@ -397,11 +407,10 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       // schemes — 'tab', 'batch-settlement' — are paid through their own
       // live objects; signing a plain transfer against them would spend
       // money the seller's scheme handler cannot credit.
-      const scheme = accept.scheme ?? 'exact';
-      if (scheme !== 'exact' && scheme !== 'exact-approval') continue;
-
       const adapter = adapters.find(a => a.canHandle(accept.network));
       if (!adapter) continue;
+      const family = adapter.name === 'Solana' ? 'svm' : 'evm';
+      if (exactPaymentCapabilityError(accept, family)) continue;
 
       // Find the right wallet for this adapter
       let wallet: unknown;
@@ -504,6 +513,10 @@ export function createX402Client(config: X402ClientConfig): X402Client {
 
     const match = findPaymentOption(requirements.accepts);
     if (!match) return null;
+
+    if (requiresPaymentIdentifier(requirements.extensions)) {
+      throw new X402Error('unsupported_required_payment_identifier', 'Required payment identifiers are not supported by this client');
+    }
 
     const { accept, adapter, wallet } = match;
 
@@ -685,6 +698,10 @@ export function createX402Client(config: X402ClientConfig): X402Client {
 
     log('Payment requirements:', requirements);
 
+    if (requiresPaymentIdentifier(requirements.extensions)) {
+      throw new X402Error('unsupported_required_payment_identifier', 'Required payment identifiers are not supported by this client');
+    }
+
     // Capture X-Quote-Hash if present (for dynamic pricing validation)
     const quoteHash = response.headers.get('X-Quote-Hash');
     if (quoteHash) {
@@ -697,7 +714,7 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       const availableNetworks = requirements.accepts.map(a => a.network).join(', ');
       throw new X402Error(
         'no_matching_payment_option',
-        `No connected wallet for any available network: ${availableNetworks}`
+        `No supported payment option with a connected wallet for: ${availableNetworks}`
       );
     }
 
@@ -855,41 +872,39 @@ export function createX402Client(config: X402ClientConfig): X402Client {
 
     log('Retry response status:', retryResponse.status);
 
-    if (retryResponse.status === 402) {
-      // Try to get rejection reason from body
-      let reason = 'unknown';
-      try {
-        const body = (await retryResponse.clone().json()) as Record<string, unknown>;
-        reason = String(body.error || body.message || JSON.stringify(body));
-        log('Rejection reason:', reason);
-      } catch {
-        // Ignore
-      }
-      throw new X402Error(
-        'payment_rejected',
-        `Payment was rejected by the server: ${reason}`
-      );
-    }
-
-    // Decode PAYMENT-RESPONSE header and store as typed receipt. The facilitator
-    // receipt confirms settlement (success, tx hash) but does not echo the
-    // amount, so the client stamps in the atomic amount + decimals it just paid
-    // — making `getPaymentReceipt(response)` a complete record of the payment.
+    // Capture settlement evidence before classifying HTTP status. In particular,
+    // a 402 can carry a pending receipt for an already-dispatched payment.
     const paymentResponseHeader = retryResponse.headers.get('PAYMENT-RESPONSE');
     let receipt: PaymentReceipt | undefined;
     if (paymentResponseHeader) {
       try {
-        receipt = JSON.parse(atob(paymentResponseHeader)) as PaymentReceipt;
+        const decoded = decodePaymentRequiredHeader(paymentResponseHeader);
+        if (decoded && typeof decoded === 'object' && !Array.isArray(decoded)) {
+          receipt = { ...decoded } as PaymentReceipt;
+        }
       } catch {
-        // Non-critical: receipt decoding failed — fall through to a minimal receipt.
+        // Preserve the response/header for the caller; missing evidence cannot
+        // establish settlement merely because the HTTP request succeeded.
       }
     }
-    // Reaching here means the paid retry was accepted (a rejection throws above).
-    // Always store a receipt with the amount, even if the facilitator sent no
-    // PAYMENT-RESPONSE header or it failed to decode — a settled payment must
-    // never look like a free call to `getPaymentReceipt`.
     receipt ??= {};
-    receipt.amountAtomic = paymentAmount;
+    receipt.settlementStatus = 'unconfirmed';
+    const matchingNetwork = receipt.network === accept.network;
+    const errors = [receipt.errorReason, receipt.errorCode].filter((value): value is string => typeof value === 'string' && value.length > 0);
+    if (errors.some(error => /pending|unknown|unconfirmed|timeout|temporar/i.test(error))) {
+      receipt.settlementStatus = 'pending';
+    } else if (receipt.success === true && matchingNetwork && errors.length === 0
+      && typeof receipt.transaction === 'string' && receipt.transaction.trim().length > 0) {
+      receipt.settlementStatus = 'settled';
+    } else if (receipt.success === false && (matchingNetwork || receipt.network === undefined)
+      && errors.length > 0) {
+      receipt.settlementStatus = 'failed';
+    }
+    receipt.attemptedAmountAtomic = paymentAmount;
+    // These fields describe our actual attempt, rather than a merchant-supplied
+    // amount. A negative or mismatched receipt must not manufacture amount paid.
+    if (receipt.settlementStatus === 'settled') receipt.amountAtomic = paymentAmount;
+    else delete receipt.amountAtomic;
     receipt.assetDecimals = decimals;
     receiptStore.set(retryResponse, receipt);
     if (receipt.extensions) {

@@ -1,4 +1,5 @@
 import type { McpPaidCallOutcome, McpPaymentPayload, McpPaymentRequired, McpToolCall, McpToolTransport } from './types';
+import { requiresPaymentIdentifier } from '../payment/exact-capability';
 import {
   MCP_PAYMENT_META, MCP_PAYMENT_STATE_META, getMcpPaymentReceipt, getMcpPaymentRequired,
   attachMcpPayment, isObject, isMcpPaymentPayload, isMcpPaymentRequired, isMcpSettlementPending, matchesMcpPayment, snapshot,
@@ -28,6 +29,9 @@ export async function callMcpToolWithPayment(options: {
   const payment = snapshot(options.payment);
   if (!isMcpPaymentRequired(required) || !isMcpPaymentPayload(payment) || !matchesMcpPayment(required, payment)) {
     throw new Error('Payment does not match the approved MCP requirements');
+  }
+  if (requiresPaymentIdentifier(required.extensions)) {
+    throw new Error('unsupported_required_payment_identifier');
   }
   const request = attachMcpPayment(options.request, payment);
   // The persistence hook receives a separate snapshot so it cannot mutate the

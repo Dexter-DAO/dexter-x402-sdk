@@ -5,6 +5,7 @@
  * Handles transaction building, signing, and balance queries.
  */
 
+import { exactPaymentCapabilityError } from '../payment/exact-capability';
 import {
   PublicKey,
   Connection,
@@ -173,6 +174,8 @@ export class SolanaAdapter implements ChainAdapter {
     wallet: unknown,
     rpcUrl?: string
   ): Promise<SignedTransaction> {
+    const unsupported = exactPaymentCapabilityError(accept, 'svm');
+    if (unsupported) throw new Error(unsupported);
     if (!isSolanaWallet(wallet)) {
       throw new Error('Invalid Solana wallet');
     }
@@ -429,6 +432,5 @@ export class SolanaAdapter implements ChainAdapter {
 export function createSolanaAdapter(config?: AdapterConfig): SolanaAdapter {
   return new SolanaAdapter(config);
 }
-
 
 
