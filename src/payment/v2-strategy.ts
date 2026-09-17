@@ -287,6 +287,17 @@ export const v2Strategy: PaymentStrategy = {
         };
       }
 
+      if (!response.ok) {
+        return {
+          ok: false,
+          reason: 'delivery_failed',
+          detail: `Payment settled, but the merchant returned HTTP ${response.status}. Recover the result for this same payment; do not create a new authorization.`,
+          response,
+          txSignature,
+          paymentReceipt,
+        };
+      }
+
       return {
         ok: true,
         paid: true,

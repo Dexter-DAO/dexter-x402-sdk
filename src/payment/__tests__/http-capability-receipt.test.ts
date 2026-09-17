@@ -150,6 +150,21 @@ describe('HTTP capability negotiation through the actual builders', () => {
 });
 
 describe('HTTP settlement evidence after payment dispatch', () => {
+  it('retains a settled receipt while reporting HTTP delivery failure', async () => {
+    const f = fixture([base], settled, 500);
+    const result = await payAndFetch(url, {}, { evm: f.wallet }, {});
+    expect(result).toMatchObject({
+      ok: false, reason: 'delivery_failed', txSignature: 'fixture-tx',
+      paymentReceipt: { ...settled, settlementStatus: 'settled', amountAtomic: '10000' },
+    });
+    if (!result.ok) {
+      expect(result.response?.status).toBe(500);
+      expect(result.detail).toMatch(/same payment/);
+    }
+    expect(f.signed).toHaveBeenCalledOnce();
+    expect(f.paid).toHaveLength(1);
+  });
+
   it.each([
     { success: true, errorReason: 'settlement_pending' },
     { success: true, errorCode: 'settlement_pending' },

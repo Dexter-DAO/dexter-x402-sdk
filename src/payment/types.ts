@@ -95,6 +95,9 @@ export type PayResult =
          *  failed (their facilitator errored). Not our payload — a
          *  merchant-side defect. `detail` carries their verbatim error. */
         | 'settlement_failed'
+        /** Settlement succeeded, but the merchant returned an unsuccessful HTTP
+         *  response. Recover the same result; another authorization can charge again. */
+        | 'delivery_failed'
         | 'no_payment_options'
         /** No payment was sent before the deadline — the unpaid probe (or
          *  build/sign) ran past the pre-payment timeout. No money moved;

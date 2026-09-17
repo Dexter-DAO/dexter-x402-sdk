@@ -140,6 +140,52 @@ export function getPaymentReceipt(response: Response): PaymentReceipt | undefine
   return receiptStore.get(response);
 }
 
+export interface PaymentReceiptAttempt {
+  network: string;
+  amountAtomic: string;
+  assetDecimals?: number;
+}
+
+/** Capture a dispatched payment's response without consuming its body or issuing another request. */
+export function capturePaymentReceipt(response: Response, attempt: PaymentReceiptAttempt): PaymentReceipt {
+  // Capture settlement evidence before classifying HTTP status. In particular,
+  // a 402 can carry a pending receipt for an already-dispatched payment.
+  const paymentResponseHeader = response.headers.get('PAYMENT-RESPONSE');
+  let receipt: PaymentReceipt | undefined;
+  if (paymentResponseHeader) {
+    try {
+      const decoded = decodePaymentRequiredHeader(paymentResponseHeader);
+      if (decoded && typeof decoded === 'object' && !Array.isArray(decoded)) {
+        receipt = { ...decoded } as PaymentReceipt;
+      }
+    } catch {
+      // Preserve the response/header for the caller; missing evidence cannot
+      // establish settlement merely because the HTTP request succeeded.
+    }
+  }
+  receipt ??= {};
+  receipt.settlementStatus = 'unconfirmed';
+  const matchingNetwork = receipt.network === attempt.network;
+  const errors = [receipt.errorReason, receipt.errorCode].filter((value): value is string => typeof value === 'string' && value.length > 0);
+  if (errors.some(error => /pending|unknown|unconfirmed|timeout|temporar/i.test(error))) {
+    receipt.settlementStatus = 'pending';
+  } else if (receipt.success === true && matchingNetwork && errors.length === 0
+    && typeof receipt.transaction === 'string' && receipt.transaction.trim().length > 0) {
+    receipt.settlementStatus = 'settled';
+  } else if (receipt.success === false && (matchingNetwork || receipt.network === undefined)
+    && errors.length > 0) {
+    receipt.settlementStatus = 'failed';
+  }
+  receipt.attemptedAmountAtomic = attempt.amountAtomic;
+  // These fields describe our actual attempt, rather than a merchant-supplied
+  // amount. A negative or mismatched receipt must not manufacture amount paid.
+  if (receipt.settlementStatus === 'settled') receipt.amountAtomic = attempt.amountAtomic;
+  else delete receipt.amountAtomic;
+  receipt.assetDecimals = attempt.assetDecimals;
+  receiptStore.set(response, receipt);
+  return receipt;
+}
+
 /**
  * Client configuration
  *
@@ -872,41 +918,7 @@ export function createX402Client(config: X402ClientConfig): X402Client {
 
     log('Retry response status:', retryResponse.status);
 
-    // Capture settlement evidence before classifying HTTP status. In particular,
-    // a 402 can carry a pending receipt for an already-dispatched payment.
-    const paymentResponseHeader = retryResponse.headers.get('PAYMENT-RESPONSE');
-    let receipt: PaymentReceipt | undefined;
-    if (paymentResponseHeader) {
-      try {
-        const decoded = decodePaymentRequiredHeader(paymentResponseHeader);
-        if (decoded && typeof decoded === 'object' && !Array.isArray(decoded)) {
-          receipt = { ...decoded } as PaymentReceipt;
-        }
-      } catch {
-        // Preserve the response/header for the caller; missing evidence cannot
-        // establish settlement merely because the HTTP request succeeded.
-      }
-    }
-    receipt ??= {};
-    receipt.settlementStatus = 'unconfirmed';
-    const matchingNetwork = receipt.network === accept.network;
-    const errors = [receipt.errorReason, receipt.errorCode].filter((value): value is string => typeof value === 'string' && value.length > 0);
-    if (errors.some(error => /pending|unknown|unconfirmed|timeout|temporar/i.test(error))) {
-      receipt.settlementStatus = 'pending';
-    } else if (receipt.success === true && matchingNetwork && errors.length === 0
-      && typeof receipt.transaction === 'string' && receipt.transaction.trim().length > 0) {
-      receipt.settlementStatus = 'settled';
-    } else if (receipt.success === false && (matchingNetwork || receipt.network === undefined)
-      && errors.length > 0) {
-      receipt.settlementStatus = 'failed';
-    }
-    receipt.attemptedAmountAtomic = paymentAmount;
-    // These fields describe our actual attempt, rather than a merchant-supplied
-    // amount. A negative or mismatched receipt must not manufacture amount paid.
-    if (receipt.settlementStatus === 'settled') receipt.amountAtomic = paymentAmount;
-    else delete receipt.amountAtomic;
-    receipt.assetDecimals = decimals;
-    receiptStore.set(retryResponse, receipt);
+    const receipt = capturePaymentReceipt(retryResponse, { network: accept.network, amountAtomic: paymentAmount, assetDecimals: decimals });
     if (receipt.extensions) {
       log('Settlement extensions:', Object.keys(receipt.extensions).join(', '));
     }

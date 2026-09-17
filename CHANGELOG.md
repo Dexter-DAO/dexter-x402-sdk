@@ -19,8 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and receipt so callers can recover the same purchase. Receipts expose the
   authorized amount as `attemptedAmountAtomic`; `amountAtomic` requires a
   matching successful settlement receipt.
-- `createX402Client.fetch` returns paid error responses with their receipts,
-  including HTTP 402, so callers can inspect the original payment evidence.
+- Paid HTTP error responses retain their original receipts, including HTTP
+  402. `capturePaymentReceipt` lets prepared-purchase clients apply the same
+  classification. A settled payment with an unsuccessful merchant response
+  returns `delivery_failed`, with its receipt available for result recovery.
 - Bazaar route validation rejects nested percent-encoded traversal and URL
   schemes.
 
