@@ -166,10 +166,12 @@ export function capturePaymentReceipt(response: Response, attempt: PaymentReceip
   receipt ??= {};
   receipt.settlementStatus = 'unconfirmed';
   const matchingNetwork = receipt.network === attempt.network;
+  const errorFieldsValid = [receipt.errorReason, receipt.errorCode, receipt.errorMessage]
+    .every(value => value === undefined || typeof value === 'string');
   const errors = [receipt.errorReason, receipt.errorCode].filter((value): value is string => typeof value === 'string' && value.length > 0);
   if (errors.some(error => /pending|unknown|unconfirmed|timeout|temporar/i.test(error))) {
     receipt.settlementStatus = 'pending';
-  } else if (receipt.success === true && matchingNetwork && errors.length === 0
+  } else if (receipt.success === true && matchingNetwork && errorFieldsValid && errors.length === 0
     && typeof receipt.transaction === 'string' && receipt.transaction.trim().length > 0) {
     receipt.settlementStatus = 'settled';
   } else if (receipt.success === false && (matchingNetwork || receipt.network === undefined)
