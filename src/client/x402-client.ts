@@ -131,6 +131,15 @@ export interface PaymentReceipt {
    * amount: `Number(amountAtomic) / 10 ** assetDecimals`.
    */
   assetDecimals?: number;
+  /** Independent evidence for an incomplete merchant receipt. Inclusion is not finality. */
+  chainConfirmation?: {
+    source: 'eip3009_transaction';
+    finality: 'included';
+    network: string;
+    blockHash: string;
+    blockNumber: string;
+    authorizationNonce: string;
+  };
 }
 
 /**
@@ -146,15 +155,29 @@ export interface PaymentReceiptAttempt {
   assetDecimals?: number;
 }
 
+/** Decode bounded merchant receipt metadata without touching the response body. */
+export function decodePaymentReceiptHeader(raw: string): Record<string, unknown> | undefined {
+  if (raw.length > 16_384) return undefined;
+  try {
+    const decoded: unknown = raw.trimStart().startsWith('{')
+      ? JSON.parse(raw) : decodePaymentRequiredHeader(raw);
+    return decoded && typeof decoded === 'object' && !Array.isArray(decoded)
+      ? decoded as Record<string, unknown> : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Capture a dispatched payment's response without consuming its body or issuing another request. */
 export function capturePaymentReceipt(response: Response, attempt: PaymentReceiptAttempt): PaymentReceipt {
   // Capture settlement evidence before classifying HTTP status. In particular,
   // a 402 can carry a pending receipt for an already-dispatched payment.
-  const paymentResponseHeader = response.headers.get('PAYMENT-RESPONSE');
+  const paymentResponseHeader = response.headers.get('PAYMENT-RESPONSE')
+    ?? response.headers.get('X-PAYMENT-RESPONSE');
   let receipt: PaymentReceipt | undefined;
   if (paymentResponseHeader) {
     try {
-      const decoded = decodePaymentRequiredHeader(paymentResponseHeader);
+      const decoded = decodePaymentReceiptHeader(paymentResponseHeader);
       if (decoded && typeof decoded === 'object' && !Array.isArray(decoded)) {
         receipt = { ...decoded } as PaymentReceipt;
       }
@@ -164,6 +187,8 @@ export function capturePaymentReceipt(response: Response, attempt: PaymentReceip
     }
   }
   receipt ??= {};
+  // Chain provenance can only be supplied by this SDK's independent check.
+  delete receipt.chainConfirmation;
   receipt.settlementStatus = 'unconfirmed';
   const matchingNetwork = receipt.network === attempt.network;
   const errorFieldsValid = [receipt.errorReason, receipt.errorCode, receipt.errorMessage]

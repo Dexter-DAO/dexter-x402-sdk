@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.4] - 2026-09-28
+
+### Fixed
+
+- Preserve raw JSON payment receipts and the legacy `X-PAYMENT-RESPONSE`
+  header. A transaction hash alone remains unconfirmed.
+- For an incomplete EIP-3009 receipt, `payAndFetch` can verify the current
+  signed authorization and exact token transfer against the transaction's
+  canonical block. Conflicting receipts, extra buyer debits, and RPC failures
+  keep the payment unconfirmed. The response body stays available, and the
+  check creates no additional payment authorization.
+- Receipts recovered through that check include `chainConfirmation`, which
+  records block inclusion and its evidence source. It does not claim finality.
+
 ## [6.0.2] - 2026-09-17
 
 ### Fixed

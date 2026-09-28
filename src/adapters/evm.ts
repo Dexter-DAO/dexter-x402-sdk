@@ -534,7 +534,9 @@ export class EvmAdapter implements ChainAdapter {
       // this exact authorization was consumed (EIP-3009 `authorizationState`).
       settlementProbe: {
         kind: 'eip3009',
-        from: wallet.address,
+        from: authorization.from,
+        to: authorization.to,
+        amount: authorization.value,
         nonce,
         asset,
         chainId,
