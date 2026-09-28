@@ -430,6 +430,31 @@ The v1-era helpers were removed in `4.0.0`. The payment engine is unchanged — 
 
 ---
 
+## Incomplete EIP-3009 receipts
+
+Some merchants return a report with a payment receipt containing only a
+transaction hash. The SDK preserves that receipt in raw JSON or base64 form
+from `PAYMENT-RESPONSE` or `X-PAYMENT-RESPONSE`.
+
+`payAndFetch` can confirm this incomplete receipt through the configured chain
+registry's RPC endpoint. The check requires the SDK's current signed EIP-3009
+authorization, including its nonce, payer, recipient, asset, amount, and chain.
+It verifies a successful transaction receipt and canonical block inclusion,
+then matches the token's `AuthorizationUsed` event and exact `Transfer` event.
+Additional debits from the payer make the result inconclusive.
+
+The check allows five seconds in total, with each RPC response limited to one
+MiB. Explicit failure or pending evidence, conflicting receipt fields, missing
+authorization details, Permit2, and RPC errors leave the existing outcome in
+place. It makes no additional merchant request or payment authorization.
+
+A verified receipt retains the merchant's fields and adds
+`chainConfirmation.source = 'eip3009_transaction'`. Its `finality` is `included`:
+the transaction appeared in the canonical block returned by RPC at the time of
+the check. This evidence does not establish finalized settlement. The original
+response body remains unread for the caller. An unsuccessful HTTP response
+after confirmed payment still returns `delivery_failed`.
+
 ## Development
 
 ```bash

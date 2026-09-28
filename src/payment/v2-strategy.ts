@@ -23,6 +23,7 @@ import { confirmSettlement } from './confirm-settlement';
 import { parseV2Challenge } from './v2-challenge';
 import { exactPaymentCapabilityError, requiresPaymentIdentifier } from './exact-capability';
 import { toNetworkRef } from './network-map';
+import { recoverIncompleteEip3009Receipt } from './eip3009-receipt-recovery';
 
 /**
  * Attempt to pay a `tab`-scheme option with the caller's open tab by
@@ -272,6 +273,9 @@ export const v2Strategy: PaymentStrategy = {
       }
 
       const paymentReceipt = getPaymentReceipt(response);
+      if (paymentReceipt?.settlementStatus === 'unconfirmed' && dispatchedAccept) {
+        await recoverIncompleteEip3009Receipt(response, paymentReceipt, settlementProbe, dispatchedAccept);
+      }
       const txSignature = typeof paymentReceipt?.transaction === 'string'
         ? paymentReceipt.transaction : undefined;
       if (paymentReceipt?.settlementStatus !== 'settled') {

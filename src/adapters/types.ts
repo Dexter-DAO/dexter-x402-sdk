@@ -36,6 +36,9 @@ export type SettlementProbe =
   | {
       /** EVM EIP-3009 `transferWithAuthorization` — the default `exact` scheme. */
       kind: 'eip3009';
+      /** Exact recipient and amount signed by this attempt; absent in older adapters. */
+      to?: string;
+      amount?: string;
       /** The authorizer (payer) address — `authorization.from`. */
       from: string;
       /** The 32-byte authorization nonce the SDK generated. The unique key. */
@@ -237,6 +240,5 @@ export interface BalanceInfo {
   /** Asset symbol (e.g., 'USDC') */
   asset: string;
 }
-
 
 
