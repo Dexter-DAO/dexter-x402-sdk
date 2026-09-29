@@ -34,6 +34,8 @@ import {
 
 import {
   assertFinalVoucherV2ReservationReceipt,
+  canonicalFinalVoucherV2ReservationNetwork,
+  FINAL_VOUCHER_V2_SOLANA_MAINNET_CAIP2,
   finalVoucherV2ReservationMemo,
 } from '../../reservation';
 import type {
@@ -595,7 +597,10 @@ export async function inspectSolanaFinalVoucherV2Reservation(
       error instanceof Error ? error.message : String(error),
     );
   }
-  if (input.network !== 'solana:mainnet') invalid('network');
+  if (
+    canonicalFinalVoucherV2ReservationNetwork(input.network)
+    !== FINAL_VOUCHER_V2_SOLANA_MAINNET_CAIP2
+  ) invalid('network');
   if (input.programId !== DEXTER_VAULT_PROGRAM_ID.toBase58()) {
     invalid('program_id');
   }

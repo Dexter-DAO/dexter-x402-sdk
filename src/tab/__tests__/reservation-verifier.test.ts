@@ -22,6 +22,7 @@ import { sessionRegisterMessage } from '@dexterai/vault/messages';
 import { deriveSessionPda } from '@dexterai/vault/session';
 
 import {
+  FINAL_VOUCHER_V2_SOLANA_MAINNET_CAIP2,
   finalVoucherV2ReservationMemo,
   finalVoucherV2ReservationIdentity,
 } from '../reservation';
@@ -327,6 +328,56 @@ function expectCode(promise: Promise<unknown>, code: string) {
 }
 
 describe('Solana FINAL V2 reservation verifier', () => {
+  it.each([
+    ['solana:mainnet', 'solana:mainnet'],
+    ['solana:mainnet', FINAL_VOUCHER_V2_SOLANA_MAINNET_CAIP2],
+    [FINAL_VOUCHER_V2_SOLANA_MAINNET_CAIP2, 'solana:mainnet'],
+    [FINAL_VOUCHER_V2_SOLANA_MAINNET_CAIP2, FINAL_VOUCHER_V2_SOLANA_MAINNET_CAIP2],
+  ])('verifies input network %s with receipt network %s', async (inputNetwork, receiptNetwork) => {
+    const fixture = makeFixture();
+    const memo = finalVoucherV2ReservationMemo(fixture.input);
+    fixture.input.network = inputNetwork;
+    fixture.receipt.network = receiptNetwork;
+    const inputBefore = structuredClone(fixture.input);
+    const receiptBefore = structuredClone(fixture.receipt);
+
+    expect(finalVoucherV2ReservationMemo(fixture.input)).toBe(memo);
+    await expect(verifySolanaFinalVoucherV2Reservation(
+      fixture.connection,
+      fixture.input,
+      fixture.receipt,
+    )).resolves.toBeUndefined();
+
+    expect(fixture.getSignatureStatuses).toHaveBeenCalledOnce();
+    expect(fixture.getTransaction).toHaveBeenCalledOnce();
+    expect(fixture.getMultipleAccountsInfoAndContext).toHaveBeenCalledOnce();
+    expect(fixture.input).toEqual(inputBefore);
+    expect(fixture.receipt).toEqual(receiptBefore);
+  });
+
+  it.each([
+    'solana:devnet',
+    'solana:mainnet-beta',
+    'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1',
+    'Solana:mainnet',
+    'eip155:8453',
+  ])('rejects unsupported network %s before chain reads', async (network) => {
+    for (const field of ['input', 'receipt'] as const) {
+      const fixture = makeFixture();
+      fixture[field].network = network;
+
+      await expectCode(verifySolanaFinalVoucherV2Reservation(
+        fixture.connection,
+        fixture.input,
+        fixture.receipt,
+      ), 'provider_receipt');
+
+      expect(fixture.getSignatureStatuses).not.toHaveBeenCalled();
+      expect(fixture.getTransaction).not.toHaveBeenCalled();
+      expect(fixture.getMultipleAccountsInfoAndContext).not.toHaveBeenCalled();
+    }
+  });
+
   it('proves the exact successful instruction and one coherent post-state read', async () => {
     const fixture = makeFixture();
 
