@@ -303,6 +303,35 @@ describe('FacilitatorClient HTTP response deadlines', () => {
     expect(f.requests).toHaveLength(1);
   });
 
+  it.each<[number, Record<string, unknown>]>([
+    [408, { error: 'invalid_signature' }],
+    [429, { error: 'rate_limited' }],
+    [400, { success: false, errorCode: 'settlement_unknown' }],
+    [402, { success: false, errorReason: 'settlement_pending' }],
+    [409, { success: false, errorCode: 'duplicate_in_flight' }],
+    [422, { success: false, transaction: `0x${'12'.repeat(32)}` }],
+    [400, { success: true, transaction: `0x${'12'.repeat(32)}` }],
+    [400, { success: true }],
+    [402, { settlementStatus: 'pending' }],
+    [409, { status: 'processing' }],
+    [400, { success: false, transaction: 'x'.repeat(300) }],
+  ])('keeps ambiguous HTTP %s settlement evidence unknown: %j', async (status, receipt) => {
+    const body = JSON.stringify({ ...receipt, upstream: 'https://private.example?auth=secret' });
+    const f = await fixture((_, res) => {
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(body);
+    });
+    const result = await within(f.client.settlePayment(PAYMENT, REQUIREMENTS));
+    expect(result).toMatchObject({
+      success: false, network: REQUIREMENTS.network, errorCode: 'settlement_unknown',
+      errorReason: `facilitator_error_${status}`,
+      facilitatorResponse: { status, body, bodyComplete: true, bodyTruncated: false },
+    });
+    const transaction = 'transaction' in receipt ? receipt.transaction : undefined;
+    expect(result.transaction).toBe(typeof transaction === 'string' && transaction.length <= 256 ? transaction : undefined);
+    expect(f.requests).toHaveLength(1);
+  });
+
   it('does not label local decoding failure as an ambiguous dispatch', async () => {
     const f = await fixture((_, res) => res.end('{}'));
     const result = await f.client.settlePayment('not-json', REQUIREMENTS);

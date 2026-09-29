@@ -12,14 +12,15 @@ const unknown: SettleResponse = {
   facilitatorResponse: { status: 500, body: 'upstream secret', bodyComplete: true, bodyTruncated: false },
 };
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-async function request(settlement: SettleResponse) {
+async function request(settlement?: SettleResponse) {
   vi.spyOn(FacilitatorClient.prototype, 'getSupported').mockResolvedValue({
     kinds: [{ x402Version: 2, scheme: 'exact', network, extra: { decimals: 6 } }],
   });
   const verify = vi.spyOn(FacilitatorClient.prototype, 'verifyPayment').mockResolvedValue({ isValid: true });
-  const settle = vi.spyOn(FacilitatorClient.prototype, 'settlePayment').mockResolvedValue(settlement);
+  const settle = vi.spyOn(FacilitatorClient.prototype, 'settlePayment');
+  if (settlement) settle.mockResolvedValue(settlement);
   const mw = x402Middleware({ network, payTo: '0x1111111111111111111111111111111111111111', amount: '0.01' });
   const payment = btoa(JSON.stringify({ x402Version: 2, accepted: { network, amount: '10000' }, payload: { fixture: true } }));
   const req = { method: 'GET', protocol: 'https', path: '/report', originalUrl: '/report',
@@ -59,6 +60,39 @@ describe('unknown seller settlement', () => {
     const result = await request({ success: false, network, errorReason: 'invalid_signature' });
     expect(result.status).toBe(402);
     expect(result.body).toEqual({ error: 'Payment settlement failed', reason: 'invalid_signature' });
+    expect(result.next).not.toHaveBeenCalled();
+  });
+
+  it.each<[number, Record<string, unknown>]>([
+    [408, { error: 'request_timeout' }],
+    [429, { error: 'rate_limited' }],
+    [402, { success: false, errorCode: 'settlement_pending', transaction }],
+    [409, { success: false, errorCode: 'duplicate_in_flight' }],
+    [400, { success: true, transaction }],
+    [422, { success: false, transaction }],
+  ])('does not issue a new payment challenge after ambiguous facilitator HTTP %s', async (status, receipt) => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ ...receipt,
+      upstream: 'https://internal.example?auth=secret', stack: 'internal stack' }), { status }));
+    vi.stubGlobal('fetch', fetch);
+    const result = await request();
+    expect(result.status).toBe(503);
+    expect(result.headers.has('payment-required')).toBe(false);
+    const expected = { success: false, network, errorCode: 'settlement_unknown',
+      ...('transaction' in receipt ? { transaction: receipt.transaction } : {}) };
+    expect(JSON.parse(atob(String(result.headers.get('payment-response'))))).toEqual(expected);
+    expect(result.body).toEqual({ error: 'Settlement outcome unknown', ...expected, recoveryRequired: true });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(result.settle).toHaveBeenCalledTimes(1);
+    expect(result.next).not.toHaveBeenCalled();
+  });
+
+  it('keeps an actual facilitator invalid_signature refusal definitive', async () => {
+    const fetch = vi.fn(async () => new Response('{"error":"invalid_signature"}', { status: 400 }));
+    vi.stubGlobal('fetch', fetch);
+    const result = await request();
+    expect(result.status).toBe(402);
+    expect(result.body).toEqual({ error: 'Payment settlement failed', reason: 'facilitator_error_400' });
+    expect(fetch).toHaveBeenCalledTimes(1);
     expect(result.next).not.toHaveBeenCalled();
   });
 

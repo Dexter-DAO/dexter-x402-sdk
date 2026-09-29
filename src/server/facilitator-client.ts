@@ -116,6 +116,24 @@ function knownTransaction(body: string): string | undefined {
   }
 }
 
+function hasUncertainSettlementEvidence(body: string): boolean {
+  try {
+    const result: unknown = JSON.parse(body);
+    if (!result || typeof result !== 'object' || Array.isArray(result)) return false;
+    const receipt = result as Record<string, unknown>;
+    // An HTTP rejection cannot negate evidence of a dispatched or completed payment.
+    // Even an invalid transaction value must keep the outcome uncertain; only the
+    // bounded, validated value may be copied into public recovery metadata.
+    if (receipt.success === true
+      || (typeof receipt.transaction === 'string' && receipt.transaction.trim().length > 0)) return true;
+    return [receipt.errorCode, receipt.errorReason, receipt.errorMessage, receipt.error,
+      receipt.status, receipt.settlementStatus].some(value => typeof value === 'string'
+        && /pending|unknown|unconfirmed|timeout|temporar|in[_ -]?flight|processing|submitted|broadcast|settling|settled|success/i.test(value));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Client for communicating with an x402 v2 facilitator
  */
@@ -298,7 +316,7 @@ export class FacilitatorClient {
 
   /**
    * Settle a payment with the facilitator.
-   * Dispatches once. A transport failure or 5xx response leaves the outcome unknown.
+   * Dispatches once. Ambiguous HTTP or settlement evidence leaves the outcome unknown.
    */
   async settlePayment(
     paymentSignatureHeader: string,
@@ -336,7 +354,9 @@ export class FacilitatorClient {
         evidence = { status: response.status, body: '', bodyComplete: false, bodyTruncated: false };
         await readSettlementResponse(response, evidence);
         if (!response.ok) {
-          if (response.status >= 500 || response.status < 400) {
+          if (response.status >= 500 || response.status < 400
+            || response.status === 408 || response.status === 429
+            || hasUncertainSettlementEvidence(evidence.body)) {
             return unknownOutcome(`facilitator_error_${response.status}`);
           }
           return {

@@ -310,9 +310,10 @@ Protect an endpoint with `x402Middleware`; the handler runs only after payment s
 
 `FacilitatorClient` keeps its deadline active through response body reads. It
 dispatches `/settle` once. Its `maxRetries` option applies to `/verify`.
-Transport failures, HTTP 5xx responses, and incomplete settlement responses return
+Transport failures, HTTP 408/429/5xx responses, and incomplete settlement responses return
 `success: false` with `errorCode: 'settlement_unknown'`. Reconcile the original
-payment before submitting another authorization.
+payment before submitting another authorization. The same applies to other HTTP
+4xx responses that report pending or successful settlement or include a transaction.
 
 Unknown outcomes retain the HTTP status and up to 65,536 response bytes in
 `facilitatorResponse`, with explicit completeness and truncation flags. Keep this
