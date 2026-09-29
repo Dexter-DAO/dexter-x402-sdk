@@ -1,5 +1,6 @@
 import type { McpPaymentRecord, McpPaymentRequired, McpSettlementOutcome, McpToolCall, McpToolResult, PaidMcpToolOptions } from './types';
 import { digest } from './facilitator';
+import { publicSettlementReceipt } from '../server/settlement-outcome';
 import {
   MCP_PAYMENT_META, MCP_PAYMENT_RESPONSE_META, MCP_PAYMENT_STATE_META,
   createMcpPaymentRequiredResult, isMcpPaymentPayload, isMcpPaymentRequired,
@@ -18,7 +19,7 @@ function pending(record: McpPaymentRecord): McpToolResult {
   const result = failure('This payment already has an admitted operation. Retrieve or reconcile that operation before paying again.', {
     paymentId: record.paymentId, phase: record.phase, recoveryRequired: true,
   });
-  if (record.receipt) result._meta![MCP_PAYMENT_RESPONSE_META] = snapshot(record.receipt);
+  if (record.receipt) result._meta![MCP_PAYMENT_RESPONSE_META] = snapshot(publicSettlementReceipt(record.receipt));
   return result;
 }
 
@@ -157,7 +158,7 @@ export function createPaidMcpTool<Context>(options: PaidMcpToolOptions<Context>)
           : 'Settlement outcome unknown; reconcile the admitted operation before paying again');
         response._meta = {
           [MCP_PAYMENT_STATE_META]: { paymentId, phase: record.phase, recoveryRequired: true },
-          ...(settlement.receipt ? { [MCP_PAYMENT_RESPONSE_META]: settlement.receipt } : {}),
+          ...(settlement.receipt ? { [MCP_PAYMENT_RESPONSE_META]: publicSettlementReceipt(settlement.receipt) } : {}),
         };
         return response;
       }
@@ -167,7 +168,7 @@ export function createPaidMcpTool<Context>(options: PaidMcpToolOptions<Context>)
         return pending(record);
       }
       const response: McpToolResult = {
-        ...result, _meta: { ...result._meta, [MCP_PAYMENT_RESPONSE_META]: snapshot(receipt) },
+        ...result, _meta: { ...result._meta, [MCP_PAYMENT_RESPONSE_META]: snapshot(publicSettlementReceipt(receipt)) },
       };
       // Completion is visible only after both output and receipt are durable.
       await transition({ phase: 'complete', result: response, receipt });

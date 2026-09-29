@@ -5,6 +5,16 @@ import { output, payment, receipt, request, requirements } from './fixtures';
 import type { McpToolCall, McpToolResult } from '../types';
 
 describe('MCP buyer exchange', () => {
+  it('recognizes an unknown settlement code without a vendor recovery state', async () => {
+    const unknown = { success: false, errorCode: 'settlement_unknown', network: receipt.network, transaction: receipt.transaction };
+    const response = { ...output, isError: true, _meta: { 'x402/payment-response': unknown } };
+    const transport = vi.fn(async () => response);
+    const result = await callMcpToolWithPayment({ transport, request, paymentRequired: requirements, payment,
+      beforeDispatch: async () => {} });
+    expect(result).toMatchObject({ paymentStatus: 'unknown', receipt: unknown, result: response });
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses required payment identifiers before recording or dispatching a new payment', async () => {
     const transport = vi.fn(async () => output);
     const beforeDispatch = vi.fn(async () => {});

@@ -56,6 +56,45 @@ const unsupported = [
 ];
 
 describe('HTTP capability negotiation through the actual builders', () => {
+  it('retains unknown settlement without another paid dispatch when unpaid retries are enabled', async () => {
+    const receipt = { success: false, errorCode: 'settlement_unknown', network: base.network, transaction: 'fixture-tx' };
+    const f = fixture([base], receipt, 503);
+    const response = await createX402Client({ wallets: { evm: f.wallet }, maxRetries: 3, retryDelayMs: 1 }).fetch(url);
+    expect(response.status).toBe(503);
+    expect(getPaymentReceipt(response)).toMatchObject({ ...receipt, settlementStatus: 'pending', attemptedAmountAtomic: base.amount });
+    expect(getPaymentReceipt(response)?.amountAtomic).toBeUndefined();
+    expect(await response.text()).toBe('{"result":"saved response"}');
+    expect(f.signed).toHaveBeenCalledTimes(1);
+    expect(f.paid).toHaveLength(1);
+  });
+
+  it('keeps the paid response and uncertainty through payAndFetch without signing again', async () => {
+    const receipt = { success: false, errorCode: 'settlement_unknown', network: base.network, transaction: 'fixture-tx' };
+    const f = fixture([base], receipt, 503);
+    const result = await payAndFetch(url, {}, { evm: f.wallet }, {});
+    expect(result).toMatchObject({ ok: false, reason: 'payment_unconfirmed', txSignature: 'fixture-tx',
+      paymentReceipt: { ...receipt, settlementStatus: 'pending' } });
+    expect(await result.response?.text()).toBe('{"result":"saved response"}');
+    expect(f.signed).toHaveBeenCalledTimes(1);
+    expect(f.paid).toHaveLength(1);
+  });
+
+  it('does not resend a paid request after a transport error with unpaid retries enabled', async () => {
+    const f = fixture([base]);
+    let paidDispatches = 0;
+    const transport: typeof fetch = async (input, init) => {
+      if (new Headers(init?.headers).has('PAYMENT-SIGNATURE')) {
+        paidDispatches++;
+        throw new TypeError('response lost after dispatch');
+      }
+      return f.fetch(input, init);
+    };
+    await expect(createX402Client({ wallets: { evm: f.wallet }, fetch: transport,
+      maxRetries: 3, retryDelayMs: 1 }).fetch(url)).rejects.toThrow('response lost after dispatch');
+    expect(f.signed).toHaveBeenCalledTimes(1);
+    expect(paidDispatches).toBe(1);
+  });
+
   it('refuses a required payment identifier before both client entrypoints sign', async () => {
     const extensions = { 'payment-identifier': { info: { required: true } } };
     const f = fixture([base], settled, 200, extensions);

@@ -1,4 +1,5 @@
 import type { SettleResponse } from '../types';
+import { isSettlementUnknown } from '../server/settlement-outcome';
 import type { McpPaymentAccept, McpPaymentPayload, McpPaymentRequired, McpToolCall, McpToolResult } from './types';
 
 export const MCP_PAYMENT_META = 'x402/payment';
@@ -90,5 +91,6 @@ export function matchesMcpPayment(required: McpPaymentRequired, payment: McpPaym
 }
 
 export function isMcpSettlementPending(receipt: SettleResponse): boolean {
-  return receipt.errorReason === 'settlement_pending' || receipt.errorCode === 'settlement_pending';
+  return isSettlementUnknown(receipt)
+    || receipt.errorReason === 'settlement_pending' || receipt.errorCode === 'settlement_pending';
 }

@@ -207,7 +207,7 @@ export interface VerifyResponse {
  * Response from /settle endpoint
  */
 export interface SettleResponse {
-  /** Whether settlement succeeded */
+  /** Whether settlement succeeded. False alone does not prove that no debit occurred. */
   success: boolean;
   /** Transaction signature/hash */
   transaction?: string;
@@ -221,6 +221,13 @@ export interface SettleResponse {
   payer?: string;
   /** Protocol extensions returned by the facilitator (e.g., sponsored-access recommendations) */
   extensions?: Record<string, unknown>;
+  /** Internal facilitator evidence for reconciliation. Keep raw bodies out of public headers and errors. */
+  facilitatorResponse?: {
+    status: number;
+    body: string;
+    bodyComplete: boolean;
+    bodyTruncated: boolean;
+  };
 }
 
 // ============================================================================

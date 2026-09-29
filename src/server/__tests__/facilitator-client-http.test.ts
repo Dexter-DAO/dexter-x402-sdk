@@ -79,8 +79,8 @@ describe('FacilitatorClient HTTP response deadlines', () => {
         isValid: false, invalidReason: 'facilitator_timeout',
       });
     } else {
-      expect(await within(call(client, operation))).toEqual({
-        success: false, network: REQUIREMENTS.network, errorReason: 'facilitator_timeout',
+      expect(await within(call(client, operation))).toMatchObject({
+        success: false, network: REQUIREMENTS.network, errorReason: 'facilitator_timeout', errorCode: 'settlement_unknown',
       });
     }
   }
@@ -125,7 +125,7 @@ describe('FacilitatorClient HTTP response deadlines', () => {
     await expect.poll(f.closedResponses).toBe(1);
   });
 
-  it.each<Operation>(['supported', 'verify', 'settle'])('cancels the unread %s rejection body', async operation => {
+  it.each<Operation>(['supported', 'verify'])('cancels the unread %s rejection body', async operation => {
     const f = await fixture((_, res) => {
       res.writeHead(400, { 'Content-Type': 'text/plain' });
       res.write('incomplete rejection');
@@ -135,10 +135,6 @@ describe('FacilitatorClient HTTP response deadlines', () => {
     } else if (operation === 'verify') {
       expect(await within(call(f.client, operation))).toEqual({
         isValid: false, invalidReason: 'facilitator_error_400',
-      });
-    } else {
-      expect(await within(call(f.client, operation))).toEqual({
-        success: false, network: REQUIREMENTS.network, errorReason: 'facilitator_error_400',
       });
     }
     expect(f.requests).toHaveLength(1);
@@ -160,7 +156,7 @@ describe('FacilitatorClient HTTP response deadlines', () => {
     expect(f.requests).toHaveLength(2);
   });
 
-  it.each<Operation>(['verify', 'settle'])('preserves %s retries of complete 5xx responses and exact request bytes', async operation => {
+  it.each<Operation>(['verify'])('preserves %s retries of complete 5xx responses and exact request bytes', async operation => {
     let attempts = 0;
     const expected = operation === 'verify'
       ? { isValid: true, payer: 'fixture' }
@@ -204,5 +200,114 @@ describe('FacilitatorClient HTTP response deadlines', () => {
       ? { isValid: false }
       : { success: false });
     expect(f.requests).toHaveLength(1);
+  });
+
+  it('returns a 5xx settlement as unknown after one dispatch and retains the exact response', async () => {
+    const transaction = `0x${'12'.repeat(32)}`;
+    const body = JSON.stringify({ success: true, transaction, network: REQUIREMENTS.network,
+      upstream: 'https://private.example?auth=secret', stack: 'internal stack' });
+    const f = await fixture((_, res) => {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(body);
+    });
+    expect(await within(f.client.settlePayment(PAYMENT, REQUIREMENTS))).toEqual({
+      success: false, network: REQUIREMENTS.network,
+      errorReason: 'facilitator_error_503', errorCode: 'settlement_unknown', transaction,
+      facilitatorResponse: { status: 503, body, bodyComplete: true, bodyTruncated: false },
+    });
+    expect(f.requests).toHaveLength(1);
+    expect(JSON.parse(f.requests[0].body)).toEqual({ x402Version: 2,
+      paymentPayload: JSON.parse(atob(PAYMENT)), paymentRequirements: REQUIREMENTS });
+  });
+
+  it('retains partial settlement response evidence after the deadline', async () => {
+    const f = await fixture((_, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.write('{"success":');
+    });
+    expect(await within(f.client.settlePayment(PAYMENT, REQUIREMENTS))).toMatchObject({
+      errorCode: 'settlement_unknown', errorReason: 'facilitator_timeout',
+      facilitatorResponse: { status: 200, body: '{"success":', bodyComplete: false, bodyTruncated: false },
+    });
+    expect(f.requests).toHaveLength(1);
+    await expect.poll(f.closedResponses).toBe(1);
+  });
+
+  it('does not resend settlement after a socket reset before headers', async () => {
+    const f = await fixture((req) => req.socket.destroy());
+    expect(await within(f.client.settlePayment(PAYMENT, REQUIREMENTS))).toMatchObject({
+      success: false, errorCode: 'settlement_unknown',
+    });
+    expect(f.requests).toHaveLength(1);
+  });
+
+  it('does not forward settlement across a redirect', async () => {
+    const f = await fixture((_, res) => {
+      res.writeHead(307, { Location: '/settle-forwarded' });
+      res.end('redirect');
+    });
+    expect(await within(f.client.settlePayment(PAYMENT, REQUIREMENTS))).toMatchObject({
+      errorCode: 'settlement_unknown', errorReason: 'facilitator_error_307',
+      facilitatorResponse: { status: 307, body: 'redirect', bodyComplete: true },
+    });
+    expect(f.requests.map(request => request.path)).toEqual(['/settle']);
+  });
+
+  it('caps captured settlement evidence and cancels excess response bytes', async () => {
+    const f = await fixture((_, res) => {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.write('x'.repeat(70_000));
+    });
+    const result = await within(f.client.settlePayment(PAYMENT, REQUIREMENTS));
+    expect(result).toMatchObject({ errorCode: 'settlement_unknown', errorReason: 'facilitator_response_too_large',
+      facilitatorResponse: { status: 500, bodyComplete: false, bodyTruncated: true } });
+    expect(result.facilitatorResponse?.body).toBe('x'.repeat(65_536));
+    expect(f.requests).toHaveLength(1);
+    await expect.poll(f.closedResponses).toBe(1);
+  });
+
+  it.each([null, [], { success: 'true' }, { success: true },
+    { success: true, transaction: 'fixture', network: 'wrong-network' }])('keeps malformed or incomplete settlement unknown: %j', async body => {
+    const f = await fixture((_, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    });
+    expect(await within(f.client.settlePayment(PAYMENT, REQUIREMENTS))).toMatchObject({
+      success: false, errorCode: 'settlement_unknown', errorReason: 'invalid_facilitator_response',
+      facilitatorResponse: { status: 200, body: JSON.stringify(body), bodyComplete: true },
+    });
+    expect(f.requests).toHaveLength(1);
+  });
+
+  it.each([
+    { success: true, network: REQUIREMENTS.network, transaction: 'fixture' },
+    { success: false, network: REQUIREMENTS.network, errorReason: 'invalid_signature' },
+  ])('retains a complete ordinary settlement response: %j', async body => {
+    const f = await fixture((_, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    });
+    expect(await within(f.client.settlePayment(PAYMENT, REQUIREMENTS))).toEqual(body);
+    expect(f.requests).toHaveLength(1);
+  });
+
+  it('preserves a complete 400 refusal and its internal response evidence', async () => {
+    const f = await fixture((_, res) => {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end('{"error":"invalid_signature"}');
+    });
+    expect(await within(f.client.settlePayment(PAYMENT, REQUIREMENTS))).toEqual({
+      success: false, network: REQUIREMENTS.network, errorReason: 'facilitator_error_400',
+      facilitatorResponse: { status: 400, body: '{"error":"invalid_signature"}', bodyComplete: true, bodyTruncated: false },
+    });
+    expect(f.requests).toHaveLength(1);
+  });
+
+  it('does not label local decoding failure as an ambiguous dispatch', async () => {
+    const f = await fixture((_, res) => res.end('{}'));
+    const result = await f.client.settlePayment('not-json', REQUIREMENTS);
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBeUndefined();
+    expect(f.requests).toHaveLength(0);
   });
 });

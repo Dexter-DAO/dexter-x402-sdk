@@ -308,6 +308,21 @@ In React, `useX402Payment` takes wallets from `@solana/wallet-adapter-react` or 
 
 Protect an endpoint with `x402Middleware`; the handler runs only after payment settles.
 
+`FacilitatorClient` keeps its deadline active through response body reads. It
+dispatches `/settle` once. Its `maxRetries` option applies to `/verify`.
+Transport failures, HTTP 5xx responses, and incomplete settlement responses return
+`success: false` with `errorCode: 'settlement_unknown'`. Reconcile the original
+payment before submitting another authorization.
+
+Unknown outcomes retain the HTTP status and up to 65,536 response bytes in
+`facilitatorResponse`, with explicit completeness and truncation flags. Keep this
+evidence in internal records. Express middleware sends HTTP 503 and a compact
+`PAYMENT-RESPONSE` receipt with recovery metadata. MCP retains the evidence in its
+payment record and returns compact recovery metadata to the buyer.
+`createX402Client` applies configured retries to unpaid requests; its paid request
+is dispatched once. Existing receipt recovery remains available for the original
+payment.
+
 ```typescript
 import { x402Middleware } from '@dexterai/x402/server';
 

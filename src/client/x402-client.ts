@@ -314,8 +314,8 @@ export interface X402ClientConfig {
   ) => void;
 
   /**
-   * Maximum retry attempts for transient failures (network errors, 502/503).
-   * Does not cause double payments — EIP-3009 nonces prevent replay.
+   * Maximum retry attempts for unpaid requests with transient failures.
+   * Paid requests are dispatched once and require reconciliation after ambiguity.
    * @default 0 (no retry)
    */
   maxRetries?: number;
@@ -928,13 +928,12 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       }
     }
 
-    // Retry request with payment. Resending this exact header is safe — the
-    // EIP-3009 nonce is fixed, so the facilitator cannot settle it twice.
-    // (That protection is per-authorization; it does NOT cover a fresh
-    // payAndFetch call, which signs a new nonce. See FINDINGS / DESIGN docs.)
+    // Dispatch this payment once. A lost response requires reconciliation of
+    // the existing authorization, including when unpaid retries are enabled.
     log('Retrying request with payment...');
-    const retryResponse = await fetchWithRetry(input, {
+    const retryResponse = await customFetch(input, {
       ...init,
+      redirect: 'manual',
       headers: {
         ...(init?.headers || {}),
         'PAYMENT-SIGNATURE': paymentSignatureHeader,

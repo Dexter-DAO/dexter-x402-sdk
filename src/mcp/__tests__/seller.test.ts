@@ -4,6 +4,24 @@ import { getMcpPaymentRequired } from '../wire';
 import { fixture, output, paidRequest, payment, receipt, request, requirements } from './fixtures';
 
 describe('portable MCP seller', () => {
+  it('retains unknown facilitator evidence privately and replays compact recovery metadata', async () => {
+    const f = fixture();
+    const unknown = { success: false, errorCode: 'settlement_unknown', errorReason: 'https://internal?auth=secret',
+      network: receipt.network, transaction: receipt.transaction,
+      facilitatorResponse: { status: 500, body: 'upstream auth secret and stack', bodyComplete: true, bodyTruncated: false } };
+    vi.mocked(f.payments.settle).mockResolvedValue({ status: 'unknown', reason: 'settlement_unknown', receipt: unknown });
+    const tool = createPaidMcpTool(f.options);
+    for (const response of [await tool(paidRequest, f.context), await tool(paidRequest, f.context)]) {
+      expect(getMcpPaymentRequired(response)).toBeUndefined();
+      expect(response._meta?.['x402/payment-response']).toEqual({ success: false, network: receipt.network,
+        errorCode: 'settlement_unknown', transaction: receipt.transaction });
+      expect(JSON.stringify(response)).not.toContain('secret');
+    }
+    expect([...f.store.records.values()][0].receipt).toEqual(unknown);
+    expect(f.execute).toHaveBeenCalledTimes(1);
+    expect(f.payments.settle).toHaveBeenCalledTimes(1);
+  });
+
   it('emits identical structured and text payment requirements without executing', async () => {
     const f = fixture();
     const result = await createPaidMcpTool(f.options)(request, f.context);

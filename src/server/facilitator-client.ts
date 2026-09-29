@@ -45,7 +45,7 @@ export interface SupportedResponse {
 export interface FacilitatorClientConfig {
   /** Request timeout in milliseconds @default 10000 */
   timeoutMs?: number;
-  /** Maximum retry attempts for verify/settle @default 3 */
+  /** Maximum attempts for verify. Settlement is dispatched once. @default 3 */
   maxRetries?: number;
   /** Base delay between retries in milliseconds (doubles each attempt) @default 500 */
   retryBaseMs?: number;
@@ -68,6 +68,51 @@ class HttpError extends Error {
     super(`HTTP ${status}`);
     this.status = status;
     this.body = body;
+  }
+}
+
+const MAX_SETTLEMENT_RESPONSE_BYTES = 65_536;
+
+async function readSettlementResponse(
+  response: Response,
+  evidence: NonNullable<SettleResponse['facilitatorResponse']>,
+): Promise<void> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    evidence.bodyComplete = true;
+    return;
+  }
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        evidence.bodyComplete = true;
+        return;
+      }
+      const remaining = MAX_SETTLEMENT_RESPONSE_BYTES - bytes;
+      const captured = value.subarray(0, remaining);
+      evidence.body += decoder.decode(captured, { stream: true });
+      bytes += captured.byteLength;
+      if (value.byteLength > remaining) {
+        evidence.bodyTruncated = true;
+        throw new Error('facilitator_response_too_large');
+      }
+    }
+  } finally {
+    evidence.body += decoder.decode();
+    reader.releaseLock();
+  }
+}
+
+function knownTransaction(body: string): string | undefined {
+  try {
+    const result = JSON.parse(body) as { transaction?: unknown } | null;
+    return typeof result?.transaction === 'string' && result.transaction.trim().length > 0
+      && result.transaction.length <= 256 ? result.transaction : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -253,35 +298,62 @@ export class FacilitatorClient {
 
   /**
    * Settle a payment with the facilitator.
-   * Retries on 5xx and network errors with exponential backoff.
+   * Dispatches once. A transport failure or 5xx response leaves the outcome unknown.
    */
   async settlePayment(
     paymentSignatureHeader: string,
     requirements: PaymentAccept,
   ): Promise<SettleResponse> {
+    let dispatched = false;
+    let evidence: SettleResponse['facilitatorResponse'];
+    const unknownOutcome = (reason: string): SettleResponse => {
+      const transaction = evidence && knownTransaction(evidence.body);
+      return {
+        success: false,
+        network: requirements.network,
+        errorReason: reason,
+        errorCode: 'settlement_unknown',
+        ...(evidence ? { facilitatorResponse: evidence } : {}),
+        ...(transaction ? { transaction } : {}),
+      };
+    };
     try {
       const paymentPayload = decodeBase64Json<PaymentSignature>(paymentSignatureHeader);
-
-      const { response, cleanup } = await this.fetchWithRetry(`${this.facilitatorUrl}/settle`, {
+      const body = JSON.stringify({
+        x402Version: 2,
+        paymentPayload,
+        paymentRequirements: requirements,
+      });
+      dispatched = true;
+      const { response, cleanup } = await this.fetchWithTimeout(`${this.facilitatorUrl}/settle`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          x402Version: 2,
-          paymentPayload,
-          paymentRequirements: requirements,
-        }),
+        body,
+        redirect: 'manual',
       });
 
       try {
+        evidence = { status: response.status, body: '', bodyComplete: false, bodyTruncated: false };
+        await readSettlementResponse(response, evidence);
         if (!response.ok) {
+          if (response.status >= 500 || response.status < 400) {
+            return unknownOutcome(`facilitator_error_${response.status}`);
+          }
           return {
             success: false,
             network: requirements.network,
             errorReason: `facilitator_error_${response.status}`,
+            facilitatorResponse: evidence,
           };
         }
 
-        const result = (await response.json()) as SettleResponse;
+        const result = JSON.parse(evidence.body) as SettleResponse | null;
+        if (!result || typeof result !== 'object' || Array.isArray(result)
+          || typeof result.success !== 'boolean'
+          || (result.success && (typeof result.transaction !== 'string' || !result.transaction.trim()
+            || (result.network !== undefined && result.network !== requirements.network)))) {
+          return unknownOutcome('invalid_facilitator_response');
+        }
         return { ...result, network: requirements.network };
       } finally {
         cleanup();
@@ -295,6 +367,7 @@ export class FacilitatorClient {
             ? error.message
             : 'unexpected_settle_error';
 
+      if (dispatched) return unknownOutcome(reason);
       return {
         success: false,
         network: requirements.network,

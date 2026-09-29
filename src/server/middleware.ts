@@ -36,6 +36,7 @@ import { createBatchSettlementSeller } from '../batch-settlement/seller';
 import type { BatchSettlementSeller } from '../batch-settlement/seller';
 import { applyExtensions } from './extensions/registry';
 import type { ResourceServerExtension } from './extensions/types';
+import { isSettlementUnknown, publicSettlementReceipt } from './settlement-outcome';
 
 /**
  * Middleware configuration
@@ -508,6 +509,17 @@ export function x402Middleware(
       log('Payment verified, settling...');
 
       const settleResult = await targetServer.settlePayment(paymentSignature);
+
+      if (isSettlementUnknown(settleResult)) {
+        const receipt = publicSettlementReceipt(settleResult);
+        res.setHeader('PAYMENT-RESPONSE', encodeBase64Json(receipt));
+        res.status(503).json({
+          error: 'Settlement outcome unknown',
+          ...receipt,
+          recoveryRequired: true,
+        });
+        return;
+      }
 
       if (!settleResult.success) {
         log('Payment settlement failed:', settleResult.errorReason);
