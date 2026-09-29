@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.5] - 2026-09-29
+
+### Fixed
+
+- Accept the canonical Solana mainnet identifier when verifying Native Tab V2
+  reservations, alongside the historical `solana:mainnet` alias.
+
 ## [6.0.4] - 2026-09-28
 
 ### Fixed
