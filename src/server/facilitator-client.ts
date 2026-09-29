@@ -96,28 +96,41 @@ export class FacilitatorClient {
   private async fetchWithTimeout(
     url: string,
     init?: RequestInit,
-  ): Promise<Response> {
+  ): Promise<{ response: Response; cleanup: () => void }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    try {
-      return await fetch(url, { ...init, signal: controller.signal });
-    } finally {
+    const cleanup = () => {
       clearTimeout(timer);
+      // Cancel unread bodies as well as requests that have not received headers.
+      controller.abort();
+    };
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      // The reader owns cleanup: headers do not end the response deadline.
+      return { response, cleanup };
+    } catch (error) {
+      cleanup();
+      throw error;
     }
   }
 
   private async fetchWithRetry(
     url: string,
     init?: RequestInit,
-  ): Promise<Response> {
+  ): Promise<{ response: Response; cleanup: () => void }> {
     let lastError: unknown;
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
-        const response = await this.fetchWithTimeout(url, init);
+        const request = await this.fetchWithTimeout(url, init);
+        const { response, cleanup } = request;
         if (!response.ok && response.status >= 500) {
-          throw new HttpError(response.status, await response.text());
+          try {
+            throw new HttpError(response.status, await response.text());
+          } finally {
+            cleanup();
+          }
         }
-        return response;
+        return request;
       } catch (error) {
         lastError = error;
         if (attempt < this.maxRetries - 1 && isRetryable(error)) {
@@ -141,14 +154,18 @@ export class FacilitatorClient {
       return this.cachedSupported;
     }
 
-    const response = await this.fetchWithTimeout(`${this.facilitatorUrl}/supported`);
-    if (!response.ok) {
-      throw new Error(`Facilitator /supported returned ${response.status}`);
-    }
+    const { response, cleanup } = await this.fetchWithTimeout(`${this.facilitatorUrl}/supported`);
+    try {
+      if (!response.ok) {
+        throw new Error(`Facilitator /supported returned ${response.status}`);
+      }
 
-    this.cachedSupported = (await response.json()) as SupportedResponse;
-    this.cacheTime = now;
-    return this.cachedSupported;
+      this.cachedSupported = (await response.json()) as SupportedResponse;
+      this.cacheTime = now;
+      return this.cachedSupported;
+    } finally {
+      cleanup();
+    }
   }
 
   /**
@@ -199,7 +216,7 @@ export class FacilitatorClient {
     try {
       const paymentPayload = decodeBase64Json<PaymentSignature>(paymentSignatureHeader);
 
-      const response = await this.fetchWithRetry(`${this.facilitatorUrl}/verify`, {
+      const { response, cleanup } = await this.fetchWithRetry(`${this.facilitatorUrl}/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -209,14 +226,18 @@ export class FacilitatorClient {
         }),
       });
 
-      if (!response.ok) {
-        return {
-          isValid: false,
-          invalidReason: `facilitator_error_${response.status}`,
-        };
-      }
+      try {
+        if (!response.ok) {
+          return {
+            isValid: false,
+            invalidReason: `facilitator_error_${response.status}`,
+          };
+        }
 
-      return (await response.json()) as VerifyResponse;
+        return (await response.json()) as VerifyResponse;
+      } finally {
+        cleanup();
+      }
     } catch (error) {
       const reason = error instanceof HttpError
         ? `facilitator_error_${error.status}`
@@ -241,7 +262,7 @@ export class FacilitatorClient {
     try {
       const paymentPayload = decodeBase64Json<PaymentSignature>(paymentSignatureHeader);
 
-      const response = await this.fetchWithRetry(`${this.facilitatorUrl}/settle`, {
+      const { response, cleanup } = await this.fetchWithRetry(`${this.facilitatorUrl}/settle`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -251,16 +272,20 @@ export class FacilitatorClient {
         }),
       });
 
-      if (!response.ok) {
-        return {
-          success: false,
-          network: requirements.network,
-          errorReason: `facilitator_error_${response.status}`,
-        };
-      }
+      try {
+        if (!response.ok) {
+          return {
+            success: false,
+            network: requirements.network,
+            errorReason: `facilitator_error_${response.status}`,
+          };
+        }
 
-      const result = (await response.json()) as SettleResponse;
-      return { ...result, network: requirements.network };
+        const result = (await response.json()) as SettleResponse;
+        return { ...result, network: requirements.network };
+      } finally {
+        cleanup();
+      }
     } catch (error) {
       const reason = error instanceof HttpError
         ? `facilitator_error_${error.status}`
