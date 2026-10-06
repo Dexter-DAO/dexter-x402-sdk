@@ -42,6 +42,136 @@ import { exactPaymentCapabilityError, requiresPaymentIdentifier } from '../payme
 import { decodePaymentRequiredHeader } from '../payment/v2-challenge';
 import { createSolanaAdapter, createEvmAdapter, isSolanaWallet, isEvmWallet, isKnownUSDC } from '../adapters';
 
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason === undefined
+    ? new DOMException('The operation was aborted', 'AbortError')
+    : signal.reason;
+}
+
+function throwIfAborted(signal?: AbortSignal | null): void {
+  if (signal?.aborted) throw abortReason(signal);
+}
+
+/** Stop waiting without letting a late approval or signature resume payment. */
+function withAbortSignal<T>(
+  signal: AbortSignal | null | undefined,
+  operation: () => T | Promise<T>,
+): Promise<T> {
+  // Custom transports may use an opaque cancellation token. Only subscribe to
+  // signals that support the EventTarget interface; forward other tokens intact.
+  if (!signal || typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function') {
+    return Promise.resolve().then(operation);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    const onAbort = () => {
+      cleanup();
+      reject(abortReason(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    try {
+      throwIfAborted(signal);
+      Promise.resolve(operation()).then(
+        value => { cleanup(); resolve(value); },
+        error => { cleanup(); reject(error); },
+      );
+    } catch (error) {
+      cleanup();
+      reject(error);
+    }
+  });
+}
+
+const requestDictionaryKeys = [
+  'body', 'cache', 'credentials', 'headers', 'integrity', 'keepalive', 'method',
+  'mode', 'priority', 'redirect', 'referrer', 'referrerPolicy', 'signal', 'window', 'duplex',
+] as const;
+const requestBodyReaders = new WeakMap<RequestInit, () => RequestInit['body']>();
+const implicitRequestBodies = new WeakSet<RequestInit>();
+
+/** Copy options only when the SDK needs to change them; keep the probe intact. */
+function snapshotRequestInit(init?: RequestInit): RequestInit | undefined {
+  if (!init) return init;
+  const snapshot: RequestInit = {};
+  const ownEnumerableKeys = new Set<PropertyKey>();
+  const visited = new Set<object>();
+  for (let source: object | null = init; source && source !== Object.prototype && !visited.has(source);) {
+    visited.add(source);
+    let keys: (string | symbol)[];
+    try { keys = Reflect.ownKeys(source); } catch (error) {
+      if (source === init) throw error;
+      break;
+    }
+    for (const key of keys) {
+      if (Object.hasOwn(snapshot, key)) continue;
+      let descriptor: PropertyDescriptor | undefined;
+      try { descriptor = Object.getOwnPropertyDescriptor(source, key); } catch (error) {
+        if (source === init) throw error;
+        continue;
+      }
+      if (!descriptor) continue;
+      if (source === init && descriptor.enumerable) ownEnumerableKeys.add(key);
+      let read = false;
+      let value: unknown;
+      Object.defineProperty(snapshot, key, {
+        // Keep inherited helpers out of spread/structured-clone transports.
+        // Standard dictionary fields are captured explicitly below.
+        configurable: true, enumerable: source === init && descriptor.enumerable,
+        get() {
+          if (!read) { value = Reflect.get(init, key, init); read = true; }
+          return value;
+        },
+        set(next: unknown) { value = next; read = true; },
+      });
+    }
+    // Prototype reflection is optional metadata; native dictionaries and
+    // spread-compatible Proxy options need only their property values.
+    try { source = Object.getPrototypeOf(source); } catch { break; }
+  }
+  // WebIDL dictionaries also read fields supplied virtually by a Proxy.
+  // Capture standard options; unused custom getters remain unread.
+  for (const key of requestDictionaryKeys) {
+    if (key === 'body') {
+      // Read the body at the transport step, avoiding unsigned stream creation.
+      requestBodyReaders.set(snapshot, () => Reflect.get(init, 'body', init));
+      if (!ownEnumerableKeys.has(key) || implicitRequestBodies.has(init)) implicitRequestBodies.add(snapshot);
+      let read = false;
+      let body: RequestInit['body'];
+      Object.defineProperty(snapshot, key, {
+        enumerable: true, configurable: true,
+        get() {
+          if (!read) { body = Reflect.get(init, 'body', init); read = true; }
+          return body;
+        },
+      });
+      continue;
+    }
+    const value = Reflect.get(init, key, init);
+    if (value !== undefined || ownEnumerableKeys.has(key)) {
+      Object.defineProperty(snapshot, key, { value, enumerable: true, configurable: true, writable: true });
+    } else {
+      Reflect.deleteProperty(snapshot, key);
+    }
+  }
+  return snapshot;
+}
+
+function withRequestOptions(init: RequestInit | undefined, options: RequestInit): RequestInit {
+  const snapshot = snapshotRequestInit(init);
+  const descriptors = Object.getOwnPropertyDescriptors(snapshot ?? {});
+  Object.assign(descriptors, Object.getOwnPropertyDescriptors(options));
+  const merged: RequestInit = Object.create(Object.prototype, descriptors);
+  if (Object.hasOwn(descriptors, 'body')) {
+    const body = merged.body;
+    if (body === undefined && snapshot && implicitRequestBodies.has(snapshot)) {
+      Reflect.deleteProperty(merged, 'body');
+    } else {
+      Object.defineProperty(merged, 'body', { value: body, enumerable: true, configurable: true, writable: true });
+    }
+  }
+  return merged;
+}
+
 /**
  * Normalize a fetch input into a `[urlString, init]` pair.
  *
@@ -55,13 +185,17 @@ import { createSolanaAdapter, createEvmAdapter, isSolanaWallet, isEvmWallet, isK
  *
  * So when `input` is a `Request`, we drain it ONCE here — buffering the body
  * into an ArrayBuffer and lifting method/headers into a plain `RequestInit` —
- * and hand the rest of the client a string + a re-usable init. A string or URL
- * passes through untouched. This makes the wrapper safe to compose under other
+ * and hand the rest of the client a string + a re-usable init. For a string or
+ * URL, forward the original init to the unpaid transport. Payment handling
+ * snapshots standard fields before awaiting approval; custom fields are read
+ * only when a transport needs them.
+ * This makes the wrapper safe to compose under other
  * fetch wrappers (e.g. the SIWx extension) that hand us a `Request`.
  */
 async function normalizeRequestInput(
   input: string | URL | Request,
   init?: RequestInit,
+  signal?: AbortSignal | null,
 ): Promise<[string, RequestInit | undefined]> {
   if (typeof input === 'string') return [input, init];
   if (input instanceof URL) return [input.href, init];
@@ -77,7 +211,7 @@ async function normalizeRequestInput(
   const merged: RequestInit = {
     method: init?.method ?? req.method,
     headers,
-    signal: init?.signal ?? req.signal,
+    signal: signal !== undefined ? signal : req.signal,
     redirect: init?.redirect ?? req.redirect,
     credentials: init?.credentials ?? req.credentials,
   };
@@ -341,6 +475,14 @@ export interface X402Client {
   fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>;
 }
 
+/** Internal client used by the budget wrapper; public consumers use X402Client. */
+interface InternalX402Client extends X402Client {
+  fetch(input: string | URL | Request, init?: RequestInit, hooks?: PaymentHooks): Promise<Response>;
+}
+
+/** Internal per-request overrides used by the budget wrapper. */
+export type PaymentHooks = Pick<X402ClientConfig, 'onPaymentRequired' | 'onPaymentDispatched'>;
+
 /**
  * Result of finding a payment option
  */
@@ -372,7 +514,7 @@ interface MatchedPayment {
  * }
  * ```
  */
-export function createX402Client(config: X402ClientConfig): X402Client {
+export function createX402Client(config: X402ClientConfig): InternalX402Client {
   const {
     adapters = [createSolanaAdapter({ verbose: config.verbose }), createEvmAdapter({ verbose: config.verbose })],
     wallets: walletSet,
@@ -537,6 +679,8 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     originalResponse: Response,
     passInfo: AccessPassInfo,
     url: string,
+    hooks: PaymentHooks,
+    signal?: AbortSignal | null,
   ): Promise<Response | null> {
     // Determine which tier/duration to request
     let tierQuery = '';
@@ -618,8 +762,12 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       // RPC errors: skip pre-check, attempt the transaction anyway
     }
 
+    if (hooks.onPaymentRequired && !await withAbortSignal(signal, () => hooks.onPaymentRequired!(accept))) {
+      throw new X402Error('payment_rejected', 'Payment rejected by onPaymentRequired callback');
+    }
+
     // Build and sign transaction
-    const signedTx = await adapter.buildTransaction(accept, wallet, rpcUrl);
+    const signedTx = await withAbortSignal(signal, () => adapter.buildTransaction(accept, wallet, rpcUrl));
 
     // Build PAYMENT-SIGNATURE
     let payload: Record<string, unknown>;
@@ -660,9 +808,8 @@ export function createX402Client(config: X402ClientConfig): X402Client {
 
     const paymentSignatureHeader = btoa(JSON.stringify(paymentSignature));
 
-    // Make payment request to purchase the pass (must be POST)
-    const passResponse = await customFetch(passUrl, {
-      ...init,
+    const passInit = withRequestOptions(init, {
+      ...(signal !== undefined ? { signal } : {}),
       method: 'POST',
       headers: {
         ...(init?.headers || {}),
@@ -670,6 +817,15 @@ export function createX402Client(config: X402ClientConfig): X402Client {
         'PAYMENT-SIGNATURE': paymentSignatureHeader,
       },
     });
+    throwIfAborted(signal);
+    try {
+      hooks.onPaymentDispatched?.(accept, signedTx.settlementProbe);
+    } catch {
+      // Fire-and-forget, as in the per-request payment path.
+    }
+
+    // Make payment request to purchase the pass (must be POST)
+    const passResponse = await customFetch(passUrl, passInit);
 
     if (!passResponse.ok) {
       log('Pass purchase failed:', passResponse.status);
@@ -699,7 +855,9 @@ export function createX402Client(config: X402ClientConfig): X402Client {
    */
   async function x402FetchInner(
     input: string,
-    init?: RequestInit
+    init: RequestInit | undefined,
+    hooks: PaymentHooks,
+    signal?: AbortSignal | null,
   ): Promise<Response> {
     const url = input;
     log('Making request:', url);
@@ -709,13 +867,14 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       const cachedJwt = getCachedPass(url);
       if (cachedJwt) {
         log('Using cached access pass');
-        const passResponse = await customFetch(input, {
-          ...init,
+        const cachedInit = snapshotRequestInit(init);
+        const passResponse = await customFetch(input, withRequestOptions(cachedInit, {
+          ...(signal !== undefined ? { signal } : {}),
           headers: {
-            ...(init?.headers || {}),
+            ...(cachedInit?.headers || {}),
             'Authorization': `Bearer ${cachedJwt}`,
           },
-        });
+        }));
         // If the pass worked (not 401/402), return the response
         if (passResponse.status !== 401 && passResponse.status !== 402) {
           return passResponse;
@@ -734,18 +893,58 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       return response;
     }
 
+    throwIfAborted(signal);
+    const snapshot = snapshotRequestInit(init);
+    signal = signal !== undefined ? signal : snapshot?.signal;
+    return withAbortSignal(signal, () => handlePaymentRequired(input, snapshot, response, hooks, signal,
+      snapshot ? requestBodyReaders.get(snapshot) : undefined));
+  }
+
+  async function handlePaymentRequired(
+    input: string,
+    init: RequestInit | undefined,
+    response: Response,
+    hooks: PaymentHooks,
+    signal?: AbortSignal | null,
+    replayBody?: () => RequestInit['body'],
+  ): Promise<Response> {
+    let replayFallbackBody = false;
+    const url = input;
+    throwIfAborted(signal);
     log('Received 402 Payment Required');
 
     // ── Access pass: check if server offers passes and we want one ──
     const passTiersHeader = response.headers.get('X-ACCESS-PASS-TIERS');
     if (accessPassConfig && passTiersHeader) {
       log('Server offers access passes, purchasing...');
+      let approvalRejected = false;
+      let passDispatched = false;
       try {
         const passInfo: AccessPassInfo = JSON.parse(atob(passTiersHeader));
-        const passResponse = await purchaseAccessPass(input, init, response, passInfo, url);
+        const passResponse = await purchaseAccessPass(input, init, response, passInfo, url, {
+          ...hooks,
+          onPaymentRequired: async accept => {
+            // A rejected or failed approval must not prompt again via fallback.
+            approvalRejected = true;
+            const approved = hooks.onPaymentRequired ? await hooks.onPaymentRequired(accept) : true;
+            approvalRejected = !approved;
+            return approved;
+          },
+          onPaymentDispatched: (accept, probe) => {
+            passDispatched = true;
+            hooks.onPaymentDispatched?.(accept, probe);
+          },
+        }, signal);
         if (passResponse) return passResponse;
       } catch (e) {
+        if (approvalRejected) throw e;
+        throwIfAborted(signal);
         log('Access pass purchase failed, falling back to per-request payment:', e);
+      }
+      // Re-read the caller's body for a new payment attempt while retaining
+      // the other captured options. Data properties return the caller's stream.
+      if (passDispatched && replayBody) {
+        replayFallbackBody = true;
       }
     }
 
@@ -846,8 +1045,8 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     }
 
     // Pre-payment inspection hook — let caller approve or reject
-    if (onPaymentRequired) {
-      const approved = await onPaymentRequired(accept);
+    if (hooks.onPaymentRequired) {
+      const approved = await withAbortSignal(signal, () => hooks.onPaymentRequired!(accept));
       if (!approved) {
         throw new X402Error('payment_rejected', 'Payment rejected by onPaymentRequired callback');
       }
@@ -855,7 +1054,7 @@ export function createX402Client(config: X402ClientConfig): X402Client {
 
     // Build and sign transaction
     log('Building transaction...');
-    const signedTx = await adapter.buildTransaction(accept, wallet, rpcUrl);
+    const signedTx = await withAbortSignal(signal, () => adapter.buildTransaction(accept, wallet, rpcUrl));
     log('Transaction signed');
 
     // Build PAYMENT-SIGNATURE payload
@@ -915,14 +1114,25 @@ export function createX402Client(config: X402ClientConfig): X402Client {
 
     const paymentSignatureHeader = btoa(JSON.stringify(paymentSignature));
 
+    const paidInit = withRequestOptions(init, {
+      ...(replayFallbackBody && replayBody ? { body: replayBody() } : {}),
+      ...(signal !== undefined ? { signal } : {}),
+      headers: {
+        ...(init?.headers || {}),
+        'PAYMENT-SIGNATURE': paymentSignatureHeader,
+        ...(quoteHash ? { 'X-Quote-Hash': quoteHash } : {}),
+      },
+    });
+
     // Signal that the payment authorization is about to leave our hands. Past
     // this point a timeout can no longer be read as "no money moved" — the
     // facilitator may settle the moment it receives the header below. The
     // settlementProbe (if the adapter produced one) lets the caller confirm
     // settlement on-chain should the merchant never respond.
-    if (onPaymentDispatched) {
+    throwIfAborted(signal);
+    if (hooks.onPaymentDispatched) {
       try {
-        onPaymentDispatched(accept, signedTx.settlementProbe);
+        hooks.onPaymentDispatched(accept, signedTx.settlementProbe);
       } catch {
         // Fire-and-forget — a throwing callback must not block the payment.
       }
@@ -933,15 +1143,7 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     // (That protection is per-authorization; it does NOT cover a fresh
     // payAndFetch call, which signs a new nonce. See FINDINGS / DESIGN docs.)
     log('Retrying request with payment...');
-    const retryResponse = await fetchWithRetry(input, {
-      ...init,
-      headers: {
-        ...(init?.headers || {}),
-        'PAYMENT-SIGNATURE': paymentSignatureHeader,
-        // Forward quote hash for dynamic pricing validation
-        ...(quoteHash ? { 'X-Quote-Hash': quoteHash } : {}),
-      },
-    });
+    const retryResponse = await fetchWithRetry(input, paidInit);
 
     log('Retry response status:', retryResponse.status);
 
@@ -962,9 +1164,21 @@ export function createX402Client(config: X402ClientConfig): X402Client {
   async function x402Fetch(
     input: string | URL | Request,
     init?: RequestInit,
+    hooks?: PaymentHooks,
   ): Promise<Response> {
-    const [url, normalizedInit] = await normalizeRequestInput(input, init);
-    return x402FetchInner(url, normalizedInit);
+    // String/URL probes own their original options, including signal reads.
+    // Request normalization needs to capture its effective signal only once.
+    const requestInput = typeof input !== 'string' && !(input instanceof URL);
+    const callerSignal = requestInput ? init?.signal : undefined;
+    const signal = callerSignal !== undefined ? callerSignal : (requestInput ? input.signal : undefined);
+    return withAbortSignal(signal, async () => {
+      const [url, normalizedInit] = await normalizeRequestInput(input, init, signal);
+      throwIfAborted(signal);
+      return x402FetchInner(url, normalizedInit, {
+        onPaymentRequired: hooks?.onPaymentRequired ?? onPaymentRequired,
+        onPaymentDispatched: hooks?.onPaymentDispatched ?? onPaymentDispatched,
+      }, signal);
+    });
   }
 
   return {

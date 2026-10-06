@@ -6,6 +6,7 @@ The full API surface. For what the SDK *is* and why, start with the [README](./R
 - [Tabs (buyer)](#tabs-buyer)
 - [Sellers](#sellers)
 - [One-shot payments](#one-shot-payments)
+- [Budget accounts](#budget-accounts)
 - [Server middleware](#server-middleware)
 - [Batch settlement (EVM)](#batch-settlement-evm)
 - [Discovery & sponsored access](#discovery--sponsored-access)
@@ -25,7 +26,7 @@ import { createSolanaVaultAdapter, passkeySignerFromP256Keypair } from '@dextera
 import { tabChallengeMiddleware, tabMiddleware, tabOrExactMiddleware, requireTab, openSse } from '@dexterai/x402/tab/seller';
 
 // One-shot client
-import { payAndFetch, createKeypairWallet, createEvmKeypairWallet, getPaymentReceipt } from '@dexterai/x402/client';
+import { payAndFetch, createBudgetAccount, createKeypairWallet, createEvmKeypairWallet, getPaymentReceipt } from '@dexterai/x402/client';
 
 // React
 import { useX402Payment } from '@dexterai/x402/react';
@@ -301,6 +302,69 @@ if (result.ok && result.paid) {
 ```
 
 In React, `useX402Payment` takes wallets from `@solana/wallet-adapter-react` or `wagmi` and returns a `fetch` that pays automatically. Read a settled receipt off any paid response with `getPaymentReceipt(response)`.
+
+---
+
+## Budget accounts
+
+`createBudgetAccount` is exported from `@dexterai/x402/client`. It wraps fetch with
+an in-memory total budget, optional per-request and hourly limits, and an optional
+payment domain allowlist.
+
+```typescript
+import { createBudgetAccount } from '@dexterai/x402/client';
+
+const account = createBudgetAccount({
+  walletPrivateKey: process.env.SOLANA_PRIVATE_KEY!,
+  budget: { total: '1.00', perRequest: '0.70', perHour: '1.00' },
+});
+await account.fetch('https://api.example.com/data');
+console.log(account.remainingAmount - account.reservedAmount);
+```
+
+The account reserves budget before awaiting approval or signing. Total and hourly
+checks include these reservations. `remaining` and `remainingAmount` report the
+total budget minus recorded authorizations; they still include reserved amounts.
+`reservedAmount` reports the outstanding reservations. Subtract it from
+`remainingAmount` to see the amount available for another authorization. Per-request,
+hourly and domain restrictions still apply. `reset()` clears recorded history but
+does not release outstanding reservations.
+
+The same budget checks and `onPaymentRequired` callback apply to access-pass
+purchases. Returning `false`, throwing from the callback, or exceeding a budget
+rejects the request without falling back to per-request payment.
+
+An authorization is recorded when it is handed to the fetch implementation, once
+per signed authorization. Transport retries reuse that record. Errors after this
+handoff never remove it: a custom transport may have delivered the request before
+retrying or processing the response. This also counts a native fetch call that
+rejects a consumed stream before sending. `spent` and the ledger describe these
+authorizations, not confirmed settlement. Approval, signing, body creation and
+cancellation failures before handoff release the reservation without a record.
+Zero-amount authorizations also increment `payments` and appear in the ledger.
+Each record's `network` comes from the selected payment requirement.
+For a repeatable native upload, use a buffered body, a `Request` without a one-shot
+`init.body` override, or a getter that creates a fresh stream for each payment
+attempt. A one-shot stream cannot be reused by a native transport retry.
+
+For string or URL inputs, after a 402 the client captures standard request option
+values before awaiting approval. Replacing `init.headers`, `init.method` or
+`init.signal` in an approval callback does not replace those captured values. The
+headers object is not deep-copied, so changes to that object can still be observed.
+The body is read after approval and signing, just before each payment attempt.
+This lets a body getter or an approval callback provide a fresh upload stream.
+A transport retry reuses that attempt's body and signed authorization. A failed
+access-pass purchase can start a separately approved attempt with a newly read body.
+
+A `Request` input is normalized before the unpaid request: method and headers are
+copied, and its body is buffered unless `init.body` supplies an override. That
+normalization reads an explicit body override before the unpaid request; it does
+not re-read the caller's original `init.body` after approval.
+
+The legacy payment and access-pass header merge currently loses caller headers
+from `Headers` objects and tuple arrays, including normalized `Request` headers.
+Until this is fixed, use a string or URL input with a plain-object `init.headers`
+map when the paid request needs caller headers.
 
 ---
 

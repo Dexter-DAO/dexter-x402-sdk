@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Reserve budget-account funds before asynchronous approval and signing,
+  so concurrent requests and access-pass purchases share total and hourly limits.
+  Preserve each authorization's amount, domain and network in its own record.
+- Apply the payment approval callback to access-pass purchases. Approval
+  rejection, callback errors and budget denials end the request without
+  falling back to per-request payment.
+- Include zero-amount authorizations in `payments` and the ledger. Record
+  each authorization's network from the selected payment requirement.
+- Keep authorizations counted once handed to the transport, including failed
+  fetch calls and custom internal retries. Native consumed-stream rejections also
+  count conservatively; errors before transport handoff release the reservation.
+- Preserve request cancellation, custom transport options and deferred body
+  creation through the legacy paid retry and access-pass fallback paths.
+- Read caller headers once when applying a cached access pass, including
+  inherited and non-enumerable header getters.
+- Keep inherited custom helpers out of request-option spreads and structured
+  clones, while retaining standard inherited fetch options.
+- Allow unavailable optional metadata on Proxy prototypes when copying request
+  options, while preserving errors from direct options and standard field reads.
+
+### Added
+
+- Expose pending budget-account reservations as `reservedAmount`. Document its
+  relationship to `remainingAmount` and the legacy client's request snapshots.
+- Declare `node-fetch` as a development dependency for request compatibility tests.
+
 ## [6.0.5] - 2026-09-29
 
 ### Fixed
