@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in Nano adapter (`createNanoAdapter`, network `nano:mainnet`) in
+  `@dexterai/x402/adapters`. It validates checksummed `nano_`/`xrb_`
+  addresses, keeps raw amounts as `bigint` (1 XNO = 10^30 raw), and pays
+  through an injected `NanoWallet` whose `send` returns the block hash; the
+  SDK holds no key. `confirmSettlement` checks the block with one
+  `block_info` call. It is not part of `createDefaultAdapters()`.
+- `WalletSet.nano`, a `nano` settlement probe, and an optional
+  `ChainAdapter.family`. `createX402Client` picks the wallet and payload
+  format from the adapter family instead of the adapter name. Solana and EVM
+  behave as before.
+
 ## [6.0.5] - 2026-09-29
 
 ### Fixed

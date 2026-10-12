@@ -7,6 +7,7 @@
  * Implementations:
  * - SolanaAdapter: Solana mainnet/devnet
  * - EvmAdapter: Base, Arbitrum, Ethereum, etc.
+ * - NanoAdapter: Nano mainnet (opt-in)
  */
 
 import type { PaymentAccept } from '../types';
@@ -71,7 +72,23 @@ export type SettlementProbe =
       amount: string;
       /** The transaction's recent blockhash — bounds how far back the scan need look. */
       blockhash: string;
+    }
+  | {
+      /** Nano state send block, published by the buyer's wallet. Confirmed by `block_info`. */
+      kind: 'nano';
+      /** The send block hash (64 hex chars). The unique key. */
+      blockHash: string;
+      /** The merchant account the block must send to. */
+      payTo: string;
+      /** Minimum amount in raw, as a string. */
+      amount: string;
     };
+
+/**
+ * Payment family an adapter signs for. Selects the payment capability rules
+ * and the {@link WalletSet} entry the client hands the adapter.
+ */
+export type PaymentFamily = 'evm' | 'svm' | 'nano';
 
 /**
  * Result of building and signing a transaction.
@@ -121,6 +138,13 @@ export interface ChainAdapter {
    * e.g., ['eip155:8453'] for Base
    */
   readonly networks: string[];
+
+  /**
+   * Payment family. Optional: the built-in Solana and EVM adapters are
+   * recognised by `name`; other adapters set this so the client can pick the
+   * matching wallet and payload format.
+   */
+  readonly family?: PaymentFamily;
 
   /**
    * Check if this adapter can handle a given network
@@ -225,6 +249,8 @@ export interface WalletSet {
   solana?: import('../adapters/solana').SolanaWallet;
   /** EVM wallet (from wagmi, createEvmKeypairWallet, or any { address, signTypedData } object) */
   evm?: import('../adapters/evm').EvmWallet;
+  /** Nano wallet (any { address, send } object; requires the opt-in NanoAdapter) */
+  nano?: import('../adapters/nano').NanoWallet;
 }
 
 /**
