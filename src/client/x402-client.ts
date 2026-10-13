@@ -30,7 +30,7 @@
  * ```
  */
 
-import type { ChainAdapter, WalletSet, SettlementProbe } from '../adapters/types';
+import type { ChainAdapter, WalletSet, SettlementProbe, PaymentFamily } from '../adapters/types';
 import type {
   PaymentRequired,
   PaymentAccept,
@@ -341,6 +341,38 @@ export interface X402Client {
   fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>;
 }
 
+/** The {@link WalletSet} entry each payment family signs with. */
+const WALLET_KEYS: Record<PaymentFamily, keyof WalletSet> = {
+  svm: 'solana',
+  evm: 'evm',
+  nano: 'nano',
+};
+
+/**
+ * Payment family of an adapter. The built-in Solana and EVM adapters are
+ * recognised by name; other adapters declare `family`. Undefined means the
+ * client has no wallet for this adapter.
+ */
+function adapterFamily(adapter: ChainAdapter): PaymentFamily | undefined {
+  if (adapter.family) return adapter.family;
+  if (adapter.name === 'Solana') return 'svm';
+  if (adapter.name === 'EVM') return 'evm';
+  return undefined;
+}
+
+/**
+ * PAYMENT-SIGNATURE payload for a signed transaction.
+ * EVM and Nano serialize the payload object itself (authorization + signature,
+ * or the published block hash); Solana sends payload.transaction (base64 tx).
+ */
+function paymentPayload(adapter: ChainAdapter, serialized: string): Record<string, unknown> {
+  const family = adapterFamily(adapter);
+  if (family === 'evm' || family === 'nano') {
+    return JSON.parse(serialized);
+  }
+  return { transaction: serialized };
+}
+
 /**
  * Result of finding a payment option
  */
@@ -482,16 +514,11 @@ export function createX402Client(config: X402ClientConfig): X402Client {
       // money the seller's scheme handler cannot credit.
       const adapter = adapters.find(a => a.canHandle(accept.network));
       if (!adapter) continue;
-      const family = adapter.name === 'Solana' ? 'svm' : 'evm';
-      if (exactPaymentCapabilityError(accept, family)) continue;
+      const family = adapterFamily(adapter);
+      if (!family || exactPaymentCapabilityError(accept, family)) continue;
 
       // Find the right wallet for this adapter
-      let wallet: unknown;
-      if (adapter.name === 'Solana') {
-        wallet = wallets.solana;
-      } else if (adapter.name === 'EVM') {
-        wallet = wallets.evm;
-      }
+      const wallet: unknown = wallets[WALLET_KEYS[family]];
 
       if (wallet && adapter.isConnected(wallet)) {
         candidates.push({ accept, adapter, wallet });
@@ -622,12 +649,7 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     const signedTx = await adapter.buildTransaction(accept, wallet, rpcUrl);
 
     // Build PAYMENT-SIGNATURE
-    let payload: Record<string, unknown>;
-    if (adapter.name === 'EVM') {
-      payload = JSON.parse(signedTx.serialized);
-    } else {
-      payload = { transaction: signedTx.serialized };
-    }
+    const payload = paymentPayload(adapter, signedTx.serialized);
 
     const originalUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     let resolvedResource: unknown = requirements.resource;
@@ -859,16 +881,7 @@ export function createX402Client(config: X402ClientConfig): X402Client {
     log('Transaction signed');
 
     // Build PAYMENT-SIGNATURE payload
-    // Solana uses payload.transaction (base64 serialized tx)
-    // EVM uses payload directly (authorization + signature object)
-    let payload: Record<string, unknown>;
-    if (adapter.name === 'EVM') {
-      // EVM: payload is the authorization + signature object
-      payload = JSON.parse(signedTx.serialized);
-    } else {
-      // Solana: payload.transaction is the base64 tx
-      payload = { transaction: signedTx.serialized };
-    }
+    const payload = paymentPayload(adapter, signedTx.serialized);
 
     // Resolve relative resource URLs to absolute URLs
     // Sellers may return path-only resources like "/api/foo" in their 402 response.
