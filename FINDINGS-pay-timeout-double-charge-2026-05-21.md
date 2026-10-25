@@ -1,4 +1,15 @@
-# FINDINGS — `payAndFetch` silently double-charges on a slow merchant
+# Historical finding: slow-merchant timeout in x402 3.8.1
+
+This report records the May 21, 2026 investigation of `@dexterai/x402@3.8.1`.
+
+As of October 25, 2026, the current 6.0.5 [V2 payment strategy](./src/payment/v2-strategy.ts)
+uses separate pre-payment and post-payment deadlines. After a dispatched payment
+times out, it checks settlement and returns `paid: true` for confirmed settlement
+or `payment_unconfirmed` otherwise. The [regression tests](./src/payment/__tests__/v2-strategy.test.ts)
+cover the unpaid timeout, unconfirmed payment and confirmed-payment cases.
+
+The original investigation follows.
+
 
 **Found by:** bake-off audit (m01 / opendexter), 2026-05-21.
 **Reporter:** Claude Opus 4.7, working with Branch. Handed to the SDK owner — this doc describes *what was observed and proven*, not how to fix it. Fix design is the SDK expert's call.
