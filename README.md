@@ -5,11 +5,11 @@
 <h1 align="center">@dexterai/x402</h1>
 
 <p align="center">
-  <strong>Give your agent a spending limit it cannot exceed — without ever giving up your wallet.</strong>
+  <strong>Build the financial operations of an agent-run business.</strong>
 </p>
 
 <p align="center">
-  Open a tab, set a cap, and your agent pays as it works. No signature per charge, no escrow, no custodian. Your USDC stays in your own wallet the entire time, and the seller is still guaranteed payment.
+  Let a business sell its work, buy services from other businesses, and authorize agents to spend through its account. Supplier Tabs support recurring commerce, with spending authority and payment obligations attached to the business.
 </p>
 
 <p align="center">
@@ -25,18 +25,21 @@
 
 ---
 
-## The problem
+## Businesses buying from businesses
 
-An agent that pays for things needs money it can reach without you in the loop for every charge. The two usual ways to give it that each cost you something you shouldn't have to give up.
+A business can sell research, software or creative work while buying the data, inference and compute needed to produce it. Its agents need authority to transact, its suppliers need commitments they can collect, and its owner needs control over the business's money and the value it creates.
 
-- **Prefund an escrow** and your money leaves your wallet to sit with a custodian before you've bought anything. Your balance is on the table, and you've paid a stranger in advance.
-- **Hand it a spending delegate** and you keep custody — but you can also pull the funds mid-charge, so the seller can be left unpaid. Serious sellers decline it.
+Dexter is building the operating and financial system for those businesses: self-custodial accounts, supplier relationships, productive financing and defined economic rights. Each business retains its assets and customer relationships, along with the knowledge and financial history created by its work.
 
-## The tab
+This SDK provides HTTP and MCP payments, supplier Tabs, seller middleware and client integrations. [OpenDexter](https://github.com/Dexter-DAO/opendexter-ide) connects agents to service discovery and commerce; [Connect](https://github.com/Dexter-DAO/dexter-connect) brings identity and owner-granted authority into applications. Existing businesses and independent agent runtimes can participate through these interfaces.
 
-A **tab** keeps both halves. You open one against your own wallet with a single passkey tap and set a cap. Your agent spends against that cap call by call, with no signature on each charge. The money never leaves your wallet — and while the tab is open, the Solana program blocks you from pulling it out from under what the agent has already run up. The seller gets paid when they settle, automatically.
+<a id="the-tab"></a>
 
-The cap is enforced at consensus by an on-chain program — not by this library, and not by Dexter. The closest familiar shape is an auth-and-capture card hold, except the hold lives on-chain instead of inside a processor, and no one ever takes your money.
+## Supplier Tabs
+
+A Tab gives an agent continuing purchasing authority with a named supplier under an owner-approved limit. The supplier meters work as it is delivered, and the buyer's account carries the resulting payment obligation. This supports recurring inference, data services and work supplied by other agent-run businesses.
+
+The owner approves the seller, session limits and expiry. The agent signs vouchers within that grant. Buyer funds stay in their own wallet until settlement, with the Vault's reservation rules protecting outstanding obligations. The implementation and transaction checks are described under [Authorization and settlement](#authorization-and-settlement).
 
 ```ts
 import { payUrlWithTab, type ReserveFinalVoucherV2 } from '@dexterai/x402/tab';
@@ -70,19 +73,6 @@ That's the whole loop: one tap to open, unlimited calls under the cap, one settl
 
 ---
 
-## Why you can trust it
-
-"Unruggable" has to be earned, so here is what backs it. Every property below is enforced by the on-chain program, not by this SDK and not by Dexter.
-
-- **Non-custodial.** Your USDC never leaves your wallet. The program holds no funds — it records bindings and gates withdrawals. There is no escrow account and no custodian to fail.
-- **The cap is consensus-enforced.** The limit is checked by the Solana program at consensus, not by this library. Read the program and verify it yourself: [`Hg3wRaydFtJhYrdvYrKECacpJYDsC9Px7yKmpncj2fhc`](https://solscan.io/account/Hg3wRaydFtJhYrdvYrKECacpJYDsC9Px7yKmpncj2fhc) on Solana mainnet.
-- **Only your passkey moves money.** Withdrawals require a WebAuthn assertion verified by Solana's secp256r1 precompile. Neither the SDK nor the facilitator holds a key that can drain your wallet.
-- **The seller is protected, surgically.** As the agent spends, accrued charges crystallize on-chain into a reservation sized to exactly what's been spent — never the whole wallet. The buyer keeps spending or withdrawing the rest of their balance freely, the seller is guaranteed what they're owed, and if a seller ever goes silent the buyer reclaims the abandoned reservation after a fixed grace period. No one's funds can be frozen indefinitely.
-- **Live on mainnet, pre-audit, and we say so.** Tabs settle on Solana mainnet today; an external audit is funded and in flight. The report and any findings publish in the [`dexter-vault`](https://github.com/Dexter-DAO/dexter-vault) program repo. Responsible disclosure: branch@dexter.cash.
-
-The full threat model and trust assumptions live in the program's [`SECURITY.md`](https://github.com/Dexter-DAO/dexter-vault).
-
----
 
 ## Setup
 
@@ -106,13 +96,13 @@ const vault = createSolanaVaultAdapter({
 });
 ```
 
-That `vault` drives [the tab loop above](#the-tab). To inspect a seller's price before you spend, `resolveTabTerms(url)` reads the terms without paying — for consent screens, directories, or an agent that plans ahead.
+That `vault` drives [the tab loop above](#supplier-tabs). To inspect a seller's price before you spend, `resolveTabTerms(url)` reads the terms without paying — for consent screens, directories, or an agent that plans ahead.
 
 ---
 
 ## Get paid (sellers)
 
-You get paid for exactly what you serve, and you hold no key. As an agent spends against its tab, charges crystallize on-chain into a reservation against the buyer's wallet; one settle at close pays your address for everything metered. One middleware advertises both a tab and a one-shot price in a single `402`, so tab-native agents and one-shot callers pay at the same rate.
+The seller middleware verifies vouchers and their reservations before admitting paid work. Settlement pays the seller address bound to the session. `tabOrExactMiddleware` advertises both a tab and a one-shot price in a single `402`, so callers can use either payment route.
 
 ```ts
 import {
@@ -205,12 +195,24 @@ Tabs are Solana. One-shot and batch settlement span Solana and the major EVM cha
 
 ---
 
+## Authorization and settlement
+
+The owner-approved registration binds the session key, seller, expiry and spending limits. The agent signs vouchers within that session. See the [registration and voucher checks](./src/tab/seller/verify.ts).
+
+For each FINAL V2 voucher, the buyer and seller independently verify the exact Solana transaction, voucher-binding Memo and coherent Vault/SessionAccount state. The [reservation verifier](./src/tab/adapters/solana/reservation-verifier.ts) requires at least confirmed commitment; a broadcast signature alone is insufficient. The [reservation-provider contract](./REFERENCE.md#final-v2-reservation-provider) describes the backend integration.
+
+The deployed Vault program is [`Hg3wRaydFtJhYrdvYrKECacpJYDsC9Px7yKmpncj2fhc`](https://solscan.io/account/Hg3wRaydFtJhYrdvYrKECacpJYDsC9Px7yKmpncj2fhc) on Solana mainnet. Operator availability, wallet-management permissions and program upgrade authority are part of its trust model.
+
+The Vault program source and threat model are maintained in a private repository. For security reports, audit inquiries or review access, contact [branch@dexter.cash](mailto:branch@dexter.cash).
+
+---
+
 ## More
 
 Release maintainers can follow the [GitHub OIDC publishing workflow](./docs/releases.md).
 
 - **[REFERENCE.md](./REFERENCE.md)** — every export, option table, and example: tabs, one-shot, batch settlement, discovery.
-- **Upgrading?** v6 pins the tested Vault `0.43.2` pair, requires voucher-bound V2 reservation receipts, and uses exact-state V3 revocation. Migration from v5/v4/v3: [REFERENCE.md](./REFERENCE.md#migration).
+- **Upgrading?** v6 pins `@dexterai/vault@0.43.4`, requires voucher-bound V2 reservation receipts, and uses exact-state V3 revocation. Migration from v5/v4/v3: [REFERENCE.md](./REFERENCE.md#migration).
 - **License** — MIT, see [LICENSE](./LICENSE).
 
 ---
