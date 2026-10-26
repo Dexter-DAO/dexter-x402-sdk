@@ -24,7 +24,7 @@
  * ```
  */
 
-import { createX402Client, type X402ClientConfig } from './x402-client';
+import { createX402Client, type X402ClientConfig, type PaymentHooks } from './x402-client';
 import { createKeypairWallet } from './keypair-wallet';
 import { createEvmKeypairWallet } from './evm-wallet';
 import type { AccessPassClientConfig } from '../types';
@@ -135,7 +135,7 @@ export interface WrapFetchOptions {
 export function wrapFetch(
   fetchImpl: typeof globalThis.fetch,
   options: WrapFetchOptions
-): typeof globalThis.fetch {
+): ReturnType<typeof createX402Client>['fetch'] {
   const {
     walletPrivateKey,
     evmPrivateKey,
@@ -194,11 +194,12 @@ export function wrapFetch(
   if (walletsReady) {
     return (async (
       input: string | URL | Request,
-      init?: RequestInit
+      init?: RequestInit,
+      hooks?: PaymentHooks,
     ): Promise<Response> => {
       await walletsReady;
-      return clientFetch(input, init);
-    }) as typeof globalThis.fetch;
+      return clientFetch(input, init, hooks);
+    });
   }
 
   return clientFetch;
