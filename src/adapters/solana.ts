@@ -12,7 +12,7 @@ import {
   TransactionMessage,
   VersionedTransaction,
   ComputeBudgetProgram,
-  type TransactionInstruction,
+  TransactionInstruction,
 } from '@solana/web3.js';
 import {
   getAssociatedTokenAddress,
@@ -41,10 +41,13 @@ import {
 export { SOLANA_MAINNET, SOLANA_DEVNET, SOLANA_TESTNET } from '../constants';
 
 /**
- * Dexter policy-safe compute budget settings
+ * Compute budget for a transfer plus Memo.
  */
-const DEFAULT_COMPUTE_UNIT_LIMIT = 12_000;
+const DEFAULT_COMPUTE_UNIT_LIMIT = 25_000;
+// Allow complex UTF-8 memos during simulation; measure the signed limit below.
+const MAX_SIMULATION_COMPUTE_UNIT_LIMIT = 1_400_000;
 const DEFAULT_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 1;
+const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
 
 /**
  * Solana wallet interface (compatible with @solana/wallet-adapter)
@@ -197,6 +200,19 @@ export class SolanaAdapter implements ChainAdapter {
     if (!extra?.feePayer) {
       throw new Error('Missing feePayer in payment requirements');
     }
+    let memo: Buffer;
+    let recoveryNonce: string | undefined;
+    if (extra.memo !== undefined) {
+      if (typeof extra.memo !== 'string' || Buffer.byteLength(extra.memo, 'utf8') > 256) {
+        throw new Error('Payment memo must be a UTF-8 string of at most 256 bytes');
+      }
+      memo = Buffer.from(extra.memo, 'utf8');
+    } else {
+      const nonceBytes = new Uint8Array(16);
+      (globalThis.crypto ?? (await import('crypto')).webcrypto).getRandomValues(nonceBytes);
+      recoveryNonce = [...nonceBytes].map(b => b.toString(16).padStart(2, '0')).join('');
+      memo = Buffer.from(recoveryNonce, 'utf8');
+    }
     // Note: decimals is optional - we fetch from mint on-chain if not provided
 
     const feePayerPubkey = new PublicKey(extra.feePayer);
@@ -217,7 +233,9 @@ export class SolanaAdapter implements ChainAdapter {
     // 1. ComputeBudget: Set compute unit limit
     instructions.push(
       ComputeBudgetProgram.setComputeUnitLimit({
-        units: DEFAULT_COMPUTE_UNIT_LIMIT,
+        units: extra.memo === undefined
+          ? DEFAULT_COMPUTE_UNIT_LIMIT
+          : MAX_SIMULATION_COMPUTE_UNIT_LIMIT,
       })
     );
 
@@ -311,6 +329,13 @@ export class SolanaAdapter implements ChainAdapter {
       )
     );
 
+    // 5. Preserve the seller's reference, or add a fresh nonce for recovery.
+    instructions.push(new TransactionInstruction({
+      programId: MEMO_PROGRAM_ID,
+      keys: [],
+      data: memo,
+    }));
+
     // Get recent blockhash
     const { blockhash } = await connection.getLatestBlockhash('confirmed');
 
@@ -319,21 +344,38 @@ export class SolanaAdapter implements ChainAdapter {
       payerKey: feePayerPubkey,
       recentBlockhash: blockhash,
       instructions,
-    }).compileToV0Message();
+    });
+
+    let transaction = new VersionedTransaction(message.compileToV0Message());
+    if (extra.memo !== undefined) {
+      const simulation = await connection.simulateTransaction(transaction, {
+        sigVerify: false,
+        replaceRecentBlockhash: true,
+      });
+      if (simulation.value.err !== null) {
+        throw new Error(`Solana payment simulation failed: ${JSON.stringify(simulation.value.err)}`);
+      }
+      const units = simulation.value.unitsConsumed;
+      if (typeof units !== 'number' || !Number.isSafeInteger(units) ||
+          units <= 0 || units > MAX_SIMULATION_COMPUTE_UNIT_LIMIT) {
+        throw new Error('Solana payment simulation returned invalid compute units');
+      }
+      // Reserve 10% above measured execution, capped at the runtime maximum.
+      instructions[0] = ComputeBudgetProgram.setComputeUnitLimit({
+        units: Math.min(MAX_SIMULATION_COMPUTE_UNIT_LIMIT, Math.ceil(units * 1.1)),
+      });
+      transaction = new VersionedTransaction(message.compileToV0Message());
+    }
 
     // Create and sign transaction
-    const transaction = new VersionedTransaction(message);
     const signedTx = await wallet.signTransaction(transaction);
 
     this.log('Transaction signed successfully');
 
     return {
       serialized: Buffer.from(signedTx.serialize()).toString('base64'),
-      // Captured so a post-payment timeout can scan the destination ATA for
-      // the settling transfer. Solana has no nonce-consumed view, so this
-      // carries enough to identify the transfer: the ATAs, the amount, and
-      // the blockhash (which bounds how far back the scan must look — a
-      // transaction is only valid for ~150 slots after its blockhash).
+      // Compare the signed message, not the transaction bytes: the sponsor
+      // adds its fee-payer signature before submitting the same message.
       settlementProbe: {
         kind: 'solana',
         sourceAta: sourceAta.toBase58(),
@@ -341,6 +383,8 @@ export class SolanaAdapter implements ChainAdapter {
         asset,
         amount,
         blockhash,
+        signedMessage: Buffer.from(signedTx.message.serialize()).toString('base64'),
+        ...(recoveryNonce ? { recoveryNonce } : {}),
       },
     };
   }
@@ -349,20 +393,12 @@ export class SolanaAdapter implements ChainAdapter {
    * Confirm a Solana payment settled on-chain, after a post-payment timeout.
    *
    * Solana has no EIP-3009-style "was this nonce consumed" view. Instead we
-   * scan recent signatures on the merchant's destination ATA and look for a
-   * transfer of exactly the expected amount. The window is naturally bounded:
-   * the payment transaction is only valid for ~150 slots (~60s) after the
-   * blockhash it was built against, so a settling transfer — if it happened —
-   * is among the most recent signatures on that account. We cap the scan at
-   * the 25 most recent signatures.
-   *
-   * This is strong but not surgical: it matches on (destination ATA, amount),
-   * not a unique nonce. A same-amount transfer to the same merchant inside
-   * the window from an unrelated payer could in principle match. In practice
-   * the blockhash window makes that vanishingly unlikely, and a false
-   * positive here only means we tell the caller "paid" when they were not —
-   * which is the safe direction (it discourages a retry; the caller verifies
-   * against their own wallet). A false negative maps to `payment_unconfirmed`.
+   * scan the 25 most recent signatures on the merchant's destination ATA.
+   * Recovery requires the exact signed message and its SDK-generated Memo
+   * nonce, plus a matching token balance increase. Seller Memo references
+   * may be reused, so those payments remain unconfirmed after a timeout.
+   * A busy account can push the payment outside this scan, also leaving it
+   * unconfirmed.
    */
   async confirmSettlement(
     probe: SettlementProbe,
@@ -373,6 +409,16 @@ export class SolanaAdapter implements ChainAdapter {
         `SolanaAdapter.confirmSettlement cannot handle probe kind "${probe.kind}"`,
       );
     }
+    if (!probe.signedMessage) {
+      throw new Error('Solana settlement probe is missing the signed message');
+    }
+    if (!probe.sourceAta || !probe.destinationAta || !probe.asset || !probe.amount || !probe.blockhash) {
+      throw new Error('Solana settlement probe is missing transfer details');
+    }
+    if (!probe.recoveryNonce || !/^[0-9a-f]{32}$/.test(probe.recoveryNonce)) {
+      throw new Error('Solana settlement probe has no unique recovery nonce');
+    }
+    const recoveryMemo = Buffer.from(probe.recoveryNonce, 'utf8');
 
     const connection = new Connection(rpcUrl, 'confirmed');
     const destAta = new PublicKey(probe.destinationAta);
@@ -385,22 +431,30 @@ export class SolanaAdapter implements ChainAdapter {
 
     const want = BigInt(probe.amount);
 
-    // Inspect each candidate transaction for an INCREASE on the destination
-    // ATA equal to the expected payment amount.
+    // Inspect only the exact signed message, then verify the payment outcome.
     for (const sigInfo of sigs) {
       if (sigInfo.err) continue; // failed tx — never settled funds
       const tx = await connection.getTransaction(sigInfo.signature, {
         commitment: 'confirmed',
         maxSupportedTransactionVersion: 0,
       });
-      if (!tx?.meta) continue;
+      if (!tx?.meta || tx.meta.err) continue;
+      if (Buffer.from(tx.transaction.message.serialize()).toString('base64') !== probe.signedMessage) continue;
 
       // The full account key list, so a balance entry's accountIndex can be
       // resolved to an actual address and compared to the destination ATA.
       const accountKeys = tx.transaction.message
-        .getAccountKeys()
+        .getAccountKeys({ accountKeysFromLookups: tx.meta.loadedAddresses })
         .keySegments()
         .flat();
+
+      // A wallet may remove or replace the Memo before returning its signed
+      // transaction. Only recover if our fresh nonce survived in a Memo.
+      const hasRecoveryMemo = tx.transaction.message.compiledInstructions.some(ix =>
+        accountKeys[ix.programIdIndex]?.equals(MEMO_PROGRAM_ID) &&
+        Buffer.from(ix.data).equals(recoveryMemo)
+      );
+      if (!hasRecoveryMemo) continue;
 
       const pre = tx.meta.preTokenBalances ?? [];
       const post = tx.meta.postTokenBalances ?? [];
@@ -414,6 +468,7 @@ export class SolanaAdapter implements ChainAdapter {
         if (!acct || !acct.equals(destAta)) continue;
 
         const preBal = pre.find(p => p.accountIndex === postBal.accountIndex);
+        if (preBal && preBal.mint !== probe.asset) continue;
         const preAmt = BigInt(preBal?.uiTokenAmount.amount ?? '0');
         const postAmt = BigInt(postBal.uiTokenAmount.amount ?? '0');
         if (postAmt - preAmt === want) {
