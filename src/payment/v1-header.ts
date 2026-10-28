@@ -330,9 +330,9 @@ async function buildSvmHeader(
   }
   // NO network rewrite — wire network is the merchant's advertised bare name.
   const wireNetwork = option.network.bare;
-  // The v2 Solana adapter builds the exact 3-instruction partially-signed
-  // transaction v1 SVM exact requires; reuse it. `scheme` is cast because
-  // PaymentAccept's union is stricter than ChallengeOption's string scheme;
+  // Reuse the v2 Solana adapter's partially-signed exact transfer with Memo.
+  // `scheme` is cast because PaymentAccept's union is stricter than
+  // ChallengeOption's string scheme;
   // `extra` already satisfies AcceptsExtra via its index signature.
   const accept: PaymentAccept = {
     x402Version: 1,

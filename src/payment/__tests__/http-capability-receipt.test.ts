@@ -144,7 +144,7 @@ describe('HTTP capability negotiation through the actual builders', () => {
     }, wallet, 'https://rpc.fixture.invalid');
     const tx = VersionedTransaction.deserialize(Buffer.from(built.serialized, 'base64'));
     expect(wallet.signTransaction).toHaveBeenCalledOnce();
-    expect(tx.message.compiledInstructions).toHaveLength(3);
+    expect(tx.message.compiledInstructions).toHaveLength(4);
     expect(built.settlementProbe).toMatchObject({ kind: 'solana', amount: '10000', asset: mint.toBase58() });
   });
 });

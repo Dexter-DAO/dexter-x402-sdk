@@ -69,8 +69,12 @@ export type SettlementProbe =
       asset: string;
       /** Atomic amount, as a string. */
       amount: string;
-      /** The transaction's recent blockhash — bounds how far back the scan need look. */
+      /** The transaction's recent blockhash. */
       blockhash: string;
+      /** Base64 serialized signed message; older probes cannot confirm settlement. */
+      signedMessage?: string;
+      /** SDK-generated random Memo nonce; absent for reusable seller Memo references. */
+      recoveryNonce?: string;
     };
 
 /**

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Bind Solana timeout recovery to the exact signed message, its SDK-generated
+  random Memo nonce and a successful token transfer. Unrelated deposits cannot
+  confirm a purchase. Reusable seller Memo references, older probes and
+  wallet-modified transactions without that nonce remain unconfirmed on timeout.
+- Include the seller's Memo (up to 256 UTF-8 bytes), or a random payment nonce,
+  in Solana exact transfers. Before signing a seller Memo transaction, simulate
+  its execution and request the measured compute budget plus a bounded margin.
+  Simulation failures or invalid measurements stop before signing.
+
 ## [6.0.5] - 2026-09-29
 
 ### Fixed
