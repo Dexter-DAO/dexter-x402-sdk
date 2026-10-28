@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.6] - 2026-10-28
+
+- Require `@dexterai/vault` `^0.44.0` and qualify the package against 0.44.0.
+  Vault's exported byte constants now use `Uint8Array`.
+- Move the four example apps to vault 0.44.0 and x402 6.0.6.
+- Package locks omit artifact URLs and integrity for these unpublished versions.
+  After publishing vault 0.44.0 and x402 6.0.6, run
+  `npm install --package-lock-only --ignore-scripts` in the SDK and each example
+  before merging; then verify clean registry installs.
+
 ## [6.0.5] - 2026-09-29
 
 ### Fixed
