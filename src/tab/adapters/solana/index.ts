@@ -102,7 +102,7 @@ import type { TransactionInstruction } from '@solana/web3.js';
 // publicKey + signOperation(operationMessage). Both paths conform — node via
 // passkeySignerFromP256Keypair, browser via vault's
 // DexterApiBrowserPasskeySigner — with NO bridge shim, sharing ONE vault
-// (vault is an exact peerDependency, never bundled). The SIGNER owns the
+// (vault is a peerDependency with a caret range, never bundled). The SIGNER owns the
 // canonical V7 challenge policy (program, vault, monotonic guard nonce,
 // operation hash, and fresh entropy); the adapter hands it the RAW operation
 // message and only owns the precompile assembly
