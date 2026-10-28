@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Package locks omit artifact URLs and integrity for these unpublished versions.
   After publishing vault 0.44.0 and x402 6.0.6, run
   `npm install --package-lock-only --ignore-scripts` in the SDK and each example
-  before merging; then verify clean registry installs.
+  and verify clean registry installs.
 
 ## [6.0.5] - 2026-09-29
 
