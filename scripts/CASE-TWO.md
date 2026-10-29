@@ -5,11 +5,17 @@ at Dexter Bookstore once: $5 total, $1.50 at a time, expiring seven days after
 the request. Claude then signs four separate $1 book payments. The facilitator
 reserves and settles them; the purchase path uses the SDK and Claude's key.
 
-The new shelf has a separate seller wallet and endpoint:
-`https://api.dexter.cash/api/x402/demo-books/shelf-two`. Obtain its configured
-`BOOKSTORE_SHELF2_SELLER_PUBKEY` at go-live and use it for every
-`<BOOKSTORE_SHELF2_SELLER_ADDRESS>` below. The original $20 shelf and its seller
-retain their existing permission and purchase history.
+The new shelf has its own endpoint,
+`https://api.dexter.cash/api/x402/demo-books/shelf-two`, and its own seller
+wallet:
+
+```text
+6Aa6C1dfvG9BDaqBukPPxJJXpKFjtidhydkHmmVLBX2b
+```
+
+That address is a constant in the API, so the seller is the same in every
+deployment. The original $20 shelf and its seller keep their existing
+permission and purchase history.
 
 ## Prepare after the live run is authorized
 
@@ -28,7 +34,7 @@ mkdir -m 700 /private/path/claude-case-two
 node scripts/case-two-self-held.mjs request \
   --key /private/path/claude-case-two/agent.json \
   --grant /private/path/claude-case-two/grant.json \
-  --merchant '<BOOKSTORE_SHELF2_SELLER_ADDRESS>' \
+  --merchant '6Aa6C1dfvG9BDaqBukPPxJJXpKFjtidhydkHmmVLBX2b' \
   --cap 5 --revolving 1.50 --max-single 1.50
 ```
 
@@ -46,7 +52,7 @@ A registered session can survive a lost HTTP reply.
 
 Buy The Wealth of Nations, Meditations by Marcus Aurelius, The Art of War, and
 The Prince. Each digital edition costs exactly $1 and returns its title,
-edition, Project Gutenberg text link and signed order receipt. Fetch the shelf's
+edition, Project Gutenberg text link and order receipt. Fetch the shelf's
 `/catalog` first and use its current product IDs and catalog version in the
 order bodies. Create a new `orderId` for every purchase, including an intentional
 second purchase of the same title. Keep the full body and reason in the receipt.
@@ -92,8 +98,22 @@ node scripts/case-two-self-held.mjs buy --live \
 
 After each purchase require HTTP 200, stage `settled`, spent increasing by
 `1000000`, and outstanding `0`. After four, spent must be `4000000`.
-Stop at the first non-200 response and investigate before another purchase. The
-CLI settles an already signed obligation even if delivery fails.
+
+The CLI settles an obligation it signed even if delivery fails, so never pay
+again for an order. If a purchase ends without HTTP 200, or its delivery
+outcome is unknown, resend that exact saved request once:
+
+```bash
+node scripts/case-two-self-held.mjs resend --live \
+  --receipt /private/path/claude-case-two/purchase-1.json
+```
+
+Resend posts the saved order body with the same `X-Tab-Voucher`. It signs,
+reserves and settles nothing. If the shelf recorded the order, it answers HTTP
+200 with the stored receipt, saved beside the purchase receipt as
+`.resend.json`. Any other answer means the order was not recorded: stop and
+report that receipt before another purchase. A second resend of the same
+receipt is refused.
 
 The key must be an owned regular file with mode 600. One process owns a grant.
 Each voucher and reservation is saved before transmission; an unfinished
@@ -108,9 +128,9 @@ node scripts/case-two-self-held.mjs resume --live \
 ```
 
 Resume retries the saved reservation identity. A delivery whose outcome is
-unknown is settled without dispatching another order. Inspect the PID in a
-leftover `.lock` and verify that process is gone before removing that exact
-lock. Keep every receipt.
+unknown is settled without dispatching another order; then run `resend` once
+for that receipt. Inspect the PID in a leftover `.lock` and verify that process
+is gone before removing that exact lock. Keep every receipt.
 
 ## Two authority-signed refusals
 
@@ -123,7 +143,7 @@ The authority also pays the fee.
 node scripts/case-two-refusal.mjs --live --send \
   --rpc '<WRITE_CAPABLE_SOLANA_RPC>' \
   --vault '<APPROVED_VAULT_ADDRESS>' \
-  --seller '<BOOKSTORE_SHELF2_SELLER_ADDRESS>' \
+  --seller '6Aa6C1dfvG9BDaqBukPPxJJXpKFjtidhydkHmmVLBX2b' \
   --agent-key /private/path/claude-case-two/agent.json \
   --authority-key /home/branchmanager/.config/solana/dexter-vault/api-session-master.json \
   --amount 1500000 --kind over-limit \
@@ -144,7 +164,7 @@ the same permission still exists. Then try the $1 that fits the remaining cap:
 node scripts/case-two-refusal.mjs --live --send \
   --rpc '<WRITE_CAPABLE_SOLANA_RPC>' \
   --vault '<APPROVED_VAULT_ADDRESS>' \
-  --seller '<BOOKSTORE_SHELF2_SELLER_ADDRESS>' \
+  --seller '6Aa6C1dfvG9BDaqBukPPxJJXpKFjtidhydkHmmVLBX2b' \
   --agent-key /private/path/claude-case-two/agent.json \
   --authority-key /home/branchmanager/.config/solana/dexter-vault/api-session-master.json \
   --amount 1000000 --kind expired \

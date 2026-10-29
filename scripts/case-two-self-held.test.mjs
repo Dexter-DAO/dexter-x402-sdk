@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Connection, Keypair } from '@solana/web3.js';
 import { decodeSpendGrantRequest } from '@dexterai/vault/grant';
-import { DEXTER_VAULT_PROGRAM_ID } from '@dexterai/x402/tab';
-import { approvedGrant, assertLocalUnlessLive, makeRequest, purchase, readKey, recoverSettlement, resume, save, withGrantLock } from './case-two-self-held.mjs';
+import { DEXTER_VAULT_PROGRAM_ID, voucherToHeader } from '@dexterai/x402/tab';
+import { approvedGrant, assertLocalUnlessLive, makeRequest, purchase, readKey, recoverSettlement, resend, resume, save, withGrantLock } from './case-two-self-held.mjs';
 
 function directory(t) {
   const path = mkdtempSync(join(tmpdir(), 'case-two-cli-'));
@@ -160,4 +160,43 @@ test('resume reconciles a reservation settled during downtime without delivering
   assert.equal(recovered.stage, 'settled');
   assert.equal(recovered.deliveryOutcome, 'not-dispatched');
   assert.equal(JSON.parse(readFileSync(options.grant, 'utf8')).pendingReceipt, undefined);
+});
+
+
+test('resend sends the identical saved paid request once and never signs, reserves or settles', async t => {
+  const { dir } = request(t);
+  const receipt = join(dir, 'purchase.json');
+  const voucher = { payload: { channelId: 'a'.repeat(64), cumulativeAmount: '1000000', sequenceNumber: 0x80000001 },
+    sessionPublicKey: new Uint8Array(32).fill(1), sessionSignature: new Uint8Array(64).fill(2), sessionRegistration: new Uint8Array(188).fill(3) };
+  const reservationReceipt = { reservationAmountAtomic: '1000000', transaction: 'clone-reservation' };
+  const body = JSON.stringify({ orderId: '2bc78f09-789c-4de8-9a9a-8e3d25de72e3' });
+  save(receipt, { stage: 'settled', endpoint: 'http://127.0.0.1:27902/books', requestBody: body,
+    reservationInput: { voucher }, reservationReceipt });
+  const sent = [];
+  const prior = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    sent.push({ url, init });
+    return new Response('{"status":"accepted"}', { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  t.after(() => { globalThis.fetch = prior; });
+  assert.equal((await resend({ receipt })).status, 200);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].url, 'http://127.0.0.1:27902/books');
+  assert.equal(sent[0].init.method, 'POST');
+  assert.equal(sent[0].init.body, body);
+  assert.equal(sent[0].init.headers['X-Tab-Voucher'], voucherToHeader({ ...voucher, reservationReceipt }));
+  assert.equal(JSON.parse(readFileSync(`${receipt}.resend.json`, 'utf8')).status, 200);
+  await assert.rejects(resend({ receipt }), /EEXIST/);
+  assert.equal(sent.length, 1);
+});
+
+test('resend refuses a receipt that never sent a paid request', async t => {
+  const { dir } = request(t);
+  const receipt = join(dir, 'reserved.json');
+  save(receipt, { stage: 'reserved', endpoint: 'http://127.0.0.1:27902/books', requestBody: '{}' });
+  const prior = globalThis.fetch;
+  globalThis.fetch = () => assert.fail('No HTTP allowed');
+  t.after(() => { globalThis.fetch = prior; });
+  await assert.rejects(resend({ receipt }), /use resume/);
+  assert.ok(!existsSync(`${receipt}.resend.json`));
 });

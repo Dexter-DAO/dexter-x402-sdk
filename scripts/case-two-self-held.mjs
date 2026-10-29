@@ -235,6 +235,33 @@ export async function resume(options) {
   });
 }
 
+/** The exact body and X-Tab-Voucher a purchase sent, rebuilt from its journal. */
+export function savedPaidRequest(journal) {
+  if (!['delivering', 'delivered', 'settled'].includes(journal.stage) || !journal.reservationReceipt) {
+    throw new Error('This receipt never sent a paid request; use resume');
+  }
+  return { body: journal.requestBody, header: voucherToHeader(voucherFromJournal(journal)) };
+}
+
+// After a failed or unknown delivery, send the identical saved request once. A
+// seller that recorded the order returns its saved receipt; nothing is signed,
+// reserved or settled here, so the buyer never pays again.
+export async function resend(options) {
+  const receipt = resolve(options.receipt);
+  const journal = JSON.parse(readFileSync(receipt, 'utf8'));
+  assertLocalUnlessLive(journal.endpoint, options.live);
+  const { body, header } = savedPaidRequest(journal);
+  const outcome = `${receipt}.resend.json`;
+  save(outcome, { stage: 'sending', startedAt: new Date().toISOString() }, true);
+  const response = await fetch(journal.endpoint, { method: body === null ? 'GET' : 'POST', redirect: 'error',
+    headers: { ...(body === null ? {} : { 'content-type': 'application/json' }), 'X-Tab-Voucher': header },
+    ...(body === null ? {} : { body }) });
+  const delivery = Buffer.from(await response.arrayBuffer());
+  save(outcome, { stage: 'response-recorded', status: response.status, contentType: response.headers.get('content-type'),
+    sha256: createHash('sha256').update(delivery).digest('hex'), base64: delivery.toString('base64') });
+  return { status: response.status, outcome };
+}
+
 export async function main(args = process.argv.slice(2)) {
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
     key: { type: 'string' }, grant: { type: 'string' }, merchant: { type: 'string' }, cap: { type: 'string' },
@@ -247,13 +274,14 @@ export async function main(args = process.argv.slice(2)) {
   const command = positionals[0];
   const required = command === 'request' ? ['key', 'grant', 'merchant']
     : command === 'buy' ? ['grant', 'vault', 'endpoint', 'receipt', 'reason']
-      : command === 'resume' ? ['grant', 'receipt'] : [];
-  if (!required.length) throw new Error('Use request, buy, or resume (see scripts/CASE-TWO.md)');
+      : command === 'resume' ? ['grant', 'receipt'] : command === 'resend' ? ['receipt'] : [];
+  if (!required.length) throw new Error('Use request, buy, resume, or resend (see scripts/CASE-TWO.md)');
   for (const name of required) if (!values[name]) throw new Error(`--${name} is required`);
   let result;
   if (command === 'request') result = makeRequest(values);
   if (command === 'buy') result = await purchase(values);
   if (command === 'resume') result = await resume(values);
+  if (command === 'resend') result = await resend(values);
   console.log(JSON.stringify(result, null, 2));
 }
 
