@@ -117,7 +117,28 @@ async function settledFrontier(connection, journal) {
       >= BigInt(journal.reservationInput.voucher.payload.cumulativeAmount) && s.currentOutstanding === 0n };
 }
 
-// Recovery never signs another voucher or retries an unknown merchant delivery.
+const sendPaid = (endpoint, body, header) => fetch(endpoint, { method: body === null ? 'GET' : 'POST', redirect: 'error',
+  headers: { ...(body === null ? {} : { 'content-type': 'application/json' }), 'X-Tab-Voucher': header },
+  ...(body === null ? {} : { body }) });
+
+// Sends the paid request once and saves the answer. Settlement waits for a 2xx: while the
+// reservation is unsettled the seller can still admit the identical request on `resend`; once
+// it is settled, the seller's Tab rail refuses it.
+export async function deliverOnce(journal, receipt, header) {
+  journal.stage = 'delivering'; journal.deliveryOutcome = 'unknown'; save(receipt, journal);
+  const next = `Not settled. Run resend once for ${receipt}, then resume to settle`;
+  let response, delivery;
+  try {
+    response = await sendPaid(journal.endpoint, journal.requestBody, header);
+    delivery = Buffer.from(await response.arrayBuffer());
+  } catch (error) { throw new Error(`Merchant delivery outcome unknown (${error.message}). ${next}`); }
+  save(`${receipt}.delivery.json`, { status: response.status, contentType: response.headers.get('content-type'),
+    sha256: createHash('sha256').update(delivery).digest('hex'), base64: delivery.toString('base64') }, true);
+  journal.deliveryStatus = response.status; journal.deliveryOutcome = 'response-recorded'; journal.stage = 'delivered'; save(receipt, journal);
+  if (!response.ok) throw new Error(`Merchant HTTP ${response.status}; delivery saved. ${next}`);
+}
+
+// Settles the signed obligation. Never signs another voucher or sends the merchant request.
 export async function recoverSettlement(connection, journal, receipt) {
   if (!journal.reservationInput || !['delivering', 'delivered', 'settled'].includes(journal.stage)) throw new Error('No delivered voucher to settle');
   if (journal.stage === 'delivering') journal.deliveryOutcome ??= 'unknown';
@@ -175,19 +196,12 @@ export async function purchase(options) {
       },
     });
     const voucher = await tab.signNextVoucher(offer.amountAtomic);
-    journal.stage = 'delivering'; journal.deliveryOutcome = 'unknown'; save(receipt, journal);
-    const response = await fetch(options.endpoint, { ...init,
-      headers: { ...init.headers, 'X-Tab-Voucher': voucherToHeader(voucher) } });
-    const delivery = Buffer.from(await response.arrayBuffer());
-    save(`${receipt}.delivery.json`, { status: response.status, contentType: response.headers.get('content-type'),
-      sha256: createHash('sha256').update(delivery).digest('hex'), base64: delivery.toString('base64') }, true);
-    journal.deliveryStatus = response.status; journal.deliveryOutcome = 'response-recorded'; journal.stage = 'delivered'; save(receipt, journal);
-    // Preserve and settle the signed obligation even if merchant delivery failed.
+    // A failed or unknown delivery stops here with the purchase still pending.
+    await deliverOnce(journal, receipt, voucherToHeader(voucher));
     journal.settlement = await tab.close();
     if (!(await settledFrontier(connection, journal)).covered) throw new Error('Purchase still has an outstanding obligation');
     journal.stage = 'settled'; save(receipt, journal);
     delete record.pendingReceipt; save(options.grant, record);
-    if (!response.ok) throw new Error(`Merchant HTTP ${response.status}; obligation settled; inspect saved delivery`);
     return journal;
   } finally { key?.secretKey.fill(0); }
   });
@@ -219,16 +233,11 @@ export async function resume(options) {
     delete input.voucher.reservationReceipt;
     const reservation = await reservationFence(options, journal, receipt)(input);
     await verifySolanaFinalVoucherV2Reservation(connection, input, reservation);
-    journal.reservationReceipt = reservation; journal.stage = 'delivering'; journal.deliveryOutcome = 'unknown'; save(receipt, journal);
-    const response = await fetch(journal.endpoint, { method: journal.requestBody === null ? 'GET' : 'POST', redirect: 'error',
-      headers: { ...(journal.requestBody === null ? {} : { 'content-type': 'application/json' }), 'X-Tab-Voucher': voucherToHeader(voucherFromJournal(journal)) },
-      ...(journal.requestBody === null ? {} : { body: journal.requestBody }) });
-    const delivery = Buffer.from(await response.arrayBuffer());
-    save(`${receipt}.delivery.json`, { status: response.status, sha256: createHash('sha256').update(delivery).digest('hex'), base64: delivery.toString('base64') }, true);
-    journal.deliveryStatus = response.status; journal.deliveryOutcome = 'response-recorded'; journal.stage = 'delivered'; save(receipt, journal);
+    journal.reservationReceipt = reservation;
+    await deliverOnce(journal, receipt, voucherToHeader(voucherFromJournal(journal)));
   }
-  // A crash during delivery leaves its outcome unknown. Settle the existing
-  // obligation and preserve that gap; never send the merchant request twice.
+  // Settle a delivered, failed or abandoned order. Resume never sends the merchant
+  // request again; run resend first if the delivery did not return 200.
   const result = await recoverSettlement(connection, journal, receipt);
   delete record.pendingReceipt; save(options.grant, record);
   return result;
@@ -243,9 +252,10 @@ export function savedPaidRequest(journal) {
   return { body: journal.requestBody, header: voucherToHeader(voucherFromJournal(journal)) };
 }
 
-// After a failed or unknown delivery, send the identical saved request once. A
-// seller that recorded the order returns its saved receipt; nothing is signed,
-// reserved or settled here, so the buyer never pays again.
+// After a failed or unknown delivery, and before resume settles, send the identical
+// saved request once. A seller that recorded the order returns its saved receipt; one
+// that never admitted the payment can still admit the unsettled reservation. Nothing
+// is signed, reserved or settled here, so the buyer never pays again.
 export async function resend(options) {
   const receipt = resolve(options.receipt);
   const journal = JSON.parse(readFileSync(receipt, 'utf8'));
@@ -253,9 +263,7 @@ export async function resend(options) {
   const { body, header } = savedPaidRequest(journal);
   const outcome = `${receipt}.resend.json`;
   save(outcome, { stage: 'sending', startedAt: new Date().toISOString() }, true);
-  const response = await fetch(journal.endpoint, { method: body === null ? 'GET' : 'POST', redirect: 'error',
-    headers: { ...(body === null ? {} : { 'content-type': 'application/json' }), 'X-Tab-Voucher': header },
-    ...(body === null ? {} : { body }) });
+  const response = await sendPaid(journal.endpoint, body, header);
   const delivery = Buffer.from(await response.arrayBuffer());
   save(outcome, { stage: 'response-recorded', status: response.status, contentType: response.headers.get('content-type'),
     sha256: createHash('sha256').update(delivery).digest('hex'), base64: delivery.toString('base64') });

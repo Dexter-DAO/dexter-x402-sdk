@@ -99,9 +99,10 @@ node scripts/case-two-self-held.mjs buy --live \
 After each purchase require HTTP 200, stage `settled`, spent increasing by
 `1000000`, and outstanding `0`. After four, spent must be `4000000`.
 
-The CLI settles an obligation it signed even if delivery fails, so never pay
-again for an order. If a purchase ends without HTTP 200, or its delivery
-outcome is unknown, resend that exact saved request once:
+The CLI settles a purchase only after the shelf answers HTTP 200. Any other
+answer, or a lost one, stops the CLI with the answer saved, the payment
+reserved but unsettled, and the purchase still pending. Never pay again for
+that order. Resend first, settle second. Resend the exact saved request once:
 
 ```bash
 node scripts/case-two-self-held.mjs resend --live \
@@ -109,15 +110,11 @@ node scripts/case-two-self-held.mjs resend --live \
 ```
 
 Resend posts the saved order body with the same `X-Tab-Voucher`. It signs,
-reserves and settles nothing. If the shelf recorded the order, it answers HTTP
-200 with the stored receipt, saved beside the purchase receipt as
-`.resend.json`. Any other answer means the order was not recorded: stop and
-report that receipt before another purchase. A second resend of the same
-receipt is refused.
-
-The key must be an owned regular file with mode 600. One process owns a grant.
-Each voucher and reservation is saved before transmission; an unfinished
-purchase blocks further signing. Recover that exact attempt with:
+reserves and settles nothing. A shelf that recorded the order answers HTTP 200
+with the stored receipt. A shelf that never took the payment can still take
+the unsettled reservation and answers HTTP 200 with the edition. The answer is
+saved beside the purchase receipt as `.resend.json`. A second resend of the
+same receipt is refused. Then settle with `resume`, whatever resend answered:
 
 ```bash
 node scripts/case-two-self-held.mjs resume --live \
@@ -127,10 +124,20 @@ node scripts/case-two-self-held.mjs resume --live \
   --token-env-file /home/branchmanager/websites/dexter-api/.env
 ```
 
-Resume retries the saved reservation identity. A delivery whose outcome is
-unknown is settled without dispatching another order; then run `resend` once
-for that receipt. Inspect the PID in a leftover `.lock` and verify that process
-is gone before removing that exact lock. Keep every receipt.
+Resume settles the signed payment and clears the pending purchase; it never
+sends the order again. If resend did not return HTTP 200, report that receipt
+before another purchase. Settling before resend makes the resend useless: the
+shelf's Tab rail refuses a reservation that is already settled.
+
+The key must be an owned regular file with mode 600. One process owns a grant.
+Each voucher and reservation is saved before transmission; an unfinished
+purchase blocks further signing. After a crash, `resume` recovers that exact
+attempt. If it stopped before delivery, resume retries the saved reservation
+identity and sends the order once, settling only after HTTP 200; any other
+answer stops it again for `resend`, then `resume`. If it stopped during
+delivery, the outcome is unknown: run `resend` once, then `resume`. Inspect the
+PID in a leftover `.lock` and verify that process is gone before removing that
+exact lock. Keep every receipt.
 
 ## Two authority-signed refusals
 
