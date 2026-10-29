@@ -1,24 +1,23 @@
-# Self-held Claude grant and program refusals
+# Claude buys four books under one weekly approval
 
-The agent creates its Ed25519 key locally. The consent URL contains its public
-key. Branch approves the seller, total cap, revolving capacity and expiry with
-one passkey ceremony. The payment service receives signed vouchers, never the
-agent's private key.
+Claude creates its own Ed25519 key. Branch approves that public key to spend
+at Dexter Bookstore once: $5 total, $1.50 at a time, expiring seven days after
+the request. Claude then signs four separate $1 book payments. The facilitator
+reserves and settles them; the purchase path uses the SDK and Claude's key.
 
-This tooling uses the published `@dexterai/x402/tab` APIs and the canonical
-`@dexterai/vault/grant` request builder. It adds no database schema or production
-API changes. The self-held request goes through `/tabs/new`; it does not use
-`hostedNativeTab`, so that flow's cap-equals-price rule stays unchanged.
+The new shelf has a separate seller wallet and endpoint:
+`https://api.dexter.cash/api/x402/demo-books/shelf-two`. Obtain its configured
+`BOOKSTORE_SHELF2_SELLER_PUBKEY` at go-live and use it for every
+`<BOOKSTORE_SHELF2_SELLER_ADDRESS>` below. The original $20 shelf and its seller
+retain their existing permission and purchase history.
 
-## Live operator commands, after separate authorization
+## Prepare after the live run is authorized
 
-Use Node 22 or newer. These commands describe the later run. This build job
-authorizes only the local clone and PRs.
-
-Fill in the merchant's Solana USDC payout address, Tab endpoint, the approved
-vault address, a write-capable Solana RPC, and the existing operator key paths.
-Keep the agent directory outside the repository. Claude runs the commands
-under the Unix user that owns the key.
+Use Node 22 or newer and the reviewed SDK checkout. Keep the agent's private
+folder outside the repository. Before requesting approval, send an unpaid GET
+to the new endpoint and confirm HTTP 402, scheme `tab`, Solana mainnet, canonical
+USDC (`EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`), the new seller, and
+`amount` of `1000000`. Confirm the wallet has at least $5 USDC.
 
 ```bash
 export PATH=/home/branchmanager/.nvm/versions/node/v24.22.1/bin:$PATH
@@ -29,19 +28,54 @@ mkdir -m 700 /private/path/claude-case-two
 node scripts/case-two-self-held.mjs request \
   --key /private/path/claude-case-two/agent.json \
   --grant /private/path/claude-case-two/grant.json \
-  --merchant '<XONA_SOLANA_PAYOUT_ADDRESS>' \
+  --merchant '<BOOKSTORE_SHELF2_SELLER_ADDRESS>' \
   --cap 5 --revolving 1.50 --max-single 1.50
 ```
 
-Branch opens the printed `https://dexter.cash/tabs/new?req=...` URL and approves
-once with his passkey. Fill `APPROVED_VAULT_ADDRESS` below from that wallet.
-The CLI reads the registered session from chain, including any cap or expiry
-Branch shortened. It checks the key and scope before signing.
+Branch opens the printed `https://dexter.cash/tabs/new?req=...` link. Check that
+the screen names the seller **Dexter Bookstore**, shows $5 total, $1.50 at a time,
+and seven days. Approve once with Face ID. Read back the on-chain session before
+buying: Claude's public key, the new seller, cap `5000000`, revolving capacity
+`1500000`, spent `0`, outstanding `0`. Record `expiresAt`; the late refusal is
+scheduled for ten minutes after it.
 
-Claude chooses one image request from its actual task, writes that request to
-a JSON file, and records its reason. Run this once per chosen purchase, using a
-new receipt path each time. For the case, repeat for four independently chosen
-requests at approximately $1 each, waiting for settlement before the next.
+If consent reports an error, inspect the chain before asking Branch to retry.
+A registered session can survive a lost HTTP reply.
+
+## Four editions, four orders
+
+Buy The Wealth of Nations, Meditations by Marcus Aurelius, The Art of War, and
+The Prince. Each digital edition costs exactly $1 and returns its title,
+edition, Project Gutenberg text link and signed order receipt. Fetch the shelf's
+`/catalog` first and use its current product IDs and catalog version in the
+order bodies. Create a new `orderId` for every purchase, including an intentional
+second purchase of the same title. Keep the full body and reason in the receipt.
+
+Each order body follows this shape. Replace the UUID for every new order and
+select the matching product and edition pair from the table:
+
+```json
+{
+  "catalogVersion": "dexter-bookstore-shelf-two/v1",
+  "orderId": "2bc78f09-789c-4de8-9a9a-8e3d25de72e3",
+  "productId": "book:wealth-of-nations",
+  "editionId": "gutenberg:3300",
+  "quantity": 1,
+  "asset": "USDC",
+  "totalAmountAtomic": "1000000",
+  "fulfillment": "digital"
+}
+```
+
+| Title | productId | editionId |
+| --- | --- | --- |
+| The Wealth of Nations | `book:wealth-of-nations` | `gutenberg:3300` |
+| Meditations | `book:meditations` | `gutenberg:2680` |
+| The Art of War | `book:art-of-war` | `gutenberg:132` |
+| The Prince | `book:the-prince` | `gutenberg:1232` |
+
+Run once per order with a new body file and a new receipt path. Wait for
+settlement before starting the next order:
 
 ```bash
 node scripts/case-two-self-held.mjs buy --live \
@@ -49,17 +83,21 @@ node scripts/case-two-self-held.mjs buy --live \
   --vault '<APPROVED_VAULT_ADDRESS>' \
   --rpc '<WRITE_CAPABLE_SOLANA_RPC>' \
   --facilitator https://x402.dexter.cash \
-  --endpoint '<XONA_TAB_ENDPOINT>' \
-  --body /private/path/claude-case-two/chosen-image-1.json \
-  --reason '<WHY_CLAUDE_CHOSE_THIS_IMAGE>' \
+  --endpoint https://api.dexter.cash/api/x402/demo-books/shelf-two \
+  --body /private/path/claude-case-two/wealth-of-nations-order.json \
+  --reason 'Read the division of labour argument for the agent economy research.' \
   --receipt /private/path/claude-case-two/purchase-1.json \
   --token-env-file /home/branchmanager/websites/dexter-api/.env
 ```
 
-`--body` selects POST with JSON. Omit it for a GET merchant. The key must be an
-owned regular file with mode 600. Do not run several copies against one grant.
-Each voucher and reservation request is saved before transmission. An unfinished
-purchase blocks further signing. To recover its saved attempt:
+After each purchase require HTTP 200, stage `settled`, spent increasing by
+`1000000`, and outstanding `0`. After four, spent must be `4000000`.
+Stop at the first non-200 response and investigate before another purchase. The
+CLI settles an already signed obligation even if delivery fails.
+
+The key must be an owned regular file with mode 600. One process owns a grant.
+Each voucher and reservation is saved before transmission; an unfinished
+purchase blocks further signing. Recover that exact attempt with:
 
 ```bash
 node scripts/case-two-self-held.mjs resume --live \
@@ -69,92 +107,69 @@ node scripts/case-two-self-held.mjs resume --live \
   --token-env-file /home/branchmanager/websites/dexter-api/.env
 ```
 
-Resume retries the exact reservation identity. It sends a merchant request only
-when the saved stage proves delivery had not begun. An uncertain delivery is
-settled without repeating the request and retains `deliveryOutcome: "unknown"`
-in its receipt. A reservation settled during downtime is reconciled with
-`deliveryOutcome: "not-dispatched"`, without asking for delivery after payment.
-After a process crash, inspect the PID in the grant's `.lock` file and confirm
-that process is gone before removing that exact lock. Never discard the receipt.
-An expired, unlanded reservation requires the facilitator's successor workflow;
-the tool stops with its saved response for an operator to handle.
+Resume retries the saved reservation identity. A delivery whose outcome is
+unknown is settled without dispatching another order. Inspect the PID in a
+leftover `.lock` and verify that process is gone before removing that exact
+lock. Keep every receipt.
 
-After $4 has settled under the $5 grant, send the $1.50 refusal attempt:
+## Two authority-signed refusals
+
+With spent `4000000` and outstanding `0`, try to reserve $1.50 against the $1
+remaining cap. The authority file below holds Dexter's existing Vault
+authority; the script verifies its public key against the vault before signing.
+The authority also pays the fee.
 
 ```bash
 node scripts/case-two-refusal.mjs --live --send \
   --rpc '<WRITE_CAPABLE_SOLANA_RPC>' \
   --vault '<APPROVED_VAULT_ADDRESS>' \
-  --seller '<XONA_SOLANA_PAYOUT_ADDRESS>' \
+  --seller '<BOOKSTORE_SHELF2_SELLER_ADDRESS>' \
   --agent-key /private/path/claude-case-two/agent.json \
-  --authority-key '<DEXTER_AUTHORITY_KEY_FILE>' \
-  --fee-payer-key '<DEXTER_FEE_PAYER_KEY_FILE>' \
+  --authority-key /home/branchmanager/.config/solana/dexter-vault/api-session-master.json \
   --amount 1500000 --kind over-limit \
   --receipt /private/path/claude-case-two/over-limit.json
 ```
 
-The script simulates the signed transaction first. It sends the same bytes with
-preflight skipped only when instruction 1 returns 6013
-`RevolvingCapacityExceeded`. A successful simulation or any other error stops
-without sending. The landed transaction must fail with that same code and leave
-session state unchanged. Only the transaction fee is charged.
+The signed transaction is simulated first. It is sent only when instruction 1
+returns 6013 `RevolvingCapacityExceeded`; the landed transaction must fail with
+the same code and leave protected state unchanged. A successful simulation or
+a different error sends nothing. Each rerun requires a new receipt path.
 
-Wait until the approved on-chain `expiresAt` has passed. Then attempt a $1
-payment, still within the remaining total cap, to isolate the expiry rule:
+Keep this wallet idle through the late refusal. Another Tab approval or payment
+after expiry can sweep the expired permission and remove the evidence. Wait
+until ten minutes after `expiresAt`, check the actual chain clock, and confirm
+the same permission still exists. Then try the $1 that fits the remaining cap:
 
 ```bash
 node scripts/case-two-refusal.mjs --live --send \
   --rpc '<WRITE_CAPABLE_SOLANA_RPC>' \
   --vault '<APPROVED_VAULT_ADDRESS>' \
-  --seller '<XONA_SOLANA_PAYOUT_ADDRESS>' \
+  --seller '<BOOKSTORE_SHELF2_SELLER_ADDRESS>' \
   --agent-key /private/path/claude-case-two/agent.json \
-  --authority-key '<DEXTER_AUTHORITY_KEY_FILE>' \
-  --fee-payer-key '<DEXTER_FEE_PAYER_KEY_FILE>' \
+  --authority-key /home/branchmanager/.config/solana/dexter-vault/api-session-master.json \
   --amount 1000000 --kind expired \
   --receipt /private/path/claude-case-two/expired.json
 ```
 
-This must simulate and land as 6009 `SessionExpiryInPast`. The request cannot
-produce the late refusal until the window closes.
+Require simulation and landed instruction 1 error 6009 `SessionExpiryInPast`,
+with protected state unchanged. Both refusals contain Claude's voucher signature
+check followed by an authority-signed `settle_voucher` reservation. The program
+enforces the approved cap and expiry even when Dexter's own authority signs.
+Check the program executable hash before the run; these scripts expect the
+reviewed mainnet program's error codes.
 
-Both refusal transactions contain an Ed25519 signature-check instruction for
-Claude's voucher, followed by an authority-signed `settle_voucher` reservation.
-The reservation handler enforces scope but does not itself consume the voucher
-bytes; the precompile checks that signature separately in the same transaction.
-Dexter's server was bypassed on purpose. The program refuses the reservation
-even when Dexter's own authority signs it.
+## Operational limits
 
-## Merchant requirements
+The seven-day grant ends at its approved expiry. A new week requires a new
+approval. The program permits one outstanding reservation, bounded by its $1.50
+revolving capacity and remaining lifetime cap. The client also refuses quotes
+above $1.50.
 
-The merchant needs a Solana USDC payout address and a reachable x402 endpoint
-using `tabOrExactMiddleware` from the SDK, with Solana RPC access and
-`https://x402.dexter.cash` as facilitator. Its challenge must offer the `tab`
-scheme on Solana mainnet, canonical USDC, and the exact approved payout address.
-The middleware must independently verify the session, voucher and confirmed
-reservation before delivering the image. Use a durable merchant channel ledger
-and call `recordDelivered` for the quoted amount before returning delivery.
+`/tab/open` requires `DEXTER_INTERNAL_TOKEN`. The CLI reads only that value from
+the existing env file and sends it to the facilitator. Use the facilitator URL
+shown above exactly. Keep receipts private until Dexter reviews and scrubs
+local paths, signed transport bytes and personal material for publication.
 
-The merchant must run settlement for any locked claims. This operator CLI also
-calls the facilitator's final settlement after each purchase; it never treats
-image delivery alone as payment proof. Preserve the merchant's payout transaction
-and delivered image evidence for the page.
-
-## Boundaries
-
-The seven-day grant does not renew automatically. A new week needs a new
-approval. This configuration sets the on-chain revolving capacity to $1.50.
-Since the program permits only one outstanding reservation, each purchase's
-reservation is bounded by $1.50 and the remaining lifetime cap. The client also
-refuses merchant quotes above $1.50. The current grant format has no separate
-per-purchase field; this limit uses its existing revolving-capacity rule.
-
-`/tab/open` still needs `DEXTER_INTERNAL_TOKEN`. For this Dexter-operated case,
-the CLI can read only that value from the existing server env file, without
-sourcing the file or sending the secret to the merchant. Removing this internal
-token dependency is a separate follow-up.
-
-Receipts contain signed vouchers and delivery bodies. Keep them private until
-Dexter reviews and scrubs them for publication. Private keys, local paths and
-signed transaction transport bytes do not belong on the public case page.
-
-The clone instructions and observed results are in `CASE-TWO-CLONE.md`.
+The build job authorizes clone rehearsals and PRs. Mainnet funding, consent,
+transactions and deployment belong to the separately authorized live run.
+Clone setup and its software-passkey limitation are in `CASE-TWO-CLONE.md`.
