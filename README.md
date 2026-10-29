@@ -212,7 +212,7 @@ The Vault program source and threat model are maintained in a private repository
 Release maintainers can follow the [GitHub OIDC publishing workflow](./docs/releases.md).
 
 - **[REFERENCE.md](./REFERENCE.md)** — every export, option table, and example: tabs, one-shot, batch settlement, discovery.
-- **Upgrading?** v6 pins `@dexterai/vault@0.43.4`, requires voucher-bound V2 reservation receipts, and uses exact-state V3 revocation. Migration from v5/v4/v3: [REFERENCE.md](./REFERENCE.md#migration).
+- **Upgrading?** v6 requires `@dexterai/vault@^0.44.0`, requires voucher-bound V2 reservation receipts, and uses exact-state V3 revocation. Migration from v5/v4/v3: [REFERENCE.md](./REFERENCE.md#migration).
 - **License** — MIT, see [LICENSE](./LICENSE).
 
 ---

@@ -34,6 +34,7 @@ function mockRes(sink: string[]): Response {
     setHeader() {},
     flushHeaders() {},
     on() {},
+    prependListener() {},
     write(chunk: string) {
       sink.push(chunk);
       return true;
