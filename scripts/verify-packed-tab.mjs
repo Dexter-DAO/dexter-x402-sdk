@@ -44,9 +44,10 @@ for (const name of ['@dexterai/x402', '@dexterai/vault']) {
 run(process.execPath, [join(root, 'scripts/verify-client-package.mjs'), consumer, coreMinimum], root);
 run(process.execPath, [join(root, 'scripts/verify-tab-package.mjs'), consumer], root);
 run(process.execPath, [join(root, 'scripts/verify-mcp-package.mjs'), consumer], root);
+run(process.execPath, [join(root, 'scripts/verify-seller-package.mjs'), consumer], root);
 writeFileSync(join(proof, 'proof.json'), JSON.stringify({
   sourceCommit: run('git', ['rev-parse', 'HEAD'], root, true).trim(),
   package: packed, vault, consumer, coreMinimum,
-  scope: 'Installed ESM/CJS client, Tab and MCP compatibility at the declared core minimum; local fixtures only',
+  scope: 'Installed ESM/CJS client, Tab, MCP and seller compatibility at the declared core minimum; seller browser bundle; local fixtures only',
 }, null, 2) + '\n');
 console.log(`Package proof: ${join(proof, 'proof.json')}`);
