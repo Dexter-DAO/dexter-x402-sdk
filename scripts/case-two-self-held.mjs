@@ -284,7 +284,7 @@ export async function resend(options) {
   const response = await sendPaid(journal.endpoint, body, header);
   const delivery = Buffer.from(await response.arrayBuffer());
   save(outcome, { stage: 'response-recorded', status: response.status, contentType: response.headers.get('content-type'),
-    sha256: createHash('sha256').update(delivery).digest('hex'), base64: delivery.toString('base64') });
+    sha256: createHash('sha256').update(delivery).digest('hex'), base64: delivery.toString(journal.schema === 'case-three/journal/v1' ? 'base64url' : 'base64') });
   return { status: response.status, outcome };
 }
 
