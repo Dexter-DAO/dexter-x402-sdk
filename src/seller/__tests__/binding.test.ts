@@ -8,7 +8,7 @@ import { sellerBindingNonce } from '../nonce';
 import { verifySellerEvidence, verifySellerReceipt, liveSellerStatus } from '../verify';
 import { canonicalBytes } from '../jcs';
 import type { SellerBindingV1 } from '../types';
-import { NOW, REAL, REAL_FILE_URL, keyFrom, request, servedFiles, signJws, storeDocument, IMPOSTOR } from './sellerFixtures';
+import { NOW, REAL, REAL_FILE_URL, keyFrom, offerPayload, request, servedFiles, signJws, storeDocument } from './sellerFixtures';
 
 const VAULT = keyFrom(40).address;
 const AGENT = keyFrom(41).address;
@@ -19,9 +19,10 @@ async function approval(page = 'dexter-fe@abc123') {
   const didDocument = storeDocument(REAL);
   const check = await checkSellerOffer(req, { now: NOW, fetchDidDocument: servedFiles({ [REAL_FILE_URL]: didDocument }) });
   if (check.status !== 'signed') throw new Error('fixture');
-  const decision = screenSeller(check, { request: req, sessionPubkey: AGENT, known: [], agentKeys: [], history: 'loaded' });
+  const screenInput = { request: req, sessionPubkey: AGENT, known: [], agentKeys: [], history: 'loaded' as const };
+  const decision = screenSeller(check, screenInput);
   if (decision.approve === 'refused') throw new Error('fixture');
-  const binding = buildSellerBinding({ check, decision, vault: VAULT, sessionPubkey: AGENT, confirmed: [], page });
+  const binding = buildSellerBinding({ check, screen: screenInput, decision, vault: VAULT, confirmed: [], page });
   const bytes = encodeSellerBinding(binding);
   return { binding, bytes, didDocument, offerJws: check.offerJws, nonce: sellerBindingNonce(bytes, SALT) };
 }
@@ -58,17 +59,24 @@ describe('binding', () => {
   it('records the page release in page', async () => {
     expect((await approval('dexter-fe@16063bbf')).binding.page).toBe('dexter-fe@16063bbf');
   });
-  it('refuses to build a binding whose notices were not all confirmed', async () => {
-    const req = request({ counterparty: IMPOSTOR.receiving[0].address, offerJws: null });
-    const { binding } = await approval();
-    expect(binding.relation).toBe('first-payment');
-    const check = await checkSellerOffer(request(), { now: NOW, fetchDidDocument: servedFiles({ [REAL_FILE_URL]: storeDocument(REAL) }) });
+  it('refuses to build a binding whose notices were not all confirmed, or whose decision differs from a rerun', async () => {
+    const rotated = { ...REAL, quoteKey: keyFrom(80) };
+    const files = servedFiles({ [REAL_FILE_URL]: storeDocument(rotated) });
+    const first = await approval();
+    const known = knownSellers([{ binding: first.bytes, salt: SALT, ceremonyNonce: first.nonce, registerTx: 'tx1', registeredAt: NOW - 100 }], { vault: VAULT });
+    const req = request({ offerJws: signJws({ alg: 'EdDSA', kid: 'did:web:dexter.cash#books-quote-1' }, offerPayload(), rotated.quoteKey.secret) });
+    const check = await checkSellerOffer(req, { now: NOW, fetchDidDocument: files, known });
     if (check.status !== 'signed') throw new Error('fixture');
-    const notice = { rule: 'R5' as const, code: 'key_changed' as const, knownHost: 'books.dexter.cash', since: NOW };
-    const decision = { ...screenSeller(check, { request: req, sessionPubkey: AGENT, known: [], agentKeys: [], history: 'loaded' }), approve: 'confirm' as const, notices: [notice] };
-    expect(() => buildSellerBinding({ check, decision: decision as never, vault: VAULT, sessionPubkey: AGENT, confirmed: [], page: 'p' })).toThrow('seller_binding_notices_unconfirmed');
-    expect(buildSellerBinding({ check, decision: decision as never, vault: VAULT, sessionPubkey: AGENT, confirmed: [notice], page: 'p' }).notices)
-      .toEqual([{ rule: 'R5', code: 'key_changed', knownHost: 'books.dexter.cash', confirmed: true }]);
+    const screenInput = { request: req, sessionPubkey: AGENT, known, agentKeys: [], history: 'loaded' as const };
+    const decision = screenSeller(check, screenInput);
+    if (decision.approve !== 'confirm') throw new Error('fixture');
+    expect(() => buildSellerBinding({ check, screen: screenInput, decision, vault: VAULT, confirmed: [], page: 'p' })).toThrow('seller_binding_notices_unconfirmed');
+    const allowed = { ...decision, approve: 'allowed' as const, notices: [] as [] };
+    expect(() => buildSellerBinding({ check, screen: screenInput, decision: allowed, vault: VAULT, confirmed: [], page: 'p' })).toThrow('seller_binding_decision_mismatch');
+    const binding = buildSellerBinding({ check, screen: screenInput, decision, vault: VAULT, confirmed: decision.notices, page: 'p' });
+    expect(binding).toMatchObject({ approve: 'confirm', history: 'loaded', relation: 'known',
+      notices: [{ rule: 'R5', code: 'key_changed', knownHost: 'books.dexter.cash', confirmed: true }],
+      knownStores: [{ host: 'books.dexter.cash', registerTx: 'tx1', bindingSha256: known[0].bindingSha256 }] });
   });
 });
 
@@ -143,5 +151,49 @@ describe('after the fact', () => {
     expect(await status(storeDocument({ ...REAL, receiving: [REAL.receiving[0], keyFrom(49)] }))).toBe('changed');
     expect(await status(storeDocument({ ...REAL, hosts: ['shop.dexter.cash'] }))).toBe('removed');
     expect(await status()).toBe('unreadable');
+  });
+
+  it('a saved-path approval verifies through the earlier approval it names, and not without it', async () => {
+    const first = await approval();
+    const firstEntry = { binding: first.bytes, salt: SALT, ceremonyNonce: first.nonce, registerTx: 'tx-first', registeredAt: NOW - 100 };
+    const known = knownSellers([firstEntry], { vault: VAULT });
+    const req = request();
+    const check = await checkSellerOffer(req, { now: NOW, fetchDidDocument: servedFiles({}), known });
+    if (check.status !== 'signed' || check.source !== 'saved') throw new Error('fixture');
+    const screenInput = { request: req, sessionPubkey: AGENT, known, agentKeys: [], history: 'loaded' as const };
+    const decision = screenSeller(check, screenInput);
+    if (decision.approve !== 'allowed') throw new Error('fixture');
+    const bytes = encodeSellerBinding(buildSellerBinding({ check, screen: screenInput, decision, vault: VAULT, confirmed: [], page: 'p' }));
+    const salt = new Uint8Array(32).fill(4);
+    const earlier = { binding: first.bytes, salt: SALT, ceremonyNonce: first.nonce, didDocument: first.didDocument, offerJws: first.offerJws, registration };
+    const base = { binding: bytes, salt, ceremonyNonce: sellerBindingNonce(bytes, salt), didDocument: null, offerJws: check.offerJws, registration };
+    const ok = await verifySellerEvidence({ ...base, saved: { registerTx: 'tx-first', registeredAt: NOW - 100, evidence: earlier }, history: [firstEntry] });
+    expect(ok.verified).toBe(true);
+    expect(ok.binding?.label).toBe('Dexter Bookstore');
+    expect(ok.checks.find((c) => c.name === 'saved_basis')?.ok).toBe(true);
+    expect((await verifySellerEvidence(base)).verified).toBe(false);
+    const tampered = { ...earlier, didDocument: storeDocument({ ...REAL, receiving: [REAL.receiving[0], keyFrom(50)] }) };
+    expect((await verifySellerEvidence({ ...base, saved: { registerTx: 'tx-first', registeredAt: NOW - 100, evidence: tampered } })).verified).toBe(false);
+    expect((await verifySellerEvidence({ ...base, saved: { registerTx: 'tx-other', registeredAt: NOW - 100, evidence: earlier } })).verified).toBe(false);
+  });
+
+  it('replays the screen decision from the history bindings the approval names', async () => {
+    const first = await approval();
+    const firstEntry = { binding: first.bytes, salt: SALT, ceremonyNonce: first.nonce, registerTx: 'tx-first', registeredAt: NOW - 100 };
+    const known = knownSellers([firstEntry], { vault: VAULT });
+    const rotated = { ...REAL, quoteKey: keyFrom(80) };
+    const didDocument = storeDocument(rotated);
+    const req = request({ offerJws: signJws({ alg: 'EdDSA', kid: 'did:web:dexter.cash#books-quote-1' }, offerPayload(), rotated.quoteKey.secret) });
+    const check = await checkSellerOffer(req, { now: NOW, fetchDidDocument: servedFiles({ [REAL_FILE_URL]: didDocument }), known });
+    if (check.status !== 'signed') throw new Error('fixture');
+    const screenInput = { request: req, sessionPubkey: AGENT, known, agentKeys: [], history: 'loaded' as const };
+    const decision = screenSeller(check, screenInput);
+    if (decision.approve !== 'confirm') throw new Error('fixture');
+    const bytes = encodeSellerBinding(buildSellerBinding({ check, screen: screenInput, decision, vault: VAULT, confirmed: decision.notices, page: 'p' }));
+    const base = { binding: bytes, salt: SALT, ceremonyNonce: sellerBindingNonce(bytes, SALT), didDocument, offerJws: check.offerJws, registration };
+    const replay = (history: typeof firstEntry[]) => verifySellerEvidence({ ...base, history }).then((r) => r.checks.find((c) => c.name === 'screen_decision'));
+    expect(await replay([firstEntry])).toMatchObject({ ok: true, detail: 'replayed: confirm with R5:key_changed:books.dexter.cash' });
+    expect((await replay([]))?.ok).toBe(false);
+    expect((await verifySellerEvidence(base)).checks.some((c) => c.name === 'screen_decision')).toBe(false);
   });
 });

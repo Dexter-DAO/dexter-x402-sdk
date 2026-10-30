@@ -19,9 +19,10 @@ async function realStoreHistory(): Promise<KnownSeller[]> {
   const req = request();
   const check = await checkSellerOffer(req, { now: NOW, fetchDidDocument: files() });
   if (check.status !== 'signed') throw new Error('fixture');
-  const decision = screenSeller(check, { request: req, sessionPubkey: AGENT, known: [], agentKeys: [], history: 'loaded' });
+  const screenInput = { request: req, sessionPubkey: AGENT, known: [], agentKeys: [], history: 'loaded' as const };
+  const decision = screenSeller(check, screenInput);
   if (decision.approve !== 'allowed') throw new Error('fixture');
-  const bytes = encodeSellerBinding(buildSellerBinding({ check, decision, vault: VAULT, sessionPubkey: AGENT, confirmed: [], page: 'dexter-fe@test' }));
+  const bytes = encodeSellerBinding(buildSellerBinding({ check, screen: screenInput, decision, vault: VAULT, confirmed: [], page: 'dexter-fe@test' }));
   const salt = new Uint8Array(32).fill(3);
   return knownSellers([{ binding: bytes, salt, ceremonyNonce: sellerBindingNonce(bytes, salt), registerTx: 'tx-approve', registeredAt: NOW - 86_000 }], { vault: VAULT });
 }

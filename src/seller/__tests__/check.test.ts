@@ -15,7 +15,7 @@ function knownReal(overrides: Partial<KnownSeller> = {}): KnownSeller {
   const key = { kty: 'OKP' as const, crv: 'Ed25519' as const, x: REAL.quoteKey.x };
   return {
     host: 'books.dexter.cash', registrableDomain: 'dexter.cash', did: 'did:web:dexter.cash', kid: 'did:web:dexter.cash#books-quote-1',
-    key, keyThumbprint: jwkThumbprint(key), didDocumentSha256: 'ab'.repeat(32),
+    key, keyThumbprint: jwkThumbprint(key), didDocumentSha256: 'ab'.repeat(32), bindingSha256: 'ef'.repeat(32),
     addresses: [REAL.receiving[0].address], addressListSha256: 'cd'.repeat(32), label: 'Dexter Bookstore',
     firstApprovedAt: NOW - 3600, lastApprovedAt: NOW - 3600, lastRegisterTx: 'tx1', ...overrides,
   };
@@ -57,6 +57,10 @@ describe('checkSellerOffer: R1', () => {
   });
   it('refuses when the called host differs from the quote host (relay)', async () => {
     expect(code(await run(request({ calledUrl: 'https://relay.example.com/books/meditations' })))).toBe('R1:resource_host_mismatch');
+  });
+  it('refuses a quote for another book on the same store (resource_url_mismatch)', async () => {
+    expect(code(await run(request({ calledUrl: 'https://books.dexter.cash/books/the-prince' })))).toBe('R1:resource_url_mismatch');
+    expect(code(await run(request({ calledUrl: 'https://BOOKS.dexter.cash/books/meditations/?ref=x#top' })))).toBe('signed');
   });
   it('refuses http, ports, credentials, IP and localhost URLs', async () => {
     for (const calledUrl of ['http://books.dexter.cash/x', 'https://books.dexter.cash:443/x', 'https://books.dexter.cash:8443/x',
@@ -137,7 +141,8 @@ describe('checkSellerOffer: unsigned and the saved path', () => {
   });
   it('checks an unreadable file for a known host against the saved key', async () => {
     const check = await run(request(), servedFiles({}), [knownReal()]);
-    expect(check).toMatchObject({ status: 'signed', source: 'saved', didDocument: null, profile: null, didDocumentSha256: 'ab'.repeat(32) });
+    expect(check).toMatchObject({ status: 'signed', source: 'saved', didDocument: null, profile: null, didDocumentSha256: 'ab'.repeat(32),
+      savedFrom: { registerTx: 'tx1', bindingSha256: 'ef'.repeat(32) } });
   });
   it('refuses an unreadable known host whose quote fails the saved key', async () => {
     const known = knownReal({ key: { kty: 'OKP', crv: 'Ed25519', x: keyFrom(5).x } });

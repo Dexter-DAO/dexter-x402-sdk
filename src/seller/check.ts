@@ -58,7 +58,7 @@ export async function checkSellerOffer(
 
   // 1. No quote: unsigned. The called URL is kept only for the screen's comparison with known hosts.
   if (!seller?.offer) {
-    return { status: 'unsigned', reason: 'no_offer', calledUrl: called?.href ?? null, host: called?.host ?? null, checkedAt };
+    return { status: 'unsigned', reason: 'no_offer', calledUrl: called?.href ?? null, host: called?.host ?? null, kid: null, checkedAt };
   }
   // 2. The URL the agent called.
   if (!called) return refused('R1', 'called_url_invalid', 'the called URL is not a plain https URL on a public host', null, checkedAt);
@@ -86,6 +86,9 @@ export async function checkSellerOffer(
   if (!resource) return refused('R1', 'resource_url_invalid', 'the quote resourceUrl is not a plain https URL on a public host', claimedHost, checkedAt);
   if (resource.host !== called.host) {
     return refused('R1', 'resource_host_mismatch', `the quote is for ${resource.host}, the agent called ${called.host}`, claimedHost, checkedAt);
+  }
+  if (resourceKey(resource.href) !== resourceKey(called.href)) {
+    return refused('R1', 'resource_url_mismatch', `the quote is for ${resourceKey(resource.href)}, the agent called ${resourceKey(called.href)}`, claimedHost, checkedAt);
   }
   // 6. The key must belong to the registrable domain itself.
   if (kid.host !== resource.registrableDomain) {
@@ -120,7 +123,7 @@ export async function checkSellerOffer(
   }
   if (!didDocument) {
     const saved = options.known?.find((entry) => entry.host === resource.host && entry.kid === jws.header.kid);
-    if (!saved) return { status: 'unsigned', reason: 'did_document_unavailable', calledUrl: called.href, host: called.host, checkedAt };
+    if (!saved) return { status: 'unsigned', reason: 'did_document_unavailable', calledUrl: called.href, host: called.host, kid: jws.header.kid, checkedAt };
     // Saved path: the key and addresses he approved before; no file, so no proof step.
     if (!verifyEd25519Strict(jws.signature, jws.signingInput, ed25519JwkToBytes(saved.key))) {
       return refused('R1', 'signature_invalid', `the quote does not verify under the key you approved for ${saved.host}`, claimedHost, checkedAt);
@@ -133,6 +136,7 @@ export async function checkSellerOffer(
       status: 'signed', source: 'saved', checkedAt, ...common,
       key: saved.key, keyThumbprint: saved.keyThumbprint,
       didDocument: null, didDocumentSha256: saved.didDocumentSha256, profile: null,
+      savedFrom: { registerTx: saved.lastRegisterTx, bindingSha256: saved.bindingSha256 },
       addresses: [...saved.addresses], addressListSha256: saved.addressListSha256,
     };
   }
@@ -171,9 +175,15 @@ export async function checkSellerOffer(
   return {
     status: 'signed', source: 'live', checkedAt, ...common,
     key, keyThumbprint: jwkThumbprint(key),
-    didDocument, didDocumentSha256: bytesToHex(sha256(didDocument)), profile,
+    didDocument, didDocumentSha256: bytesToHex(sha256(didDocument)), profile, savedFrom: null,
     addresses, addressListSha256: addressListSha256(profile.payTo),
   };
+}
+
+/** The resource a quote names, for comparison: origin (lowercased by the URL parser, default port dropped) plus path without a trailing slash; no query or fragment. */
+function resourceKey(href: string): string {
+  const url = new URL(href);
+  return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`;
 }
 
 function payToRule(offer: OfferPayloadV1, counterparty: string, listed: readonly string[], claimedHost: string, checkedAt: number): SellerCheck | null {

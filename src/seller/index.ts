@@ -8,10 +8,11 @@ export { checkSellerOffer } from './check';
 export { screenSeller } from './screen';
 export type { ScreenInput } from './screen';
 export {
-  SELLER_CHECKER, buildSellerBinding, decodeSellerBinding, encodeSellerBinding, knownSellers,
+  SELLER_CHECKER, buildSellerBinding, decodeSellerBinding, encodeSellerBinding, knownSellers, sellerBindingSha256,
 } from './binding';
 export { sellerBindingNonce, newSellerBindingSalt } from './nonce';
 export { verifySellerEvidence, verifySellerReceipt, liveSellerStatus } from './verify';
+export type { SellerEvidenceInput } from './verify';
 export { sellerOfferFromPaymentRequired } from './offer';
 export { addressProofMessage } from './document';
 export { registrableDomainOf, displayHost } from './host';

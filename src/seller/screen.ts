@@ -44,8 +44,7 @@ export function screenSeller(check: SellerCheck, input: ScreenInput): ScreenDeci
         if (!named.includes(store.host)) continue;
         if (check.reason === 'no_offer' && !store.addresses.includes(input.request.counterparty)) {
           notices.push({ rule: 'R5', code: 'unsigned_known_host', knownHost: store.host, knownAddresses: [...store.addresses], since: store.lastApprovedAt });
-        } else if (check.reason === 'did_document_unavailable') {
-          // checkSellerOffer only returns this for a known host when the quote's kid is not the one he approved.
+        } else if (check.reason === 'did_document_unavailable' && check.kid !== store.kid) {
           notices.push({ rule: 'R5', code: 'key_changed_unreadable', knownHost: store.host, since: store.lastApprovedAt });
         }
       }
