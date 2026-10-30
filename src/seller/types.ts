@@ -30,6 +30,7 @@ export type FetchDidDocument = (url: string, signal?: AbortSignal) => Promise<Ui
 
 export interface KnownSeller {               // the owner's own history, one entry per exact host
   host: string; registrableDomain: string; did: string; kid: string; key: Ed25519PublicJwk; keyThumbprint: string;
+  didDocumentSha256: string;                // the file hash recorded at that approval (the saved path reports it)
   addresses: string[]; addressListSha256: string; label: string | null;
   firstApprovedAt: number; lastApprovedAt: number; lastRegisterTx: string;
 }
@@ -123,7 +124,7 @@ export interface SellerBindingV1 {
   offer: { version: 1; resourceUrl: string; scheme: string; network: string; asset: string; payTo: string; amount: string; validUntil: number };
   label: string | null;          // the profile's `name`, recorded only as a label for later lookalike notices
   source: 'live' | 'saved';      // saved = the website's file was unreadable; checked against the owner's last approval
-  relation: 'known' | 'first-payment';
+  relation: 'known' | 'first-payment' | 'unknown';   // 'unknown': his history did not load at approval
   notices: Array<{ rule: 'R4' | 'R5'; code: string; knownHost: string; confirmed: true }>;   // codes as ScreenNotice (section 2)
   checkedAt: number;             // unix seconds, the final check just before the passkey prompt
   checker: string;               // '@dexterai/x402@<version>/seller'
