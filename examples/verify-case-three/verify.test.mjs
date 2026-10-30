@@ -344,6 +344,12 @@ test('actual case-three clone approval, payments, receipts and refusals verify f
     const request = refusal.agentRequest, publicKey = new PublicKey(record.manifest.permission.executionKey).toBytes();
     const message = Buffer.from(request.message, 'hex'), signature = Buffer.from(request.sessionSignature, 'hex');
     sdk.verifyCaseVoucherInstruction(decoded.top[decoded.failedInstructionIndex - 1], {key: publicKey, signature, message});
+    const {contextBoundVoucherV2Message} = await import('@dexterai/vault/messages');
+    const expected = contextBoundVoucherV2Message({programId: new PublicKey(refusal.program), vaultPda: new PublicKey(record.manifest.account.vault),
+      sessionPda: new PublicKey(record.manifest.permission.sessionAddress), seller: new PublicKey(record.manifest.permission.seller),
+      sessionNonce: record.manifest.permission.nonce, channelId: Buffer.from(request.voucher.channelId, 'hex'),
+      cumulativeAmount: BigInt(request.voucher.cumulativeAmount), sequenceNumber: request.voucher.sequenceNumber});
+    assert.deepEqual(message, Buffer.from(expected));
     assert.equal(verifySolanaEd25519Strict(message, signature, publicKey), true);
     assert.equal(requireProgramLog(tx, refusal), refusal.programLog);
     assert.ok(decoded.blockTime > record.manifest.permission.expiresAtUnix);
