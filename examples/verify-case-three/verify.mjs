@@ -181,7 +181,7 @@ export function writesSession(tx, program, session) {
  * discriminator passes only when the enumerated history shows a successful vault write to it after the snapshot slot, so it
  * was created after the snapshot. Same rule as the proof page.
  */
-export async function verifyCopycatHistory(connection, vault, impostor, retained, refusalSlot) {
+export async function verifyCopycatHistory(connection, vault, impostor, retained, refusalSlot, agentKey) {
   const session = deriveSessionPda(key(vault), key(impostor))[0], program = key(PROGRAM);
   const differs = 'Retained copycat history differs from the enumerated session history';
   requireCheck(retained && retained.impostor === impostor && retained.sessionAddress === session.toBase58() && retained.accountExists === false
@@ -219,6 +219,9 @@ export async function verifyCopycatHistory(connection, vault, impostor, retained
       if (tx && writesSession(tx, program, session)) { created = true; break; }
     }
     requireCheck(created, 'The copycat session account exists');
+    // The agent's own key never held a permission for this address: a later account must carry another key.
+    requireCheck(!agentKey || !key(agentKey).equals(key(Buffer.from(account.data).subarray(42, 74))),
+      "The copycat session account holds the agent's key");
   }
   return {sessionAddress: session.toBase58(), failedSignatures: count};
 }
@@ -519,7 +522,7 @@ export async function verifyRecord(download, {connection, fetcher = fetch, emit 
     requireCheck(retained?.length === 1, 'Retained copycat history is missing or duplicated');
     // The redirect.no-permission check below rereads this refusal and its slot from the node.
     const refusal = record.redirectRefusals?.find(item => item.kind === 'no-permission' && item.impostor === impostor);
-    return verifyCopycatHistory(connection, r.vault, impostor, retained[0], refusal?.slot);
+    return verifyCopycatHistory(connection, r.vault, impostor, retained[0], refusal?.slot, r.executionKey);
   });
   await run('redirects.complete', async () => {
     requireCheck(record.redirectRefusals?.length === 2 && ['no-permission', 'payout-redirect'].every(kind => record.redirectRefusals.filter(a => a.kind === kind).length === 1),
