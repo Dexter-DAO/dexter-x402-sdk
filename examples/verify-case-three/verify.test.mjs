@@ -210,6 +210,17 @@ test('a vault session account created after the snapshot passes; the check stops
   assert.deepEqual(skipped.reads, ['transfer', 'creation']);
 });
 
+test("a later vault session account holding the agent's own key fails: the agent's key never had permission for the copycat", async () => {
+  const {vault, impostor, session, retained} = copycatCase(['refusal']);
+  const agent = Keypair.generate().publicKey, other = Keypair.generate().publicKey;
+  const holding = key => ({owner: VAULT_PROGRAM, data: Buffer.concat([SESSION_ACCOUNT, Buffer.alloc(34), key.toBuffer(), Buffer.alloc(30)]), lamports: 2_018_400});
+  const rows = [{signature: 'creation', slot: 101, err: null}, refused('refusal', REFUSAL_SLOT)];
+  const withAgent = node(rows, {creation: vaultWrite(session)}, holding(agent));
+  await assert.rejects(verifyCopycatHistory(withAgent, vault, impostor, retained, REFUSAL_SLOT, agent.toBase58()), /holds the agent's key/);
+  const withOther = node(rows, {creation: vaultWrite(session)}, holding(other));
+  assert.equal((await verifyCopycatHistory(withOther, vault, impostor, retained, REFUSAL_SLOT, agent.toBase58())).failedSignatures, 1);
+});
+
 test('a vault write within the snapshot fails, with or without a later one', async t => {
   for (const slot of [100, 99]) for (const laterWrite of [true, false]) await t.test(`slot ${slot}, later write ${laterWrite}`, async () => {
     const {vault, impostor, session, retained} = copycatCase(['refusal']);
