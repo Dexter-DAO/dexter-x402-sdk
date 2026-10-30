@@ -3,11 +3,12 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import { createServer } from 'node:http';
 import { gzipSync } from 'node:zlib';
 import { test } from 'node:test';
-import { Keypair, PublicKey } from '@solana/web3.js';
+import { Keypair, PublicKey, SystemProgram, TransactionInstruction, TransactionMessage } from '@solana/web3.js';
+import { deriveSessionPda } from '@dexterai/vault';
 import { SOLANA_MAINNET, USDC_MINT, addressProofMessage, buildSellerBinding, canonicalBytes,
   checkSellerOffer, encodeSellerBinding, knownSellers, screenSeller, sellerBindingNonce } from '@dexterai/x402/seller';
 import { archiveRawUrl, fetchPublicBytes, publicHttps, saveArchive, sha256 } from './archive.mjs';
-import { bytes, rerunCopycat, requireProgramLog, verifyCopycatHistory, verifyRecord, verifySellerRecord, verifyScreenshot, verifyReceipt } from './verify.mjs';
+import { bytes, rerunCopycat, requireProgramLog, verifyArchiveCopy, verifyCopycatHistory, verifyRecord, verifySellerRecord, verifyScreenshot, verifyReceipt } from './verify.mjs';
 
 const b64 = input => Buffer.from(input).toString('base64url');
 const now = 1793327400;
@@ -132,24 +133,70 @@ test('first-contact V1 allows a first payment with empty history', async () => {
   assert.equal(result.seller.relation, 'first-payment');
 });
 
+const VAULT_PROGRAM = new PublicKey('Hg3wRaydFtJhYrdvYrKECacpJYDsC9Px7yKmpncj2fhc');
+const SESSION_ACCOUNT = Buffer.from([74, 34, 65, 133, 96, 163, 80, 69]);
+function copycatCase(failures = []) {
+  const vault = Keypair.generate().publicKey.toBase58(), impostor = Keypair.generate().publicKey.toBase58();
+  const session = deriveSessionPda(new PublicKey(vault), new PublicKey(impostor))[0];
+  return {vault, impostor, session, retained: {impostor, sessionAddress: session.toBase58(), accountExists: false, slot: 100,
+    signatures: failures.map(signature => ({signature, err: true}))}};
+}
+/** A finalized transaction as getTransaction returns it, built from real instructions. */
+function landed(instructions) {
+  const payer = Keypair.generate().publicKey;
+  const message = new TransactionMessage({payerKey: payer, recentBlockhash: Keypair.generate().publicKey.toBase58(), instructions}).compileToV0Message();
+  return {transaction: {message}, meta: {err: null, loadedAddresses: {writable: [], readonly: []}, innerInstructions: []}};
+}
+
 test('copycat history follows every page to the empty end', async () => {
-  const a = Keypair.generate().publicKey.toBase58(), b = Keypair.generate().publicKey.toBase58();
-  const pages = [[{signature: 'first', err: {InstructionError: [1, {Custom: 3012}]}}], [{signature: 'second', err: 'failed'}], []];
+  const {vault, impostor, retained} = copycatCase(['first', 'second']);
+  const pages = [[{signature: 'first', slot: 10, err: {InstructionError: [1, {Custom: 3012}]}}], [{signature: 'second', slot: 9, err: 'failed'}], []];
   const calls = [];
   const result = await verifyCopycatHistory({getSignaturesForAddress: async (_, options) => {calls.push(options); return pages.shift();},
-    getAccountInfo: async () => null}, a, b);
+    getAccountInfo: async () => null}, vault, impostor, retained);
   assert.equal(result.failedSignatures, 2);
   assert.deepEqual(calls.map(call => call.before), [undefined, 'first', 'second']);
 });
 
-test('a history with one successful transaction fails', async () => {
-  const a = Keypair.generate().publicKey.toBase58(), b = Keypair.generate().publicKey.toBase58();
-  await assert.rejects(verifyCopycatHistory({getSignaturesForAddress: async () => [{signature: 'success', err: null}]}, a, b), /Successful/);
+test('only a real approval counts: a vault instruction writing the copycat session fails, a lamport transfer does not', async () => {
+  const {vault, impostor, session, retained} = copycatCase();
+  const transfer = landed([SystemProgram.transfer({fromPubkey: Keypair.generate().publicKey, toPubkey: session, lamports: 890_880})]);
+  const approval = landed([new TransactionInstruction({programId: VAULT_PROGRAM, keys: [{pubkey: session, isSigner: false, isWritable: true}], data: Buffer.alloc(8)})]);
+  const readOnly = landed([new TransactionInstruction({programId: VAULT_PROGRAM, keys: [{pubkey: session, isSigner: false, isWritable: false}], data: Buffer.alloc(8)})]);
+  const history = (tx, slot = 50) => ({getSignaturesForAddress: async (_, options) => options.before ? [] : [{signature: 'success', slot, err: null}],
+    getTransaction: async () => tx, getAccountInfo: async () => null});
+  assert.equal((await verifyCopycatHistory(history(transfer), vault, impostor, retained)).failedSignatures, 0);
+  assert.equal((await verifyCopycatHistory(history(readOnly), vault, impostor, retained)).failedSignatures, 0);
+  await assert.rejects(verifyCopycatHistory(history(approval), vault, impostor, retained), /wrote the copycat session/);
+  await assert.rejects(verifyCopycatHistory(history(null), vault, impostor, retained), /wrote the copycat session/);
+  // After the retained slot, later activity cannot change the record; the live account check still applies.
+  assert.equal((await verifyCopycatHistory(history(approval, 101), vault, impostor, retained)).failedSignatures, 0);
 });
 
-test('an existing copycat account fails', async () => {
-  const a = Keypair.generate().publicKey.toBase58(), b = Keypair.generate().publicKey.toBase58();
-  await assert.rejects(verifyCopycatHistory({getSignaturesForAddress: async () => [], getAccountInfo: async () => ({data: Buffer.alloc(1)})}, a, b), /account exists/);
+test('an account at the copycat session fails only when it is a vault session account', async () => {
+  const {vault, impostor, retained} = copycatCase();
+  const account = info => ({getSignaturesForAddress: async () => [], getAccountInfo: async () => info});
+  assert.equal((await verifyCopycatHistory(account({owner: SystemProgram.programId, data: Buffer.alloc(0), lamports: 890_880}), vault, impostor, retained)).failedSignatures, 0);
+  await assert.rejects(verifyCopycatHistory(account({owner: VAULT_PROGRAM, data: Buffer.concat([SESSION_ACCOUNT, Buffer.alloc(8)])}), vault, impostor, retained), /account exists/);
+  await assert.rejects(verifyCopycatHistory(account(null), vault, impostor, undefined), /Retained copycat history differs/);
+});
+
+test('the archive copy must be the exact capture, taken within 30 minutes after the approval', async () => {
+  const body = Buffer.from('{"id":"did:web:dexter.cash"}'), hash = sha256(body);
+  const approval = {blockTime: Date.UTC(2026, 9, 30, 14, 0, 0) / 1000};
+  const binding = {registrableDomain: 'dexter.cash', didDocumentSha256: hash};
+  const record = stamp => ({seller: {archive: {url: `https://web.archive.org/web/${stamp}/https://dexter.cash/.well-known/did.json`, sha256: hash}}});
+  const fetched = [];
+  const fetcher = async url => { fetched.push(url); return new Response(body); };
+  assert.match(await verifyArchiveCopy(record('20261030140300'), binding, approval, fetcher), /captured 3 min after the approval/);
+  assert.deepEqual(fetched, ['https://web.archive.org/web/20261030140300id_/https://dexter.cash/.well-known/did.json']);
+  for (const stamp of ['20261030135959', '20261030143001']) {
+    await assert.rejects(verifyArchiveCopy(record(stamp), binding, approval, fetcher), /not captured within 30 minutes/);
+  }
+  await assert.rejects(verifyArchiveCopy(record('20261030140300'), binding, {}, fetcher), /not captured within 30 minutes/);
+  const redirect = async () => new Response(null, {status: 302, headers: {location: 'https://web.archive.org/web/20261030140259id_/https://dexter.cash/.well-known/did.json'}});
+  await assert.rejects(verifyArchiveCopy(record('20261030140300'), binding, approval, redirect), /not an exact capture/);
+  await assert.rejects(verifyArchiveCopy(record('20261030140300'), {...binding, didDocumentSha256: '00'.repeat(32)}, approval, fetcher), /differ from the signed binding/);
 });
 
 test('refusal requires the exact program log retained by the record', () => {
