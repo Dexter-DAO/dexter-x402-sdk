@@ -190,7 +190,7 @@ async function readTransaction(
   // for an exact transaction binding.
   const response = await args.connection.getTransaction(args.signature, {
     commitment: args.commitment,
-    maxSupportedTransactionVersion: 0,
+    maxSupportedTransactionVersion: 1,
   });
   if (!response) return null;
   if (!response.meta) invalid('transaction_meta_missing');
