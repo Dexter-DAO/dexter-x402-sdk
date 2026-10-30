@@ -1,3 +1,6 @@
+// Encodings (SPEC 1.8 and the hour-0 rule): library calls take and return Uint8Array for bytes; in JSON, files, records and
+// downloads, salt and every retained byte array are base64url (no padding) and every hash and the ceremony nonce are lowercase hex.
+
 // ---- constants
 export const SOLANA_MAINNET = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -30,7 +33,8 @@ export type FetchDidDocument = (url: string, signal?: AbortSignal) => Promise<Ui
 
 export interface KnownSeller {               // the owner's own history, one entry per exact host
   host: string; registrableDomain: string; did: string; kid: string; key: Ed25519PublicJwk; keyThumbprint: string;
-  didDocumentSha256: string;                // the file hash recorded at that approval (the saved path reports it)
+  didDocumentSha256: string;                // the file hash recorded at that approval (the saved path carries it forward)
+  bindingSha256: string;                    // hex SHA-256 of the binding this entry's key, addresses and file hash come from (the latest for this host)
   addresses: string[]; addressListSha256: string; label: string | null;
   firstApprovedAt: number; lastApprovedAt: number; lastRegisterTx: string;
 }
@@ -41,6 +45,7 @@ export interface SellerHistoryEntry { binding: Uint8Array; salt: Uint8Array; cer
 export type R1Code =
   | 'called_url_invalid' | 'offer_format_unsupported' | 'offer_malformed' | 'offer_alg_unsupported'
   | 'kid_not_did_url' | 'did_method_unsupported' | 'resource_url_invalid' | 'resource_host_mismatch'
+  | 'resource_url_mismatch'
   | 'did_not_registrable_domain' | 'offer_terms_mismatch' | 'offer_validity_missing' | 'offer_expired'
   | 'offer_validity_too_long' | 'did_document_invalid' | 'host_not_listed' | 'kid_not_listed'
   | 'key_invalid' | 'signature_invalid';
@@ -58,13 +63,16 @@ export interface SignedSeller {
   key: Ed25519PublicJwk; keyThumbprint: string;
   didDocument: Uint8Array | null;          // exact bytes; null when source = 'saved'
   didDocumentSha256: string;               // when source = 'saved', the hash recorded at the owner's last approval
+  savedFrom: { registerTx: string; bindingSha256: string } | null;   // source = 'saved': the earlier approval the key and addresses come from
   profile: SellerProfileV1 | null;         // null when source = 'saved'
   addresses: string[]; addressListSha256: string;
   offerJws: string; offerJwsSha256: string; offer: OfferPayloadV1;
 }
 export type SellerCheck =
   | SignedSeller
-  | { status: 'unsigned'; reason: UnsignedReason; calledUrl: string | null; host: string | null; checkedAt: number }
+  | { status: 'unsigned'; reason: UnsignedReason; calledUrl: string | null; host: string | null;
+      kid: string | null;                  // the quote's kid when there was a quote (did_document_unavailable); null for no_offer
+      checkedAt: number }
   | { status: 'refused'; refusal: SellerRefusal; claimedHost: string | null; checkedAt: number };
 
 
@@ -100,11 +108,19 @@ export type ScreenDecision =
 // ---- after the fact (proof page, verify script)
 export interface SellerEvidenceCheck {
   name: 'binding_bytes' | 'registration_match' | 'commitment' | 'did_document_hash' | 'did_document_valid'
-      | 'key_listed' | 'host_listed' | 'offer_signature' | 'offer_terms' | 'payto_listed' | 'address_proofs';
+      | 'key_listed' | 'host_listed' | 'offer_signature' | 'offer_terms' | 'payto_listed' | 'address_proofs'
+      | 'saved_basis'        // source = 'saved' only: the earlier approval named in savedFrom verifies and supplied this key, file hash and addresses
+      | 'screen_decision';   // only when the history bindings are supplied: they are exactly knownStores and screenSeller reproduces approve and notices
   ok: boolean; detail: string;
 }
 
 // ---- helpers used by stores, tools and the page
+/**
+ * What the owner's passkey commits to (through the challenge nonce). It records the complete screen decision and every input
+ * it depends on, so the decision can be replayed: the quote and file checks (with the saved quote and file), the request's own
+ * claims (appName, expectedHost), whether history loaded, and references to the earlier approvals that made up his known
+ * stores (R4/R5 inputs). page and checker identify the implementations the signer ran; they are not proof that they ran.
+ */
 export interface SellerBindingV1 {
   v: 'dexter-seller-binding/v1';
   vault: string;                 // owner's vault PDA (base58); equals challenge bytes 96-128
@@ -124,6 +140,12 @@ export interface SellerBindingV1 {
   offer: { version: 1; resourceUrl: string; scheme: string; network: string; asset: string; payTo: string; amount: string; validUntil: number };
   label: string | null;          // the profile's `name`, recorded only as a label for later lookalike notices
   source: 'live' | 'saved';      // saved = the website's file was unreadable; checked against the owner's last approval
+  savedFrom: { registerTx: string; bindingSha256: string } | null;   // source = 'saved': that approval; null when live
+  request: { appName: string; expectedHost: string | null };          // the request's own claims (R3 and R4 inputs)
+  history: 'loaded' | 'unavailable';
+  knownStores: Array<{ host: string; registerTx: string; bindingSha256: string }>;   // sorted by host; empty when history is unavailable
+  approve: 'allowed' | 'confirm';
+  replaces: string | null;       // the live session key this approval replaces at this counterparty, if any
   relation: 'known' | 'first-payment' | 'unknown';   // 'unknown': his history did not load at approval
   notices: Array<{ rule: 'R4' | 'R5'; code: string; knownHost: string; confirmed: true }>;   // codes as ScreenNotice (section 2)
   checkedAt: number;             // unix seconds, the final check just before the passkey prompt
