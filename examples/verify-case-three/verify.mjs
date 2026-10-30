@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual, parseArgs } from 'node:util';
 import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
@@ -20,6 +21,10 @@ const TOKEN = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const ATA = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
 const MEMO = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
 const SCREENSHOT = 'https://dexter.cash/proof/case-three/first-contact-v1.png';
+const SESSION_DISCRIMINATOR = createRequire(import.meta.url)('@dexterai/vault/idl').accounts
+  .find(account => account.name === 'SessionAccount').discriminator;
+/** The archive copy must be captured after the approval and within this window (the run saves it right after the approval). */
+export const ARCHIVE_WINDOW_SECONDS = 30 * 60;
 const variants = ['V1', 'V2', 'V3', 'V4', 'V5'];
 const requireCheck = (condition, message) => { if (!condition) throw new Error(message); };
 const key = value => new PublicKey(value);
@@ -124,8 +129,50 @@ export async function rerunCopycat(attempt, known, {firstContact = false} = {}) 
   return decision;
 }
 
+/**
+ * The Internet Archive's copy of the store file: the exact capture named by the record (a redirect to a nearer capture
+ * fails), taken between the approval and ARCHIVE_WINDOW_SECONDS after it, with the bytes the passkey committed to.
+ */
+export async function verifyArchiveCopy(record, binding, approval, fetcher = fetch) {
+  requireCheck(binding && record.seller?.archive, 'A verified seller and archive snapshot are required');
+  const archive = record.seller.archive, raw = archiveRawUrl(archive.url);
+  requireCheck(raw.endsWith(`/https://${binding.registrableDomain}/.well-known/did.json`), 'Archive URL names a different store file');
+  const stamp = /^https:\/\/web\.archive\.org\/web\/(\d{14})id_\//.exec(raw)[1];
+  const capturedAt = Date.UTC(+stamp.slice(0, 4), +stamp.slice(4, 6) - 1, +stamp.slice(6, 8), +stamp.slice(8, 10),
+    +stamp.slice(10, 12), +stamp.slice(12, 14)) / 1000;
+  requireCheck(Number.isSafeInteger(approval?.blockTime) && capturedAt >= approval.blockTime
+    && capturedAt <= approval.blockTime + ARCHIVE_WINDOW_SECONDS, 'The archive copy was not captured within 30 minutes after the approval');
+  let response;
+  try { response = await fetchPublicBytes(raw, {fetcher, limit: 65_536, redirects: 0}); }
+  catch (error) { throw new Error(error.message === 'Too many redirects' ? 'The archive URL is not an exact capture' : error.message); }
+  const hash = sha256(response.bytes);
+  requireCheck(hash === binding.didDocumentSha256 && hash === archive.sha256, 'Decoded archive bytes differ from the signed binding');
+  return `${raw} sha256 ${hash}, captured ${Math.round((capturedAt - approval.blockTime) / 60)} min after the approval`;
+}
+
+/** True when the vault program ran an instruction, top level or inner, that lists the session account as writable. */
+export function writesSession(tx, program, session) {
+  const message = tx.transaction.message;
+  const all = message.getAccountKeys({accountKeysFromLookups: tx.meta?.loadedAddresses ?? undefined}).keySegments().flat();
+  const index = all.findIndex(account => account.equals(session));
+  if (index < 0 || !message.isAccountWritable(index)) return false;
+  const runs = (programIndex, accounts) => Boolean(all[programIndex]?.equals(program)) && accounts.includes(index);
+  return message.compiledInstructions.some(ix => runs(ix.programIdIndex, ix.accountKeyIndexes))
+    || (tx.meta?.innerInstructions ?? []).some(group => group.instructions.some(ix => runs(ix.programIdIndex, ix.accounts)));
+}
+
+/**
+ * No permission ever existed on his wallet for the copycat address. Only what could be a real approval counts: an account at
+ * PDA(vault, copycat) owned by the vault program with the SessionAccount discriminator, or a successful transaction, up to the
+ * retained history's slot, in which the vault program ran an instruction that writes that account. Anyone can send lamports
+ * to, or mention, a public address; those are ignored. Same rule as the proof page.
+ */
 export async function verifyCopycatHistory(connection, vault, impostor, retained) {
-  const session = deriveSessionPda(key(vault), key(impostor))[0];
+  const session = deriveSessionPda(key(vault), key(impostor))[0], program = key(PROGRAM);
+  const differs = 'Retained copycat history differs from the enumerated session history';
+  requireCheck(retained && retained.impostor === impostor && retained.sessionAddress === session.toBase58() && retained.accountExists === false
+    && Number.isSafeInteger(retained.slot) && retained.slot > 0 && Array.isArray(retained.signatures)
+    && new Set(retained.signatures.map(row => row.signature)).size === retained.signatures.length, differs);
   let before;
   let count = 0;
   const seen = new Set();
@@ -133,19 +180,19 @@ export async function verifyCopycatHistory(connection, vault, impostor, retained
     const page = await connection.getSignaturesForAddress(session, {limit: 1000, ...(before ? {before} : {})}, 'finalized');
     if (!page.length) break;
     for (const row of page) {
-      requireCheck(row.err !== null && row.err !== undefined && !seen.has(row.signature), 'Successful or repeated copycat history entry');
-      seen.add(row.signature); count++;
+      requireCheck(!seen.has(row.signature), 'Repeated copycat history entry');
+      seen.add(row.signature);
+      if (row.err !== null && row.err !== undefined) { count++; continue; }
+      if (row.slot > retained.slot) continue;
+      const tx = await connection.getTransaction(row.signature, {commitment: 'finalized', maxSupportedTransactionVersion: 0});
+      requireCheck(tx && !writesSession(tx, program, session), 'A successful transaction wrote the copycat session');
     }
     before = page.at(-1).signature;
   }
-  requireCheck(await connection.getAccountInfo(session, 'finalized') === null, 'The copycat session account exists');
-  if (retained !== undefined) {
-    requireCheck(retained.impostor === impostor && retained.sessionAddress === session.toBase58() && retained.accountExists === false
-      && Number.isSafeInteger(retained.slot) && retained.slot > 0 && Array.isArray(retained.signatures)
-      && new Set(retained.signatures.map(row => row.signature)).size === retained.signatures.length
-      && retained.signatures.every(row => row.err === true && seen.has(row.signature)),
-      'Retained copycat history differs from the enumerated session history');
-  }
+  const account = await connection.getAccountInfo(session, 'finalized');
+  requireCheck(!(account && account.owner && key(account.owner).equals(program)
+    && SESSION_DISCRIMINATOR.every((byte, i) => account.data[i] === byte)), 'The copycat session account exists');
+  requireCheck(retained.signatures.every(row => row.err === true && seen.has(row.signature)), differs);
   return {sessionAddress: session.toBase58(), failedSignatures: count};
 }
 
@@ -389,14 +436,7 @@ export async function verifyRecord(download, {connection, fetcher = fetch, emit 
     binding = evidence.binding;
     return `nonce ${approval.ceremonyNonce}`;
   });
-  await run('archive', async () => {
-    requireCheck(binding && record.seller.archive, 'A verified seller and archive snapshot are required');
-    const archive = record.seller.archive, raw = archiveRawUrl(archive.url);
-    requireCheck(raw.endsWith(`/https://${binding.registrableDomain}/.well-known/did.json`), 'Archive URL names a different store file');
-    const response = await fetchPublicBytes(raw, {fetcher, limit: 65_536}), hash = sha256(response.bytes);
-    requireCheck(hash === binding.didDocumentSha256 && hash === archive.sha256, 'Decoded archive bytes differ from the signed binding');
-    return `${raw} sha256 ${hash}`;
-  });
+  await run('archive', () => verifyArchiveCopy(record, binding, approval, fetcher));
   const payments = [];
   await run('purchases.complete', async () => {
     requireCheck(record.actions?.length === 2 && record.manifest.purchases.length === 2, 'Expected both purchases');
