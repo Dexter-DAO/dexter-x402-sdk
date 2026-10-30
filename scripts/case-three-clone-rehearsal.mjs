@@ -107,7 +107,8 @@ try {
   const archive = async signature => {
     let tx;
     for (let n = 0; n < 120; n++) {
-      tx = await connection.getTransaction(signature, { commitment: 'finalized', maxSupportedTransactionVersion: 0 });
+      try { tx = await connection.getTransaction(signature, { commitment: 'finalized', maxSupportedTransactionVersion: 0 }); }
+      catch { tx = null; } // An RPC restart can close a pooled socket. Only this read is retried.
       if (tx) break;
       await pause(250);
     }
