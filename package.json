@@ -6,6 +6,11 @@
   "license": "MIT",
   "type": "module",
   "exports": {
+    "./seller": {
+      "types": "./dist/seller/index.d.ts",
+      "import": "./dist/seller/index.js",
+      "require": "./dist/seller/index.cjs"
+    },
     "./mcp": {
       "types": "./dist/mcp/index.d.ts",
       "import": "./dist/mcp/index.js",
@@ -80,7 +85,8 @@
     "test:watch": "vitest",
     "test:real": "echo 'Real payment tests require funded wallets. Run: npx tsx test/real-payment-solana.ts'",
     "prepublishOnly": "npm run build",
-    "verify:tab:package": "node scripts/verify-packed-tab.mjs"
+    "verify:tab:package": "node scripts/verify-packed-tab.mjs",
+    "verify:seller:package": "node scripts/verify-seller-package.mjs"
   },
   "dependencies": {
     "@dexterai/x402-ads-types": "^0.2.0",
@@ -93,6 +99,7 @@
     "@x402/evm": "2.26.0",
     "@x402/extensions": "2.26.0",
     "bs58": "^6.0.0",
+    "tldts": "^7.4.19",
     "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
