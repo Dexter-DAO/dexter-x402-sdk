@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual, parseArgs } from 'node:util';
 import { Connection, PublicKey, VersionedTransaction } from '@solana/web3.js';
+import { createTransferCheckedInstruction } from '@solana/spl-token';
 import * as mandate from '@dexterai/vault/mandate';
 import * as instructions from '@dexterai/vault/instructions';
 import { contextBoundVoucherV2Message } from '@dexterai/vault/messages';
@@ -153,6 +154,23 @@ const voucherMessage = (r, proof, seller = r.seller, session = r.sessionAddress)
   channelId: hex(proof.channelId), cumulativeAmount: BigInt(proof.cumulativeAmount), sequenceNumber: proof.sequenceNumber,
 });
 
+/** Decode the signed Swig payload through the public vault SDK and compare pure SPL-built TransferChecked instructions. */
+export function verifyPayoutTransfers(payout, expected) {
+  const {swig, wallet, source, transfers} = expected;
+  requireCheck(transfers.length >= 1 && transfers.length <= 2 && source.equals(ata(wallet))
+    && payout.keys[0]?.pubkey.equals(swig) && payout.keys[1]?.pubkey.equals(wallet), 'Payout wallet or transfer count differs');
+  const decoded = instructions.decodeOwnerCompoundInstructions(payout, transfers.length);
+  requireCheck(decoded.roleId === 6, 'Payout does not use the claim-settlement Swig role');
+  for (const [index, transfer] of transfers.entries()) {
+    requireCheck(transfer.amount > 0n, 'Payout transfer amount must be positive');
+    const wanted = createTransferCheckedInstruction(source, key(USDC_MINT), transfer.destination, wallet, transfer.amount, 6, [], TOKEN);
+    // Swig signs for the wallet during the CPI; its outer transport carries that wallet as a non-signer.
+    wanted.keys[3].isSigner = false;
+    requireCheck(sameInstruction(decoded.instructions[index], wanted), 'Signed payout transfer differs from the approved destination or amount');
+  }
+  return decoded;
+}
+
 export async function verifyPurchase(connection, record, action, purchase, approval) {
   const r = registrationOf(record), proof = action.proof, expected = action.expected;
   requireCheck(proof?.schema === 'dexter-tab-locked-action-v1' && action.status === 'confirmed' && action.reservation
@@ -205,7 +223,9 @@ export async function verifyPurchase(connection, record, action, purchase, appro
     'The payout did not close this claim');
   const legs = [{account: source, owner: wallet, delta: -amount}, {account: ata(r.seller), owner: key(r.seller), delta: amount - fee},
     ...(fee > 0n ? [{account: ata(proof.feeRecipient), owner: key(proof.feeRecipient), delta: fee}] : [])];
-  // The public SDK checks signed bytes and exact canonical token-account deltas. A newly created destination has no pre-balance row.
+  verifyPayoutTransfers(payout, {swig, wallet, source, transfers: legs.slice(1).map(leg => ({destination: leg.account, amount: leg.delta}))});
+  // The signed payload is checked above. The SDK checks exact canonical token-account deltas reported by the node.
+  // A newly created destination has no pre-balance row.
   const existing = [];
   for (const leg of legs) {
     const index = Array.from({length: settled.keys.length}, (_, i) => settled.keys.get(i)).findIndex(k => k.equals(leg.account));

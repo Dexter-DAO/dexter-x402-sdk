@@ -372,3 +372,50 @@ test('actual case-three clone approval, payments, receipts and refusals verify f
     assert.ok(decoded.blockTime > record.manifest.permission.expiresAtUnix);
   });
 });
+
+test('signed Swig payout destinations and amounts are checked independently of unchanged node balances', async t => {
+  const {readFile} = await import('node:fs/promises');
+  const {TransactionInstruction, TransactionMessage, VersionedTransaction} = await import('@solana/web3.js');
+  const {getAssociatedTokenAddressSync, createTransferCheckedInstruction} = await import('@solana/spl-token');
+  const {decodeCaseTransaction} = await import('@dexterai/vault/mandate');
+  const {deriveSwigWalletAddress} = await import('@dexterai/vault/instructions');
+  const {verifySolanaEd25519Strict} = await import('@dexterai/vault/precompile');
+  const {verifyPayoutTransfers} = await import('./verify.mjs');
+  const {archivedConnection} = await import('./fixtures/archived-transactions.mjs');
+  const fixture = JSON.parse(await readFile(new URL('./fixtures/case-three-clone-run-9.json', import.meta.url), 'utf8'));
+  const action = fixture.record.actions[0];
+  const tx = await archivedConnection(fixture).getTransaction(action.reference);
+  const original = decodeCaseTransaction(tx, action.reference).top.at(-1);
+  const mint = new PublicKey(USDC_MINT), swig = new PublicKey(fixture.record.manifest.account.swig), wallet = deriveSwigWalletAddress(swig);
+  const source = getAssociatedTokenAddressSync(mint, wallet, true);
+  const seller = getAssociatedTokenAddressSync(mint, new PublicKey(fixture.record.manifest.permission.seller), true);
+  const treasury = getAssociatedTokenAddressSync(mint, new PublicKey(fixture.record.manifest.feePolicy.recipient), true);
+  const expected = {swig, wallet, source, transfers: [{destination: seller, amount: 990000n}, {destination: treasury, amount: 10000n}]};
+  for (const mutation of ['none', 'destination', 'amount', 'unused-destination-and-wrong-amount']) await t.test(mutation, async () => {
+    const payout = new TransactionInstruction({programId: original.programId, data: Buffer.from(original.data), keys: original.keys.map(entry => ({...entry}))});
+    if (mutation === 'destination') payout.keys.find(entry => entry.pubkey.equals(seller)).pubkey = Keypair.generate().publicKey;
+    if (mutation === 'amount' || mutation === 'unused-destination-and-wrong-amount') {
+      const data = createTransferCheckedInstruction(source, mint, seller, wallet, 990000n, 6).data;
+      const offset = payout.data.indexOf(data);
+      assert.ok(offset >= 0);
+      payout.data.writeBigUInt64LE(989999n, offset + 1);
+    }
+    if (mutation === 'unused-destination-and-wrong-amount') payout.keys.push({pubkey: Keypair.generate().publicKey, isSigner: false, isWritable: true});
+    const signer = Keypair.generate();
+    const signed = new VersionedTransaction(new TransactionMessage({payerKey: signer.publicKey,
+      recentBlockhash: tx.transaction.message.recentBlockhash, instructions: [payout]}).compileToV0Message());
+    signed.sign([signer]);
+    assert.equal(verifySolanaEd25519Strict(signed.message.serialize(), signed.signatures[0], signer.publicKey.toBytes()), true);
+    const payload = TransactionMessage.decompile(signed.message).instructions[0];
+    const balances = structuredClone(tx.meta);
+    const originalFetch = globalThis.fetch;
+    let reads = 0;
+    globalThis.fetch = async () => {reads++; throw new Error('Payout verification must not read current claim or Swig state');};
+    try {
+      if (mutation === 'none') assert.equal(verifyPayoutTransfers(payload, expected).roleId, 6);
+      else assert.throws(() => verifyPayoutTransfers(payload, expected), /Signed payout transfer differs/);
+    } finally {globalThis.fetch = originalFetch;}
+    assert.equal(reads, 0);
+    assert.deepEqual(tx.meta, balances);
+  });
+});
