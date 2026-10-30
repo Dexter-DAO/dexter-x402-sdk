@@ -290,3 +290,62 @@ test('retained copycat session and signatures must agree with the complete enume
     else await assert.rejects(check(), /Retained copycat history differs/);
   });
 });
+
+test('actual case-three clone approval, payments, receipts and refusals verify from archived signed messages', async t => {
+  const {readFile} = await import('node:fs/promises');
+  const fixture = JSON.parse(await readFile(new URL('./fixtures/case-three-clone-run-9.json', import.meta.url), 'utf8'));
+  const {archivedConnection} = await import('./fixtures/archived-transactions.mjs');
+  const {verifyApproval, verifyPurchase, verifyRedirect, verifyLimitRefusal} = await import('./verify.mjs');
+  const record = fixture.record, connection = archivedConnection(fixture);
+  assert.equal(fixture.provenance.softwarePasskey, true);
+  assert.equal(fixture.provenance.sellerBindingCommitted, false);
+  assert.equal(fixture.provenance.screenRendered, false);
+  const approval = await verifyApproval(connection, record);
+  assert.equal(approval.verified, true);
+  assert.equal(approval.slot, 57);
+  // This software-passkey approval supplies no seller commitment or claim about a rendered approval screen.
+  await assert.rejects(verifySellerRecord(record, approval));
+  const payments = [];
+  for (const [index, purchase] of record.manifest.purchases.entries()) await t.test(`purchase ${index + 1} and receipt`, async () => {
+    payments[index] = await verifyPurchase(connection, record, record.actions[index], purchase, approval);
+    assert.equal(payments[index].verified, true);
+    assert.equal((await verifyReceipt(record, record.actions[index], purchase, payments[index], fixture.receiptKey)).ok, true);
+  });
+  for (const refusal of record.redirectRefusals) await t.test(`redirect ${refusal.error.code}`, async () => {
+    assert.equal(await verifyRedirect(connection, record, refusal, payments, approval), refusal.programLog);
+  });
+  await t.test('3012 voucher binds the attempted increment after prior verified locks', async () => {
+    const refusal = structuredClone(record.redirectRefusals[0]);
+    assert.equal(refusal.agentRequest.cumulativeAmount, '3000000');
+    assert.equal(refusal.attemptedAmountAtomic, '1000000');
+    refusal.agentRequest.cumulativeAmount = '1000000';
+    await assert.rejects(verifyRedirect(connection, record, refusal, payments, approval), /matching copycat voucher/);
+  });
+  await t.test('a redirect with another Swig fails despite the same signed transaction', async () => {
+    const other = structuredClone(record);
+    other.manifest.account.swig = Keypair.generate().publicKey.toBase58();
+    await assert.rejects(verifyRedirect(connection, other, other.redirectRefusals[1], payments, approval), /different vault Swig/);
+  });
+  await t.test('6013 proves the signed refusal and exact program log', async () => {
+    const refusal = record.refusals.find(row => row.error.code === 6013);
+    assert.equal(await verifyLimitRefusal(connection, record, refusal, payments, approval), refusal.programLog);
+  });
+  await t.test('6009 proves a program refusal but fails one-ledger history after the clone restart', async () => {
+    const refusal = record.refusals.find(row => row.error.code === 6009);
+    assert.equal(refusal.slot, 8);
+    await assert.rejects(verifyLimitRefusal(connection, record, refusal, payments, approval), /wrong time/);
+    const sdk = await import('@dexterai/vault/mandate');
+    const {verifySolanaEd25519Strict} = await import('@dexterai/vault/precompile');
+    const tx = await connection.getTransaction(refusal.signature);
+    const decoded = sdk.verifyCaseFailedTransaction(tx, refusal.signature, {
+      program: refusal.program, code: 6009, attempt: {instruction: 'settle_voucher', vault: record.manifest.account.vault,
+        counterparty: record.manifest.permission.seller, authority: payments[0].dexterAuthority,
+        amount: BigInt(refusal.attemptedAmountAtomic)}});
+    const request = refusal.agentRequest, publicKey = new PublicKey(record.manifest.permission.executionKey).toBytes();
+    const message = Buffer.from(request.message, 'hex'), signature = Buffer.from(request.sessionSignature, 'hex');
+    sdk.verifyCaseVoucherInstruction(decoded.top[decoded.failedInstructionIndex - 1], {key: publicKey, signature, message});
+    assert.equal(verifySolanaEd25519Strict(message, signature, publicKey), true);
+    assert.equal(requireProgramLog(tx, refusal), refusal.programLog);
+    assert.ok(decoded.blockTime > record.manifest.permission.expiresAtUnix);
+  });
+});

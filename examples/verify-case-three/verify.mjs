@@ -273,8 +273,15 @@ export async function verifyRedirect(connection, record, refusal, payments, appr
   if (locked) requireCheck(refusal.claimAddress === payment.claimAddress && refusal.attemptedAmountAtomic === record.actions[1].amountAtomic,
     'Redirect does not name purchase 2');
   const session = deriveSessionPda(key(r.vault), key(refusal.impostor))[0].toBase58();
-  if (!locked) requireCheck(refusal.sessionAddress === session && refusal.agentRequest
-    && refusal.agentRequest.cumulativeAmount === refusal.attemptedAmountAtomic, 'Redirect has no matching copycat voucher');
+  if (!locked) {
+    const used = record.actions.reduce((max, action, index) => {
+      const payment = payments[index];
+      const cumulative = payment?.verified && payment.lockSlot < refusal.slot ? BigInt(action.proof.voucher.cumulativeAmount) : 0n;
+      return cumulative > max ? cumulative : max;
+    }, 0n);
+    requireCheck(refusal.sessionAddress === session && refusal.agentRequest
+      && BigInt(refusal.agentRequest.cumulativeAmount) - used === BigInt(refusal.attemptedAmountAtomic), 'Redirect has no matching copycat voucher');
+  }
   const decoded = mandate.verifyCaseFailedTransaction(tx, refusal.signature, {program: PROGRAM, code: refusal.error.code,
     attempt: locked ? {instruction: 'settle_locked_voucher', vault: r.vault, claim: payment.claimAddress,
       holder: payment.holder, authority, destinationOwner: refusal.impostor, amount: BigInt(refusal.attemptedAmountAtomic)}

@@ -31,4 +31,8 @@ The helper requests a Wayback save, reads its timestamped `id_` snapshot, and pr
 npm test
 ```
 
-Tests use generated signing keys, saved documents, local HTTP fixtures and captured public case-two transactions. The case-two fixture exercises the shared approval and payment checks; case-three rehearsal evidence is checked separately. They check signature and commitment mutations, every copycat result, swapped files, missing documents, complete history pagination, a successful history entry, an existing copycat account, screenshot hashes, exact refusal logs and compressed archive bytes.
+Tests use generated signing keys, saved documents, local HTTP fixtures, captured public case-two transactions and archived signed case-three clone transactions. They check signature and commitment mutations, every copycat result, swapped files, missing documents, complete history pagination, a successful history entry, an existing copycat account, screenshot hashes, exact refusal logs and compressed archive bytes.
+
+The clone tests verify its software-passkey approval, both purchases and signed receipts, redirects 3012 and 6070, and the 6013 refusal. Its 6009 transaction proves the program refusal and agent signature, but fails the historical ordering check because the clone restarted its ledger before advancing time. Its approval has no seller commitment or rendered-screen evidence. The complete mainnet dress-rehearsal record remains a separate verification step.
+
+An archive save on October 29, 2026 at 10:55:33 PM ET returned [this snapshot](https://web.archive.org/web/20261030025533id_/https://dexter.cash/.well-known/did.json). Its 910 decoded bytes and the source bytes both hashed to `eaa77c5e24fb7356749890577a60887cd5464c2b8d2f0750e592cea3c4e83c03`.
