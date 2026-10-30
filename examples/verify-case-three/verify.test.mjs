@@ -269,3 +269,24 @@ test('store receipts bind book URL, payer, network and verified reservation-to-l
     else await assert.rejects(check());
   });
 });
+
+test('retained copycat session and signatures must agree with the complete enumeration', async t => {
+  const {deriveSessionPda} = await import('@dexterai/vault');
+  const vault = Keypair.generate().publicKey.toBase58(), impostor = Keypair.generate().publicKey.toBase58();
+  const sessionAddress = deriveSessionPda(new PublicKey(vault), new PublicKey(impostor))[0].toBase58();
+  for (const mutation of ['none', 'session', 'signature', 'err', 'duplicate', 'account']) await t.test(mutation, async () => {
+    const retained = {impostor, sessionAddress, signatures: [{signature: 'recorded-failure', err: true}], accountExists: false, slot: 100};
+    if (mutation === 'session') retained.sessionAddress = Keypair.generate().publicKey.toBase58();
+    if (mutation === 'signature') retained.signatures[0].signature = 'absent-from-node';
+    if (mutation === 'err') retained.signatures[0].err = false;
+    if (mutation === 'duplicate') retained.signatures.push({...retained.signatures[0]});
+    if (mutation === 'account') retained.accountExists = true;
+    let page = 0;
+    const connection = {getSignaturesForAddress: async () => page++ === 0
+      ? [{signature: 'newer-failure', err: {InstructionError: [1, {Custom: 3012}]}}, {signature: 'recorded-failure', err: 'failed'}] : [],
+      getAccountInfo: async () => null};
+    const check = () => verifyCopycatHistory(connection, vault, impostor, retained);
+    if (mutation === 'none') assert.equal((await check()).failedSignatures, 2);
+    else await assert.rejects(check(), /Retained copycat history differs/);
+  });
+});

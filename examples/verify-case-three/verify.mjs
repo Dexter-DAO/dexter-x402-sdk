@@ -123,7 +123,7 @@ export async function rerunCopycat(attempt, known, {firstContact = false} = {}) 
   return decision;
 }
 
-export async function verifyCopycatHistory(connection, vault, impostor) {
+export async function verifyCopycatHistory(connection, vault, impostor, retained) {
   const session = deriveSessionPda(key(vault), key(impostor))[0];
   let before;
   let count = 0;
@@ -138,6 +138,13 @@ export async function verifyCopycatHistory(connection, vault, impostor) {
     before = page.at(-1).signature;
   }
   requireCheck(await connection.getAccountInfo(session, 'finalized') === null, 'The copycat session account exists');
+  if (retained !== undefined) {
+    requireCheck(retained.impostor === impostor && retained.sessionAddress === session.toBase58() && retained.accountExists === false
+      && Number.isSafeInteger(retained.slot) && retained.slot > 0 && Array.isArray(retained.signatures)
+      && new Set(retained.signatures.map(row => row.signature)).size === retained.signatures.length
+      && retained.signatures.every(row => row.err === true && seen.has(row.signature)),
+      'Retained copycat history differs from the enumerated session history');
+  }
   return {sessionAddress: session.toBase58(), failedSignatures: count};
 }
 
@@ -262,15 +269,19 @@ export async function verifyRedirect(connection, record, refusal, payments, appr
   const authority = payment.dexterAuthority;
   const locked = refusal.kind === 'payout-redirect';
   requireCheck(refusal.error.code === (locked ? 6070 : 3012), 'Wrong redirect refusal code');
+  requireCheck(refusal.impostor !== r.seller, 'Redirect recipient equals the approved seller');
   if (locked) requireCheck(refusal.claimAddress === payment.claimAddress && refusal.attemptedAmountAtomic === record.actions[1].amountAtomic,
     'Redirect does not name purchase 2');
   const session = deriveSessionPda(key(r.vault), key(refusal.impostor))[0].toBase58();
-  if (!locked) requireCheck(refusal.sessionAddress === session && refusal.agentRequest, 'Redirect has no copycat voucher');
+  if (!locked) requireCheck(refusal.sessionAddress === session && refusal.agentRequest
+    && refusal.agentRequest.cumulativeAmount === refusal.attemptedAmountAtomic, 'Redirect has no matching copycat voucher');
   const decoded = mandate.verifyCaseFailedTransaction(tx, refusal.signature, {program: PROGRAM, code: refusal.error.code,
     attempt: locked ? {instruction: 'settle_locked_voucher', vault: r.vault, claim: payment.claimAddress,
       holder: payment.holder, authority, destinationOwner: refusal.impostor, amount: BigInt(refusal.attemptedAmountAtomic)}
       : {instruction: 'settle_voucher', vault: r.vault, counterparty: refusal.impostor,
         authority, amount: BigInt(refusal.attemptedAmountAtomic)}});
+  requireCheck(decoded.failedInstruction.keys[locked ? 0 : 4]?.pubkey.toBase58() === record.manifest.account.swig,
+    'Redirect names a different vault Swig');
   requireCheck(decoded.slot === refusal.slot && decoded.slot > approval.slot
     && (refusal.blockTime === null || decoded.blockTime === refusal.blockTime), 'Redirect slot or time differs');
   if (locked) requireCheck(decoded.slot > payment.lockSlot && decoded.slot < payment.slot, 'The redirect did not precede the same claim payout');
@@ -401,7 +412,17 @@ export async function verifyRecord(download, {connection, fetcher = fetch, emit 
   });
   await run('first_contact.screenshot', () => verifyScreenshot(record.firstContact, fetcher));
   const impostors = [...new Set((record.impostorAttempts ?? []).map(attempt => attempt.impostor))];
-  for (const impostor of impostors) await run(`copycat_history.${impostor}`, () => verifyCopycatHistory(connection, r.vault, impostor));
+  await run('copycat_history.complete', async () => {
+    requireCheck(record.impostorHistory?.length === impostors.length && impostors.length > 0
+      && impostors.every(impostor => record.impostorHistory.filter(history => history.impostor === impostor).length === 1),
+      'Retained history is required once for every copycat');
+    return `${impostors.length} retained copycat histories`;
+  });
+  for (const impostor of impostors) await run(`copycat_history.${impostor}`, async () => {
+    const retained = record.impostorHistory?.filter(history => history.impostor === impostor);
+    requireCheck(retained?.length === 1, 'Retained copycat history is missing or duplicated');
+    return verifyCopycatHistory(connection, r.vault, impostor, retained[0]);
+  });
   await run('redirects.complete', async () => {
     requireCheck(record.redirectRefusals?.length === 2 && ['no-permission', 'payout-redirect'].every(kind => record.redirectRefusals.filter(a => a.kind === kind).length === 1),
       'Expected both redirect refusals'); return '3012 and 6070';
