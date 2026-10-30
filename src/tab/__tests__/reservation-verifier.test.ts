@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mainnetTransactionRpc, mainnetV1 } from '../../__tests__/mainnet-transactions';
 import {
   Keypair,
   PublicKey,
@@ -328,6 +329,27 @@ function expectCode(promise: Promise<unknown>, code: string) {
 }
 
 describe('Solana FINAL V2 reservation verifier', () => {
+  it('decodes real mainnet v1 wire and RPC data before rejecting the unrelated transaction as reservation evidence', async () => {
+    const fixture = makeFixture();
+    const rpc = mainnetTransactionRpc();
+    fixture.receipt.transaction = mainnetV1.signature;
+    fixture.receipt.confirmationSlot = mainnetV1.parsed.slot;
+    fixture.receipt.postStateSlot = mainnetV1.parsed.slot + 1;
+    fixture.getSignatureStatuses.mockResolvedValue({ value: [{
+      slot: mainnetV1.parsed.slot,
+      err: null,
+      confirmationStatus: 'finalized',
+      confirmations: null,
+    }] });
+    fixture.getTransaction.mockImplementation(rpc.connection.getTransaction.bind(rpc.connection));
+
+    await expectCode(verifySolanaFinalVoucherV2Reservation(
+      fixture.connection, fixture.input, fixture.receipt,
+    ), 'transaction_instruction_count');
+    expect(rpc.fetchRpc).toHaveBeenCalledOnce();
+    expect(fixture.getMultipleAccountsInfoAndContext).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['solana:mainnet', 'solana:mainnet'],
     ['solana:mainnet', FINAL_VOUCHER_V2_SOLANA_MAINNET_CAIP2],
@@ -390,7 +412,7 @@ describe('Solana FINAL V2 reservation verifier', () => {
     expect(fixture.getSignatureStatuses).toHaveBeenCalledOnce();
     expect(fixture.getTransaction).toHaveBeenCalledWith(
       fixture.receipt.transaction,
-      { commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
+      { commitment: 'confirmed', maxSupportedTransactionVersion: 1 },
     );
     expect(fixture.getMultipleAccountsInfoAndContext).toHaveBeenCalledTimes(1);
     expect(fixture.getMultipleAccountsInfoAndContext.mock.calls[0][1]).toEqual({
@@ -458,11 +480,11 @@ describe('Solana FINAL V2 reservation verifier', () => {
     )).resolves.toBeUndefined();
     expect(fixture.getTransaction).toHaveBeenCalledWith(
       fixture.receipt.transaction,
-      { commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
+      { commitment: 'confirmed', maxSupportedTransactionVersion: 1 },
     );
     expect(fixture.getTransaction).not.toHaveBeenCalledWith(
       fixture.receipt.transaction,
-      { commitment: 'finalized', maxSupportedTransactionVersion: 0 },
+      { commitment: 'finalized', maxSupportedTransactionVersion: 1 },
     );
     expect(fixture.getMultipleAccountsInfoAndContext).toHaveBeenCalledWith(
       expect.any(Array),
@@ -545,7 +567,7 @@ describe('Solana FINAL V2 reservation verifier', () => {
     expect(fixture.getTransaction).toHaveBeenNthCalledWith(
       2,
       fixture.receipt.transaction,
-      { commitment: 'confirmed', maxSupportedTransactionVersion: 0 },
+      { commitment: 'confirmed', maxSupportedTransactionVersion: 1 },
     );
   });
 
