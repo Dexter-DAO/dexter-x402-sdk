@@ -91,14 +91,10 @@ export type ScreenDecision =
   | { approve: 'confirm'; seller: SellerDisplay; agent: AgentDisplay; notices: ScreenNotice[] }
   | { approve: 'refused'; seller: SellerDisplay; agent: AgentDisplay; refusal: SellerRefusal };
 
-  agentKeys: readonly AgentKeyHistory[]; liveSessionKey?: string | null;
-  history: 'loaded' | 'unavailable';                          // 'unavailable': R4 and R5 cannot run; relations become 'unknown'
-}): ScreenDecision;
 
 // ---- history, binding, commitment
 /** Admits an entry only if its binding decodes strictly, binding.vault equals options.vault, and
  *  sellerBindingNonce(binding, salt) equals its ceremonyNonce. Everything else is skipped, never "known". */
-  vault: string; sessionPubkey: string; confirmed: readonly ScreenNotice[] }): SellerBindingV1;
 
 // ---- after the fact (proof page, verify script)
 export interface SellerEvidenceCheck {
@@ -106,14 +102,6 @@ export interface SellerEvidenceCheck {
       | 'key_listed' | 'host_listed' | 'offer_signature' | 'offer_terms' | 'payto_listed' | 'address_proofs';
   ok: boolean; detail: string;
 }
-  ceremonyNonce: Uint8Array;                                  // from the finalized approval's clientDataJSON, bytes 168-200 (vault SDK MandateApproval.ceremonyNonce, hex, W3; the caller converts)
-  didDocument: Uint8Array | null;                             // null only when the binding's source is 'saved' (the database stores NULL); the file checks then report as not applicable
-  offerJws: string;
-  registration: { vault: string; counterparty: string; sessionPubkey: string };
-}): Promise<{ verified: boolean; binding: SellerBindingV1 | null; checks: SellerEvidenceCheck[] }>;
-  expected: { resourceUrl: string; payer: string; network: string; issuedAtMin: number; issuedAtMax: number } }):
-  Promise<{ ok: true; payload: { version: 1; network: string; resourceUrl: string; payer: string; issuedAt: number } }
-        | { ok: false; code: 'receipt_malformed' | 'receipt_kid_mismatch' | 'receipt_signature_invalid' | 'receipt_terms_mismatch' | 'receipt_time_out_of_range' }>;
 
 // ---- helpers used by stores, tools and the page
 export interface SellerBindingV1 {
