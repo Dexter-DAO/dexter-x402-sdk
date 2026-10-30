@@ -9,7 +9,7 @@ import { contextBoundVoucherV2Message } from '@dexterai/vault/messages';
 import { verifySolanaEd25519Strict } from '@dexterai/vault/precompile';
 import { deriveSessionPda } from '@dexterai/vault';
 import { finalVoucherV2ReservationBindingDigest } from '@dexterai/x402/tab';
-import { SOLANA_MAINNET, USDC_MINT, checkSellerOffer, knownSellers,
+import { SOLANA_MAINNET, USDC_MINT, checkSellerOffer, decodeCompactJws, knownSellers,
   liveSellerStatus, screenSeller, verifySellerEvidence, verifySellerReceipt } from '@dexterai/x402/seller';
 import { archiveRawUrl, fetchPublicBytes, publicHttps, sha256 } from './archive.mjs';
 
@@ -90,6 +90,13 @@ export async function rerunCopycat(attempt, known, {firstContact = false} = {}) 
   const grant = attempt.request;
   const request = {counterparty: grant.counterparty, appName: grant.app?.name ?? '', seller: grant.seller,
     scheme: 'tab', network: SOLANA_MAINNET, asset: USDC_MINT};
+  requireCheck(Number.isSafeInteger(attempt.checkedAt) && attempt.checkedAt > 0, 'Invalid recorded check time');
+  if (!firstContact) {
+    const offer = request.seller?.offer;
+    const decoded = offer ? decodeCompactJws(offer.signature) : null;
+    requireCheck(attempt.validUntil === (decoded && typeof decoded !== 'string' ? decoded.payload.validUntil : null),
+      'Saved quote expiry differs from its signed payload');
+  }
   const documents = new Map();
   for (const document of attempt.documents) {
     const saved = bytes(document.bytes, 'saved document');
@@ -423,7 +430,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     requireCheck(positionals.length === 1, 'Usage: node verify.mjs <record.json> [--rpc <https-url>]');
     const rpc = publicHttps(values.rpc).href;
     const connection = new Connection(rpc, {commitment: 'finalized', disableRetryOnRateLimit: true,
-      fetch: (url, init) => fetch(url, {...init, signal: AbortSignal.timeout(20_000)})});
+      fetch: (url, init) => fetch(publicHttps(url).href, {...init, redirect: 'error', signal: AbortSignal.timeout(20_000)})});
     const record = JSON.parse(await readFile(positionals[0], 'utf8'));
     const result = await verifyRecord(record, {connection});
     process.exitCode = result.ok ? 0 : 1;

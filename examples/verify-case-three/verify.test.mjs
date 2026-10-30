@@ -59,7 +59,7 @@ async function fixture() {
       didDocument: b64(realDocument), offerJws: realOffer.signature, registerTx}};
   const known = knownSellers([{binding: bindingBytes, salt, ceremonyNonce: nonce, registerTx, registeredAt: now}], {vault});
   const document = (url, data) => ({url, bytes: b64(data), sha256: sha256(data)});
-  const attempt = (variant, calledUrl, signedOffer, documents, expected, name = 'Claude') => ({variant, checkedAt: now,
+  const attempt = (variant, calledUrl, signedOffer, documents, expected, name = 'Claude') => ({variant, checkedAt: now, validUntil: signedOffer ? now + 480 : null,
     request: {counterparty: impostor.address, app: {name}, sessionPubkey: agent,
       seller: {calledUrl, ...(signedOffer ? {offer: signedOffer} : {})}}, documents, expected});
   const attempts = [
