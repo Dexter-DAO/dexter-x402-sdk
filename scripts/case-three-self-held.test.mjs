@@ -11,7 +11,7 @@ import { deriveSwigVaultBindingPda } from '@dexterai/vault/credit';
 import { buildSettleVoucherInstruction } from '@dexterai/vault/instructions';
 import { DEXTER_VAULT_PROGRAM_ID, LOCKED_CLAIM_DISCRIMINATOR, DISCRIMINATORS } from '@dexterai/vault/constants';
 import { finalVoucherV2ReservationIdentity, finalVoucherV2ReservationMemo } from '@dexterai/x402/tab';
-import { request, checkedQuote, expiry, buy, claimFor, purchaseLifecycle, redisCommand, settleHeld, waitPending } from './case-three-self-held.mjs';
+import { request, checkedQuote, expiry, buy, claimFor, main, purchaseLifecycle, redisCommand, resumePurchase, settleHeld, waitPending } from './case-three-self-held.mjs';
 import { resume } from './case-two-self-held.mjs';
 import { now, realUrl, realQuote, realFile, realKey, payee, impostor, signed, fetchDidDocument } from './case-three-seller-fixture.mjs';
 
@@ -225,6 +225,50 @@ test('a failed hold read-back stops before reservation or delivery', async t => 
   await assert.rejects(buy({ ...options, 'pay-claim': false, 'hold-settlement': true }, { redis }), /hold read-back failed/);
   assert.equal(fake.calls.includes('/tab/open'), false);
   assert.equal(fake.calls.includes('/books paid'), false);
+});
+
+test('a retried hold accepts its own earlier value instead of waiting out the hour, and refuses another owner', async t => {
+  const { options } = await setupPurchase(t);
+  const seen = [];
+  const own = (_options, command) => { seen.push(command[0]); return command[0] === 'SET' ? '' : 'case-three'; };
+  const result = await buy({ ...options, 'pay-claim': false, 'hold-settlement': true }, { redis: own, pause: async () => {} });
+  assert.deepEqual(seen, ['SET', 'GET']); assert.equal(result.hold.readBack, 'case-three');
+  const other = await setupPurchase(t);
+  await assert.rejects(buy({ ...other.options, 'pay-claim': false, 'hold-settlement': true },
+    { redis: (_options, command) => command[0] === 'SET' ? '' : 'another-owner' }), /Could not exclusively set claim hold/);
+  assert.equal(other.fake.calls.includes('/tab/open'), false);
+});
+
+test('resume sets the recorded hold without --hold-settlement and stops while the claim is held Pending', async t => {
+  const { fake, options } = await setupPurchase(t);
+  // The first run stops at the hold (Redis down) after signing, before any reservation.
+  await assert.rejects(buy({ ...options, 'pay-claim': false, 'hold-settlement': true },
+    { redis: () => { throw new Error('redis unavailable'); } }), /redis unavailable/);
+  assert.equal(fake.calls.includes('/tab/open'), false);
+  const journal = JSON.parse(readFileSync(options.receipt, 'utf8'));
+  assert.equal(journal.stage, 'signed'); assert.equal(journal.holdSettlement, true);
+  const seen = [];
+  const redis = (_options, command) => { seen.push(command[0]); return command[0] === 'SET' ? 'OK' : 'case-three'; };
+  const resumeOptions = { ...options, 'pay-claim': false, 'hold-settlement': false };
+  await assert.rejects(resumePurchase(resumeOptions, { redis, pause: async () => {} }), /held Pending/);
+  assert.deepEqual(seen.slice(0, 2), ['SET', 'GET']);
+  assert.equal(fake.calls.filter(c => c === '/tab/open').length, 1);
+  assert.equal(fake.calls.includes('/tab/lock/settle'), false); assert.equal(fake.calls.includes('/tab/settle'), false);
+});
+
+test('resume refuses the clone-only flags against a real facilitator', async t => {
+  const { options } = await setupPurchase(t);
+  for (const flag of ['no-hold', 'pay-claim']) {
+    assert.throws(() => resumePurchase({ ...options, [flag]: true, facilitator: 'https://x402.dexter.cash', live: true }), /loopback|clone/i);
+  }
+});
+
+test('live commands must name their RPC and facilitator; check-binding must name its RPC', async () => {
+  await assert.rejects(main(['buy', '--live', '--check-seller', '--grant', 'g', '--vault', 'v', '--endpoint', 'https://books.dexter.cash/books/x',
+    '--receipt', 'r', '--reason', 'x', '--rpc', 'https://rpc.example']), /--facilitator required with --live/);
+  await assert.rejects(main(['settle-held', '--live', '--grant', 'g', '--receipt', 'r', '--claim', 'c', '--facilitator', 'https://x402.dexter.cash']),
+    /--rpc required with --live/);
+  await assert.rejects(main(['check-binding', '--row', 'row.json', '--register-tx', 'sig']), /--rpc required/);
 });
 
 test('Redis password is passed only through REDISCLI_AUTH and child errors hide credentials', t => {

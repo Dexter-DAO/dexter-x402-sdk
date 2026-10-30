@@ -117,8 +117,11 @@ export async function setHold(options, input, journal, receipt, redis = redisCom
       || redis(options, ['GET', key]) !== 'case-three') throw new Error('Saved claim hold is missing or differs; reservation not sent');
     return;
   }
-  if (redis(options, ['SET', key, 'case-three', 'EX', '3600', 'NX']) !== 'OK') throw new Error('Could not exclusively set claim hold; reservation not sent');
-  if (redis(options, ['GET', key]) !== 'case-three') throw new Error('Claim hold read-back failed; reservation not sent');
+  // A retry after a failed read-back finds this tool's own value under the key; accept it rather than wait out the hour.
+  const set = redis(options, ['SET', key, 'case-three', 'EX', '3600', 'NX']);
+  if (redis(options, ['GET', key]) !== 'case-three') {
+    throw new Error(set === 'OK' ? 'Claim hold read-back failed; reservation not sent' : 'Could not exclusively set claim hold; reservation not sent');
+  }
   journal.hold = { key, setAt: now(), readBack: 'case-three' };
   journal.claim = { address: claim };
   save(receipt, journal);
@@ -135,16 +138,22 @@ export async function waitPending(connection, journal, receipt, dependencies = {
       if (claim.status !== 'Pending' || claim.vault !== journal.vault || claim.allowedCounterparty !== journal.merchant
         || BigInt(claim.amount) !== BigInt(journal.reservationInput.reservationAmountAtomic)) throw new Error('Claim does not match Pending purchase');
       journal.claim = { ...journal.claim, address, pendingAt: now(), amountAtomic: claim.amount.toString() };
-      const signatures = await connection.getSignaturesForAddress(new PublicKey(address), { limit: 5 }, 'confirmed');
-      for (const { signature, err } of signatures) {
-        if (err) continue;
-        const tx = await connection.getTransaction(signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
-        if (!tx || tx.meta?.err) continue;
-        const message = tx.transaction.message, keys = message.staticAccountKeys ?? message.accountKeys;
-        if ((message.compiledInstructions ?? message.instructions).some(ix => keys[ix.programIdIndex]?.equals(PROGRAM)
-          && Buffer.from(typeof ix.data === 'string' ? bs58.decode(ix.data) : ix.data).subarray(0, 8).equals(Buffer.from(DISCRIMINATORS.lock_voucher)))) {
-          journal.claim.lockSignature = signature; break;
+      // Record the observed Pending claim first: a later read error must not leave a journal resume cannot finish.
+      save(receipt, journal);
+      try {
+        const signatures = await connection.getSignaturesForAddress(new PublicKey(address), { limit: 5 }, 'confirmed');
+        for (const { signature, err } of signatures) {
+          if (err) continue;
+          const tx = await connection.getTransaction(signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 });
+          if (!tx || tx.meta?.err) continue;
+          const message = tx.transaction.message, keys = message.staticAccountKeys ?? message.accountKeys;
+          if ((message.compiledInstructions ?? message.instructions).some(ix => keys[ix.programIdIndex]?.equals(PROGRAM)
+            && Buffer.from(typeof ix.data === 'string' ? bs58.decode(ix.data) : ix.data).subarray(0, 8).equals(Buffer.from(DISCRIMINATORS.lock_voucher)))) {
+            journal.claim.lockSignature = signature; break;
+          }
         }
+      } catch {
+        // Best effort: the lock signature is evidence the ingest can find again from the chain.
       }
       save(receipt, journal);
       return claim;
@@ -160,8 +169,8 @@ export async function waitClosed(connection, journal, receipt, dependencies = {}
   const deadline = Date.now() + (dependencies.timeoutMs ?? 120000);
   while (Date.now() < deadline) {
     if (!(await connection.getAccountInfo(address, 'finalized'))) {
-      const signatures = await connection.getSignaturesForAddress(address, { limit: 10 }, 'finalized');
-      const candidates = journal.claim.payoutSignature ? [{ signature: journal.claim.payoutSignature }] : signatures.filter(s => !s.err);
+      const candidates = journal.claim.payoutSignature ? [{ signature: journal.claim.payoutSignature }]
+        : (await connection.getSignaturesForAddress(address, { limit: 10 }, 'finalized')).filter(s => !s.err);
       let signature;
       for (const candidate of candidates) {
         const tx = await connection.getTransaction(candidate.signature, { commitment: 'finalized', maxSupportedTransactionVersion: 0 });
@@ -235,10 +244,12 @@ export function purchaseLifecycle(options, dependencies = {}) {
       const check = quoted.check;
       journal.quote = { jws: quoted.seller.offer.signature, checkedAt: check.checkedAt,
         check: { ...check, payTo: check.offer.payTo, didDocument: Buffer.from(check.didDocument).toString('base64url') } };
+      // The purchase itself records whether its claim is held, so resume sets the hold whatever flags it is given.
+      journal.holdSettlement = !!options['hold-settlement'] && !options['no-hold'];
     },
     beforeReserve: async (input, journal, receipt) => {
       journal.claim = { address: claimFor(input) }; save(receipt, journal);
-      if (options['hold-settlement'] && !options['no-hold']) await setHold(options, input, journal, receipt, dependencies.redis);
+      if (journal.holdSettlement ?? (options['hold-settlement'] && !options['no-hold'])) await setHold(options, input, journal, receipt, dependencies.redis);
     },
     afterDelivery: async (connection, journal, receipt) => {
       await waitPending(connection, journal, receipt, dependencies);
@@ -254,6 +265,11 @@ export function purchaseLifecycle(options, dependencies = {}) {
     },
     beforeRecovery: async (connection, journal, receipt) => {
       if (!journal.claim?.pendingAt) await waitPending(connection, journal, receipt, dependencies);
+      // A held claim stays Pending until settle-held pays it; stop here instead of waiting for a closure that cannot come.
+      if (journal.holdSettlement && !journal.hold?.deletedAt
+        && await connection.getAccountInfo(new PublicKey(journal.claim.address), 'confirmed')) {
+        throw new Error('Purchase delivered; its claim is held Pending. Run the payout-redirect refusal if planned, then settle-held');
+      }
       await waitClosed(connection, journal, receipt, dependencies);
     },
   };
@@ -311,6 +327,7 @@ export async function settleHeld(options, dependencies = {}) {
 
 export function resumePurchase(options, dependencies = {}) {
   options = { ...options, 'token-env-file': options['token-env-file'] ?? options['env-file'] ?? ENV };
+  if (options['no-hold'] || options['pay-claim']) cloneOnly(options);
   return resume(options, purchaseLifecycle(options, dependencies));
 }
 
@@ -320,13 +337,15 @@ export async function main(args = process.argv.slice(2)) {
   const boolean = ['live', 'check-seller', 'hold-settlement', 'pay-claim', 'no-hold'];
   const { values, positionals } = parseArgs({ args, allowPositionals: true,
     options: Object.fromEntries([...string.map(name => [name, { type: 'string' }]), ...boolean.map(name => [name, { type: 'boolean', default: false }])]) });
-  values.rpc ??= 'http://127.0.0.1:27899'; values.facilitator ??= 'http://127.0.0.1:27901';
   const command = positionals[0];
   const required = { request: ['key', 'grant', 'merchant', 'seller-url'], buy: ['grant', 'vault', 'endpoint', 'receipt', 'reason'],
     resume: ['grant', 'receipt'], resend: ['receipt'], 'settle-held': ['grant', 'receipt', 'claim'],
     'impostor-links': ['impostor', 'real', 'out'], 'links-fresh': ['dir'], 'check-binding': ['row', 'register-tx', 'rpc'] }[command];
   if (!required || positionals.length !== 1) throw new Error('Use request, buy, resume, resend, settle-held, impostor-links, links-fresh or check-binding');
   for (const name of required) if (!values[name]) throw new Error(`--${name} required`);
+  // Live runs name their RPC and facilitator; only clone runs fall back to the loopback services.
+  if (values.live) { for (const name of ['rpc', 'facilitator']) if (!values[name]) throw new Error(`--${name} required with --live`); }
+  else { values.rpc ??= 'http://127.0.0.1:27899'; values.facilitator ??= 'http://127.0.0.1:27901'; }
   const run = { request, buy, resume: resumePurchase, resend, 'settle-held': settleHeld,
     'impostor-links': impostorLinks, 'links-fresh': linksFresh, 'check-binding': checkBinding }[command];
   const result = await run(values);

@@ -18,7 +18,9 @@ case3_lock=/home/branchmanager/worktrees/briefs/case-three/.heavy.lock
 case3_env=/home/branchmanager/.config/dexter-facilitator/facilitator.env
 case3_seller=D21yDMWuiMZfkoaZj3t67S4hhfBfCgA4hNYuWA5i1esj
 case3_impostor=FRLf4qg2xEHRWXv1DrujbqxqUXzxsgAs6tcPkTUZRHH2
-case3_rpc='<AUTHORIZED_SOLANA_RPC>'
+# Needs getSignaturesForAddress, getProgramAccounts, getTransaction and websockets: the API's main
+# Solana endpoint (as case two used), read in the shell and never printed. rpc.dexter.cash has no websocket.
+case3_rpc="$(grep -E '^SOLANA_RPC_ENDPOINT=' /home/branchmanager/websites/dexter-api/.env | head -1 | cut -d= -f2- | tr -d "'\"\r ")"
 case3_dir=/home/branchmanager/.local/share/claude-case-three
 case3_vault='<VAULT_FROM_THIS_APPROVAL>'
 case3_register='<FINALIZED_REGISTRATION_SIGNATURE>'
@@ -124,13 +126,20 @@ for (const [index, slug] of ['the-innovators-dilemma', 'the-sovereign-individual
   writeFileSync(`${dir}/order-${index + 1}.json`, JSON.stringify(order), { flag: 'wx', mode: 0o600 });
 }
 JS
-c3 buy --live --check-seller --grant "$case3_dir/grant.json" --vault "$case3_vault" \
+c3 buy --live --check-seller --hold-settlement \
+  --grant "$case3_dir/grant.json" --vault "$case3_vault" \
   --rpc "$case3_rpc" --facilitator https://x402.dexter.cash \
   --endpoint https://books.dexter.cash/books/the-innovators-dilemma \
   --seller-url https://books.dexter.cash/books/the-innovators-dilemma \
   --body "$case3_dir/order-1.json" --receipt "$case3_dir/purchase-1.json" \
   --reason "Record The Innovator's Dilemma demonstration edition. No text and no shipment." \
   --env-file "$case3_env"
+case3_claim1=$(nice -n 10 "$case3_node" -e \
+  'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1])).claim.address)' \
+  "$case3_dir/purchase-1.json")
+c3 settle-held --live --claim "$case3_claim1" --grant "$case3_dir/grant.json" \
+  --receipt "$case3_dir/purchase-1.json" --payout "$case3_dir/payout-1.json" \
+  --facilitator https://x402.dexter.cash --rpc "$case3_rpc" --env-file "$case3_env"
 c3 buy --live --check-seller --hold-settlement \
   --grant "$case3_dir/grant.json" --vault "$case3_vault" --rpc "$case3_rpc" \
   --facilitator https://x402.dexter.cash \
@@ -153,8 +162,11 @@ r3 --live --send --rpc "$case3_rpc" --vault "$case3_vault" --seller "$case3_sell
   --receipt "$case3_dir/over-limit.json"
 ```
 
-Purchase 1 requires a checked quote, HTTP 200, verified store receipt, a locked
-claim and its completed payout. Purchase 2 must record the hold read-back before
+Both purchases run with a hold, so Dexter's own settle call pays each claim at a
+known moment instead of racing the facilitator's 30-second driver and the
+close call (which returned 503 on all five of case two's buys). Purchase 1
+requires a checked quote, HTTP 200, verified store receipt, a locked claim, then
+`settle-held`'s completed payout. Purchase 2 must record the hold read-back before
 reservation and stop at `delivered` with a Pending claim. Run the 6070 attempt
 within a minute of that claim becoming Pending. Require the same claim data and
 protected accounts after the failed transaction. `settle-held` pays that claim
@@ -368,7 +380,10 @@ would change the budget proof. Any other Pending claim blocks a refusal.
 
 After a failed or unknown delivery, preserve the original journal. Use the
 existing `resend` and `resume` commands on that receipt; never sign a replacement
-purchase. A failed receipt verification after HTTP 200 is recorded and reported,
+purchase. The journal records the hold, so `resume` sets it again without
+`--hold-settlement` and stops while the claim is held Pending; pay it with
+`settle-held`. `settle-held` already resumes the purchase; run no separate
+`resume` after it. A failed receipt verification after HTTP 200 is recorded and reported,
 with the purchase retained for recovery. It never triggers another payment.
 Inspect a leftover grant lock's PID and exact process before removing that lock.
 If fewer than 30 minutes remain before expiry, stop the unfinished purchase and
