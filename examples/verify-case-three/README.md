@@ -11,7 +11,7 @@ node verify.mjs /path/to/record.json --rpc https://your-public-solana-rpc.exampl
 
 The default RPC is `https://api.mainnet-beta.solana.com`. Public providers may limit transaction-history requests. Choose a provider that retains the approval, reservation, lock, settlement and refusal transactions. The script accepts the page's `dexter-mandate-case-record/v1` download and a direct `dexter-mandate-case/v1` case-three record.
 
-The example pins `@dexterai/vault` 0.44.3, `@dexterai/x402` 6.1.0 and `@solana/web3.js` 1.98.4 from npm. It reads the record's retained bytes directly. Binding bytes, store-file bytes and salt use base64url; hashes and the approval ceremony nonce use lowercase hex.
+The example pins `@dexterai/vault` 0.44.3, `@dexterai/x402` 6.1.0 and `@solana/web3.js` 1.98.4 from npm. It reads the record's retained bytes directly. Binding bytes, store-file bytes, salt and the new redirect voucher's raw channel and signature bytes use base64url. Hashes and the approval ceremony nonce use lowercase hex. Existing versioned payment and refusal proofs retain their protocol strings in their established encodings.
 
 Each line contains `PASS` or `FAIL` and its evidence. Checks cover the passkey approval and permission terms, seller binding and commitment, saved store file, decoded Wayback snapshot, both purchases and signed receipts, V1 through V5, first contact and screenshot, the copycat session's complete transaction history, both redirects, and errors 6013 and 6009. Each refusal must include the program's verbatim AnchorError line, which is reread from the node and printed.
 

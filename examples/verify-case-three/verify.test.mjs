@@ -321,6 +321,23 @@ test('actual case-three clone approval, payments, receipts and refusals verify f
     refusal.agentRequest.cumulativeAmount = '1000000';
     await assert.rejects(verifyRedirect(connection, record, refusal, payments, approval), /matching copycat voucher/);
   });
+  for (const [field, value, expected] of [
+    ['channelId', Buffer.alloc(31).toString('base64url'), 'redirect channelId: invalid bytes'],
+    ['channelId', '+invalid', 'redirect channelId: expected base64url'],
+    ['sessionSignature', Buffer.alloc(63).toString('base64url'), 'redirect sessionSignature: invalid bytes'],
+    ['sessionSignature', '/invalid', 'redirect sessionSignature: expected base64url'],
+  ]) await t.test(`new redirect ${field} rejects ${expected}`, async () => {
+    const refusal = structuredClone(record.redirectRefusals[0]);
+    refusal.agentRequest[field] = value;
+    await assert.rejects(verifyRedirect(connection, record, refusal, payments, approval), error => error.message === expected);
+  });
+  await t.test('new redirect raw byte fields retain canonical base64url', async () => {
+    const request = record.redirectRefusals[0].agentRequest;
+    assert.equal(request.channelId.length, 43);
+    assert.equal(request.sessionSignature.length, 86);
+    assert.equal(bytes(request.channelId, 'channel', 32).toString('base64url'), request.channelId);
+    assert.equal(bytes(request.sessionSignature, 'signature', 64).toString('base64url'), request.sessionSignature);
+  });
   await t.test('a redirect with another Swig fails despite the same signed transaction', async () => {
     const other = structuredClone(record);
     other.manifest.account.swig = Keypair.generate().publicKey.toBase58();

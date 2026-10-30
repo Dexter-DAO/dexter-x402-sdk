@@ -293,8 +293,10 @@ export async function verifyRedirect(connection, record, refusal, payments, appr
     && (refusal.blockTime === null || decoded.blockTime === refusal.blockTime), 'Redirect slot or time differs');
   if (locked) requireCheck(decoded.slot > payment.lockSlot && decoded.slot < payment.slot, 'The redirect did not precede the same claim payout');
   else {
-    const request = refusal.agentRequest, message = voucherMessage(r, request, refusal.impostor, session);
-    const signature = hex(request.sessionSignature, 64), publicKey = key(r.executionKey).toBytes();
+    const request = refusal.agentRequest;
+    const channelId = bytes(request.channelId, 'redirect channelId', 32);
+    const message = voucherMessage(r, {...request, channelId: channelId.toString('hex')}, refusal.impostor, session);
+    const signature = bytes(request.sessionSignature, 'redirect sessionSignature', 64), publicKey = key(r.executionKey).toBytes();
     requireCheck(decoded.failedInstructionIndex - 1 >= decoded.start, 'Redirect has no preceding agent instruction');
     mandate.verifyCaseVoucherInstruction(decoded.top[decoded.failedInstructionIndex - 1], {key: publicKey, signature, message});
     requireCheck(verifySolanaEd25519Strict(message, signature, publicKey), 'Copycat voucher signature failed');
