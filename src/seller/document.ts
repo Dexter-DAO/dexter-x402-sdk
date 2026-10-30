@@ -42,7 +42,8 @@ export function parseSellerDocument(bytes: Uint8Array, expectedDid: string): Par
     }
     const doc: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
     if (!object(doc) || doc.id !== expectedDid || !Array.isArray(doc.verificationMethod) ||
-        !strings(doc.assertionMethod, 1, Number.MAX_SAFE_INTEGER) || !Array.isArray(doc.service)) return 'did_document_invalid';
+        !Array.isArray(doc.assertionMethod) || !doc.assertionMethod.every((entry) => typeof entry === 'string') ||
+        !Array.isArray(doc.service)) return 'did_document_invalid';
     const ids = new Set<string>();
     for (const method of doc.verificationMethod) {
       if (!object(method) || !ownKid(method.id, expectedDid) || method.controller !== expectedDid ||
@@ -52,7 +53,6 @@ export function parseSellerDocument(bytes: Uint8Array, expectedDid: string): Par
       if (!object(jwk) || Object.keys(jwk).sort().join(',') !== 'crv,kty,x') return 'key_invalid';
       try { ed25519JwkToBytes(jwk as unknown as Ed25519PublicJwk); } catch { return 'key_invalid'; }
     }
-    if (!doc.assertionMethod.every((kid) => ownKid(kid, expectedDid))) return 'did_document_invalid';
     const profiles: SellerProfileV1[] = [];
     const serviceIds = new Set<string>();
     for (const service of doc.service) {

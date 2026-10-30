@@ -38,6 +38,14 @@ describe('seller document', () => {
     const wrong = fixture(); wrong.id = 'did:web:other.cash'; expect(parse(wrong)).toBe('did_document_invalid');
     const short = fixture(); short.verificationMethod[0].publicKeyJwk.x = 'AA'; expect(parse(short)).toBe('key_invalid');
   });
+  it('leaves absent quote authorization to the caller kid_not_listed check', () => {
+    for (const refs of [[], ['did:web:other.cash#key'], [did + '#books-quote-1', did + '#books-quote-1']]) {
+      const doc = fixture(); doc.assertionMethod = refs;
+      const parsed = parse(doc);
+      expect(typeof parsed).toBe('object');
+      if (typeof parsed !== 'string') expect(parsed.doc.assertionMethod).toEqual(refs);
+    }
+  });
   it('refuses nonregistrable DID, malformed JSON, invalid UTF-8 and oversized files', () => {
     expect(parseSellerDocument(canonicalBytes(fixture()), 'did:web:books.dexter.cash')).toBe('did_document_invalid');
     for (const bytes of [new Uint8Array([0xff]), new TextEncoder().encode('{'), new Uint8Array(65_537)]) {
