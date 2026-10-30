@@ -233,7 +233,10 @@ send; Claude must use a different receipt path.
 The complete driver holds the heavy lock until the validator, facilitator and
 bookstore stop. It uses installed npm x402 6.1.0 and Vault 0.44.3 in a separate
 consumer and copies the current CLI files there. It preserves transaction
-messages, program logs, token balances and the expiry snapshot before cleanup.
+messages, complete RPC execution metadata including inner instructions, token
+balances and the expiry snapshot before cleanup. The new expiry bank starts
+above the previous bank's measured slot; retained transaction slots are never
+edited. The account snapshot is a new local ledger, not an uninterrupted chain.
 Choose a new run directory. Keep the completed evidence private.
 
 ```bash

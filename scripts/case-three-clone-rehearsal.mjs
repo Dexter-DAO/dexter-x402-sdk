@@ -113,7 +113,9 @@ try {
       await pause(250);
     }
     if (!tx) throw new Error('clone transaction not finalized before archival');
-    const meta = Object.fromEntries(['err', 'fee', 'logMessages', 'preTokenBalances', 'postTokenBalances', 'loadedAddresses', 'preBalances', 'postBalances'].map(key => [key, tx.meta?.[key]]));
+    // Preserve the executed CPI trace as returned by RPC. Token balances alone
+    // cannot prove which SPL transfer the program actually executed.
+    const meta = tx.meta;
     writeFileSync(join(out, 'transactions', `${signature}.json`), JSON.stringify({ schema: 'case-three/chain-transaction/v1', signature,
       slot: tx.slot, blockTime: tx.blockTime, meta, messageBase64url: Buffer.from(tx.transaction.message.serialize()).toString('base64url'),
       signatures: tx.transaction.signatures }), { flag: 'wx', mode: 0o600 });

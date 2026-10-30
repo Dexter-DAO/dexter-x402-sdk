@@ -185,6 +185,7 @@ async function advanceTime(state, seconds, library) {
   const snapshot=join(state.out,'expiry-account-snapshots');mkdirSync(snapshot,{mode:0o700});
   const files=[...accounts].map(([pubkey,account])=>({pubkey,path:writeAccount(snapshot,new PublicKey(pubkey),account),beforeSha256:sha(account.data).toString('hex')}));
   const beforeClock=(await connection.getAccountInfo(SYSVAR_CLOCK_PUBKEY)).data.readBigInt64LE(32).toString();
+  const previousLastSlot=await connection.getSlot('confirmed');
   const previousLedger=state.validatorArgs[state.validatorArgs.indexOf('--ledger')+1];
   await stopOwned(state);
   const args=[...state.validatorArgs];args[args.indexOf('--ledger')+1]=join(state.out,'ledger-after-expiry');
@@ -193,7 +194,9 @@ async function advanceTime(state, seconds, library) {
     if(args[i]==='--account')args.splice(i,3);
     else if(args[i]==='--upgradeable-program')args.splice(i,4);
   }
-  const warp=args.indexOf('--warp-slot');if(warp>=0)args.splice(warp,2);args.push('--warp-slot','1');
+  const warp=args.indexOf('--warp-slot');if(warp>=0)args.splice(warp,2);
+  // This is an actual new-bank warp, not a rewrite of retained transaction slots.
+  const restoredWarpSlot=previousLastSlot+64;args.push('--warp-slot',String(restoredWarpSlot));
   for(const file of files)args.push('--account',file.pubkey,file.path);
   state.validatorArgs=args;state.virtualTimeSeconds=seconds;state.clockLibrary=library;state.previousLedger=previousLedger;
   await launch(state);
@@ -202,7 +205,7 @@ async function advanceTime(state, seconds, library) {
   if(preserved.some((file)=>file.beforeSha256!==file.afterSha256))throw new Error('snapshot restore changed account data');
   const afterClock=(await connection.getAccountInfo(SYSVAR_CLOCK_PUBKEY)).data.readBigInt64LE(32).toString();
   const session=await sdk.fetchSessionAccount(connection,new PublicKey(state.vault),new PublicKey(state.seller));
-  const proof={previousLedger,newLedger:args[args.indexOf('--ledger')+1],processOffsetSeconds:seconds,hostUnix:Math.floor(Date.now()/1000),beforeClockUnix:beforeClock,afterClockUnix:afterClock,approvedExpiresAt:session.session.expiresAt,
+  const proof={previousLedger,newLedger:args[args.indexOf('--ledger')+1],previousLastSlot,restoredWarpSlot,processOffsetSeconds:seconds,hostUnix:Math.floor(Date.now()/1000),beforeClockUnix:beforeClock,afterClockUnix:afterClock,approvedExpiresAt:session.session.expiresAt,
     approvedNonce:session.session.nonce,spentAtomic:session.session.spent.toString(),allAccountDataUnchanged:true,preserved};
   save(join(state.out,'time-advance-proof.json'),proof);
   if(BigInt(afterClock)<=BigInt(session.session.expiresAt))throw new Error('actual validator Clock has not crossed approved expiry');
