@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.1.0] - 2026-10-30
+
+### Added
+
+- `@dexterai/x402/seller`, a browser-safe subpath (no Node built-ins, no client, server or tab code) that checks a
+  store's signed x402 offer against the store file on its own registrable domain (`/.well-known/did.json`, a
+  `did:web` document with a `DexterSellerProfile` listing the quote keys, hosts and receiving addresses, each address
+  with a control proof).
+  - `checkSellerOffer` returns signed, unsigned or refused. Refusals (R1-R3) fire only where the evidence contradicts
+    itself: a key the file does not list, a bad signature, a quote for another URL or host, an address the store did
+    not sign or list. A request without a quote, or a store file that does not load at first contact, is unsigned.
+    For a store the owner already uses, an unreadable file is checked against the key from his last approval.
+  - `screenSeller` decides what an approval screen shows: the seller by its ASCII web address (or its address alone
+    when unsigned), the agent by its key and history, and notices that need an explicit confirm for lookalike names
+    and hosts (R4) or a known store's changed key or addresses (R5).
+  - `buildSellerBinding`, `encodeSellerBinding`, `sellerBindingNonce`: the record a passkey approval commits to
+    through the WebAuthn challenge nonce, holding the complete screen decision and its inputs.
+  - `knownSellers`, `verifySellerEvidence`, `verifySellerReceipt`, `liveSellerStatus` for history and for checking
+    an approval after the fact.
+- `tldts` dependency (the Public Suffix List).
+
 ## [6.0.6] - 2026-10-28
 
 - Require `@dexterai/vault` `^0.44.0` and qualify the package against 0.44.0.

@@ -197,3 +197,12 @@ describe('after the fact', () => {
     expect((await verifySellerEvidence(base)).checks.some((c) => c.name === 'screen_decision')).toBe(false);
   });
 });
+
+describe('release', () => {
+  it('records this package version as the checker', async () => {
+    const { readFileSync } = await import('node:fs');
+    const pkg = JSON.parse(readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')) as { version: string };
+    const { SELLER_CHECKER } = await import('../binding');
+    expect(SELLER_CHECKER).toBe(`@dexterai/x402@${pkg.version}/seller`);
+  });
+});
