@@ -4,17 +4,20 @@
  * Browser-safe: no Node built-ins, no client, server or tab code.
  */
 export * from './types';
+export * from './jcs';
+export * from './ed25519';
+export * from './jwk';
+export * from './jws';
+export * from './host';
+export * from './fetch';
+export * from './document';
+export * from './offer';
+export * from './nonce';
 export { checkSellerOffer } from './check';
 export { screenSeller } from './screen';
 export type { ScreenInput } from './screen';
 export {
   SELLER_CHECKER, buildSellerBinding, decodeSellerBinding, encodeSellerBinding, knownSellers, sellerBindingSha256,
 } from './binding';
-export { sellerBindingNonce, newSellerBindingSalt } from './nonce';
 export { verifySellerEvidence, verifySellerReceipt, liveSellerStatus } from './verify';
 export type { SellerEvidenceInput } from './verify';
-export { sellerOfferFromPaymentRequired } from './offer';
-export { addressProofMessage } from './document';
-export { registrableDomainOf, displayHost } from './host';
-export { jwkThumbprint } from './jwk';
-export { DidDocumentUnavailable, defaultFetchDidDocument } from './fetch';
