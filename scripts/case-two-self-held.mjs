@@ -17,7 +17,12 @@ export { readKey };
 export function save(path, value, exclusive = false) {
   const target = exclusive ? path : `${path}.${randomUUID()}.tmp`;
   const fd = openSync(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
-  try { writeFileSync(fd, JSON.stringify(value, (_key, item) => item instanceof Uint8Array ? Array.from(item) : item, 2) + '\n'); fsyncSync(fd); }
+  const caseThree = value?.schema?.startsWith('case-three/');
+  try { writeFileSync(fd, JSON.stringify(value, (_key, item) => {
+    if (item instanceof Uint8Array) return caseThree ? Buffer.from(item).toString('base64url') : Array.from(item);
+    if (caseThree && item?.type === 'Buffer' && Array.isArray(item.data)) return Buffer.from(item.data).toString('base64url');
+    return item;
+  }, 2) + '\n'); fsyncSync(fd); }
   finally { closeSync(fd); }
   if (!exclusive) renameSync(target, path);
   const directory = openSync(dirname(resolve(path)), constants.O_RDONLY);
@@ -41,7 +46,7 @@ export async function withGrantLock(grant, operation) {
   } finally { closeSync(lock); unlinkSync(lockPath); }
 }
 
-export function makeRequest(options, now = Math.floor(Date.now() / 1000)) {
+export function makeRequest(options, now = Math.floor(Date.now() / 1000), context = {}) {
   const key = Keypair.generate();
   const capAtomic = humanToAtomic(options.cap ?? '5');
   const maxSingleAtomic = humanToAtomic(options['max-single'] ?? '1.50');
@@ -50,13 +55,14 @@ export function makeRequest(options, now = Math.floor(Date.now() / 1000)) {
   const request = requestSpendGrant({
     app: { name: 'Claude', domain: options.domain ?? 'claude.ai' },
     counterparty: new PublicKey(options.merchant).toBase58(),
-    capAtomic, revolvingCapacityAtomic, expiresAtUnix: now + 7 * 86400,
+    capAtomic, revolvingCapacityAtomic, expiresAtUnix: context.expiresAtUnix ?? now + 7 * 86400,
     sessionPubkey: key.publicKey.toBase58(), requestId: randomUUID(),
+    ...(context.seller ? { seller: context.seller } : {}),
   });
   // Create without overwriting an existing private key or grant.
   save(options.key, Array.from(key.secretKey), true);
   key.secretKey.fill(0);
-  const record = { request, maxSingleAtomic, keyPath: resolve(options.key) };
+  const record = { ...context.record, request, maxSingleAtomic, keyPath: resolve(options.key) };
   save(options.grant, record, true);
   return { consentUrl: `https://dexter.cash/tabs/new?req=${encodeSpendGrantRequest(request)}`, ...record };
 }
@@ -97,10 +103,11 @@ export function readInternalToken(options) {
 }
 
 export function voucherFromJournal(journal) {
+  const bytes = value => typeof value === 'string' ? Buffer.from(value, 'base64url') : Uint8Array.from(Object.values(value));
   return { ...journal.reservationInput.voucher, reservationReceipt: journal.reservationReceipt,
-    sessionPublicKey: Uint8Array.from(Object.values(journal.reservationInput.voucher.sessionPublicKey)),
-    sessionSignature: Uint8Array.from(Object.values(journal.reservationInput.voucher.sessionSignature)),
-    sessionRegistration: Uint8Array.from(Object.values(journal.reservationInput.voucher.sessionRegistration)) };
+    sessionPublicKey: bytes(journal.reservationInput.voucher.sessionPublicKey),
+    sessionSignature: bytes(journal.reservationInput.voucher.sessionSignature),
+    sessionRegistration: bytes(journal.reservationInput.voucher.sessionRegistration) };
 }
 
 function reservationFence(options, journal, receipt) {
@@ -133,7 +140,7 @@ export async function deliverOnce(journal, receipt, header) {
     delivery = Buffer.from(await response.arrayBuffer());
   } catch (error) { throw new Error(`Merchant delivery outcome unknown (${error.message}). ${next}`); }
   save(`${receipt}.delivery.json`, { status: response.status, contentType: response.headers.get('content-type'),
-    sha256: createHash('sha256').update(delivery).digest('hex'), base64: delivery.toString('base64') }, true);
+    sha256: createHash('sha256').update(delivery).digest('hex'), base64: delivery.toString(journal.schema === 'case-three/journal/v1' ? 'base64url' : 'base64') }, true);
   journal.deliveryStatus = response.status; journal.deliveryOutcome = 'response-recorded'; journal.stage = 'delivered'; save(receipt, journal);
   if (!response.ok) throw new Error(`Merchant HTTP ${response.status}; delivery saved. ${next}`);
 }
@@ -161,7 +168,7 @@ export async function recoverSettlement(connection, journal, receipt) {
   return journal;
 }
 
-export async function purchase(options) {
+export async function purchase(options, lifecycle = {}) {
   for (const url of [options.rpc, options.endpoint, options.facilitator]) assertLocalUnlessLive(url, options.live);
   const receipt = resolve(options.receipt);
   return withGrantLock(options.grant, async record => {
@@ -173,7 +180,7 @@ export async function purchase(options) {
     const params = await approvedGrant(connection, options.vault, record, key);
     const body = options.body ? readFileSync(options.body, 'utf8') : undefined;
     const init = { method: body !== undefined ? 'POST' : 'GET', redirect: 'error', headers: body !== undefined ? { 'content-type': 'application/json' } : {}, ...(body !== undefined ? { body } : {}) };
-    const resolved = await resolveTabOffer(options.endpoint, init);
+    const resolved = lifecycle.resolveOffer ? await lifecycle.resolveOffer(options.endpoint, init, record) : await resolveTabOffer(options.endpoint, init);
     if (resolved.kind !== 'offer') throw new Error(`Merchant has no payable tab offer: ${resolved.kind}`);
     const offer = resolved.offer;
     if (offer.payTo !== params.counterparty || offer.asset !== 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' || offer.networkCaip2 !== 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp') throw new Error('Merchant offer is outside approved seller/USDC/network');
@@ -181,6 +188,7 @@ export async function purchase(options) {
     const journal = { stage: 'created', vault: options.vault, merchant: params.counterparty,
       endpoint: options.endpoint, facilitator: options.facilitator, reason: options.reason,
       requestBody: body ?? null, createdAt: new Date().toISOString() };
+    await lifecycle.prepareJournal?.(journal, record);
     save(receipt, journal, true);
     // One unfinished purchase blocks further signing, even after a crash.
     record.pendingReceipt = receipt; save(options.grant, record);
@@ -190,6 +198,7 @@ export async function purchase(options) {
       facilitatorUrl: options.facilitator,
       reserveFinalVoucherV2: async input => {
         journal.reservationInput = input; journal.stage = 'signed'; save(receipt, journal);
+        await lifecycle.beforeReserve?.(input, journal, receipt);
         const reservation = await reservationFence(options, journal, receipt)(input);
         journal.reservationReceipt = reservation; journal.stage = 'reserved'; save(receipt, journal);
         return reservation;
@@ -198,7 +207,11 @@ export async function purchase(options) {
     const voucher = await tab.signNextVoucher(offer.amountAtomic);
     // A failed or unknown delivery stops here with the purchase still pending.
     await deliverOnce(journal, receipt, voucherToHeader(voucher));
+    await lifecycle.afterDelivery?.(connection, journal, receipt);
+    await lifecycle.beforeClose?.(connection, journal, receipt);
+    if (lifecycle.stopAfterDelivery) return journal;
     journal.settlement = await tab.close();
+    await lifecycle.afterClose?.(connection, journal, receipt);
     if (!(await settledFrontier(connection, journal)).covered) throw new Error('Purchase still has an outstanding obligation');
     journal.stage = 'settled'; save(receipt, journal);
     delete record.pendingReceipt; save(options.grant, record);
@@ -207,7 +220,7 @@ export async function purchase(options) {
   });
 }
 
-export async function resume(options) {
+export async function resume(options, lifecycle = {}) {
   return withGrantLock(options.grant, async record => {
   const receipt = resolve(options.receipt);
   if (record.pendingReceipt !== receipt) throw new Error('Receipt is not the pending purchase for this grant');
@@ -224,6 +237,7 @@ export async function resume(options) {
     // The facilitator or merchant may have settled while this process was down.
     // Reconcile that obligation without dispatching a delivery after payment.
     if ((await settledFrontier(connection, journal)).covered) {
+      await lifecycle.beforeRecovery?.(connection, journal, receipt);
       journal.stage = 'settled'; journal.deliveryOutcome = 'not-dispatched'; save(receipt, journal);
       delete record.pendingReceipt; save(options.grant, record);
       return journal;
@@ -231,14 +245,18 @@ export async function resume(options) {
     options.facilitator = journal.facilitator;
     const input = { ...journal.reservationInput, voucher: voucherFromJournal(journal) };
     delete input.voucher.reservationReceipt;
+    await lifecycle.beforeReserve?.(input, journal, receipt);
     const reservation = await reservationFence(options, journal, receipt)(input);
     await verifySolanaFinalVoucherV2Reservation(connection, input, reservation);
     journal.reservationReceipt = reservation;
     await deliverOnce(journal, receipt, voucherToHeader(voucherFromJournal(journal)));
+    await lifecycle.afterDelivery?.(connection, journal, receipt);
   }
   // Settle a delivered, failed or abandoned order. Resume never sends the merchant
   // request again; run resend first if the delivery did not return 200.
+  await lifecycle.beforeRecovery?.(connection, journal, receipt);
   const result = await recoverSettlement(connection, journal, receipt);
+  await lifecycle.afterRecovery?.(connection, journal, receipt);
   delete record.pendingReceipt; save(options.grant, record);
   return result;
   });

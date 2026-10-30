@@ -30,10 +30,10 @@ function writeAccount(out, pubkey, account, data = account.data) {
   writeFileSync(target,JSON.stringify(dumped),{mode:0o600});return target;
 }
 function localRpc(rpc) { if (!['127.0.0.1','localhost','[::1]'].includes(new URL(rpc).hostname)) throw new Error('clone harness accepts only loopback RPC'); }
-export async function send(connection, payer, instructions, signers = [payer]) {
+export async function send(connection, payer, instructions, signers = [payer], addressLookupTables = []) {
   localRpc(connection.rpcEndpoint);
   const block = await connection.getLatestBlockhash('confirmed');
-  const tx = new VersionedTransaction(new TransactionMessage({ payerKey: payer.publicKey, recentBlockhash: block.blockhash, instructions }).compileToV0Message());
+  const tx = new VersionedTransaction(new TransactionMessage({ payerKey: payer.publicKey, recentBlockhash: block.blockhash, instructions }).compileToV0Message(addressLookupTables));
   tx.sign(signers.filter((k) => tx.message.staticAccountKeys.slice(0, tx.message.header.numRequiredSignatures).some((p) => p.equals(k.publicKey))));
   const signature = await connection.sendTransaction(tx, { skipPreflight: false, preflightCommitment: 'confirmed' });
   const result = await connection.confirmTransaction({ signature, ...block }, 'confirmed');
@@ -73,7 +73,13 @@ async function launch(state) {
   child.unref(); state.validatorPid = child.pid; save(join(state.out,'state.json'),state);
   for (let n=0;n<120;n++) {
     try { process.kill(child.pid,0); } catch { throw new Error('validator exited; inspect validator.log'); }
-    try { await connection.getVersion(); return; } catch { await delay(500); }
+    try {
+      await connection.getVersion();
+      // Genesis installs ProgramData at slot 1. Its executable becomes usable
+      // in a descendant bank, even though RPC already answers at slot 1.
+      if (await connection.getSlot('confirmed') > 1) return;
+    } catch {}
+    await delay(500);
   }
   throw new Error('clone did not become healthy within 60 seconds');
 }

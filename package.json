@@ -103,7 +103,7 @@
     "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
-    "@dexterai/vault": "0.44.0",
+    "@dexterai/vault": "0.44.3",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@types/aws-lambda": "^8.10.161",
     "@types/express": "^5.0.6",
