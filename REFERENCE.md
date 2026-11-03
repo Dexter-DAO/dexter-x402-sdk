@@ -266,11 +266,9 @@ const result = await payAndFetch(
   {},
 );
 
-if (result.ok && result.paid) {
-  const data = await result.response.json();
-  console.log(`Paid ${result.amountPaid} on ${result.network.bare}, tx ${result.txSignature}`);
-} else if (result.ok && !result.paid) {
-  const data = await result.response.json(); // endpoint didn't demand payment; passed through
+if (result.ok) {
+  if (result.paid) console.log(`Paid ${result.amountPaid} on ${result.network.bare}`);
+  if (result.response) console.log(await result.response.json());
 } else {
   console.error(result.reason, result.detail);
 }
@@ -285,7 +283,7 @@ if (result.ok && result.paid) {
 | `url` | `string` | Endpoint to fetch |
 | `init` | `RequestInit` | Standard fetch init. Body must be a string. |
 | `wallets` | `WalletSet` | `{ solana?, evm? }`. The SDK picks the chain by what the merchant accepts and what you can pay |
-| `opts` | `PayAndFetchOptions` | `maxAmountAtomic`, `timeoutMs`, `solanaRpcUrl` |
+| `opts` | `PayAndFetchOptions` | `maxAmountAtomic`, `timeoutMs`, `responseTimeoutMs`, `solanaRpcUrl` |
 
 `PayResult` is a discriminated union. Narrow on `ok`, then on `paid`:
 
@@ -299,6 +297,8 @@ if (result.ok && result.paid) {
   result.detail;
 }
 ```
+
+A `timeout` occurs before the client sends a payment authorization. If the merchant stops responding after dispatch, the SDK tries to confirm settlement. A confirmed payment can return `paid: true` without a merchant `Response`. If you receive `payment_unconfirmed`, check the funding wallet for the transfer before paying again.
 
 In React, `useX402Payment` takes wallets from `@solana/wallet-adapter-react` or `wagmi` and returns a `fetch` that pays automatically. Read a settled receipt off any paid response with `getPaymentReceipt(response)`.
 
