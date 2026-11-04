@@ -525,7 +525,7 @@ class SolanaVaultAdapter implements VaultAdapter {
     try {
       const transaction = await this.connection.getTransaction(
         pending.signature,
-        { commitment: 'finalized', maxSupportedTransactionVersion: 0 },
+        { commitment: 'finalized', maxSupportedTransactionVersion: 1 },
       );
       finalizedTransactionRead = true;
       if (transaction) {
