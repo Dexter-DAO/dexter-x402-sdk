@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reject Solana requirement/mint decimals mismatches before budget approval,
+  including access-pass purchases. Recheck before signing direct adapter calls
+  and use mint decimals for balance presentation. Metadata lookup failures stop
+  the current attempt instead of being skipped as balance-precheck errors.
+  An access-pass fallback must validate metadata again before approval.
 - Reserve budget-account funds before asynchronous approval and signing,
   so concurrent requests and access-pass purchases share total and hourly limits.
   Preserve each authorization's amount, domain and network in its own record.

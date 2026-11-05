@@ -747,8 +747,13 @@ export function createX402Client(config: X402ClientConfig): InternalX402Client {
     const paymentAmount = accept.amount ?? accept.maxAmountRequired;
     if (!paymentAmount) return null;
 
-    // Check balance (skip on RPC failure — let the chain reject if insufficient)
     const rpcUrl = getRpcUrl(accept.network, adapter);
+    // Metadata is part of approval and budget policy, not a best-effort balance
+    // hint. Keep validation outside the balance-error fallback.
+    if (adapter.validatePaymentRequirements) {
+      await withAbortSignal(signal, () => adapter.validatePaymentRequirements!(accept, rpcUrl));
+    }
+    // Check balance (skip on RPC failure — let the chain reject if insufficient)
     try {
       const balance = await adapter.getBalance(accept, wallet, rpcUrl);
       const requiredAmount = Number(paymentAmount) / Math.pow(10, decimals);
@@ -1024,8 +1029,11 @@ export function createX402Client(config: X402ClientConfig): InternalX402Client {
       );
     }
 
-    // Check balance before signing (skip on RPC failure — let the chain reject if insufficient)
     const rpcUrl = getRpcUrl(accept.network, adapter);
+    if (adapter.validatePaymentRequirements) {
+      await withAbortSignal(signal, () => adapter.validatePaymentRequirements!(accept, rpcUrl));
+    }
+    // Check balance before signing (skip on RPC failure — let the chain reject if insufficient)
     log('Checking balance...');
     try {
       const balance = await adapter.getBalance(accept, wallet, rpcUrl);

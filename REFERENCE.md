@@ -311,6 +311,19 @@ In React, `useX402Payment` takes wallets from `@solana/wallet-adapter-react` or 
 an in-memory total budget, optional per-request and hourly limits, and an optional
 payment domain allowlist.
 
+For Solana payments, the legacy client verifies requirement decimals against the
+mint before budget reservation or approval, for both ordinary payments and access
+passes. An explicit mismatch (including a false override for known USDC) is
+rejected; the known-USDC default of 6 must also match the mint. Mint lookup or
+validation failures stop the current attempt. An access-pass failure can fall
+back to ordinary payment, which validates metadata again before approval.
+The Solana adapter rechecks before signing and
+uses mint decimals for balances. Custom adapters are responsible for equivalent
+metadata checks through `validatePaymentRequirements` and their direct builder.
+Decimals establish token units, not a USD price; the USD-labelled budget assumes
+the configured payment asset is worth one USD per token. This does not add price
+conversion or change the existing floating-point budget representation.
+
 ```typescript
 import { createBudgetAccount } from '@dexterai/x402/client';
 

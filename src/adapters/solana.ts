@@ -18,7 +18,7 @@ import {
   getAssociatedTokenAddress,
   getAccount,
   createTransferCheckedInstruction,
-  getMint,
+  unpackMint,
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
 } from '@solana/spl-token';
@@ -30,11 +30,14 @@ import type {
   SettlementConfirmation,
 } from './types';
 import type { PaymentAccept } from '../types';
+import { X402Error } from '../types';
 import {
   SOLANA_MAINNET,
   SOLANA_DEVNET,
   SOLANA_TESTNET,
   SOLANA_RPC_URLS as DEFAULT_RPC_URLS,
+  USDC_MINT,
+  USDC_MINT_DEVNET,
 } from '../constants';
 
 // Re-export for backwards-compatible public API surface
@@ -123,6 +126,29 @@ export class SolanaAdapter implements ChainAdapter {
     return wallet.publicKey !== null;
   }
 
+  private async getPaymentMint(connection: Connection, accept: PaymentAccept) {
+    const mintPubkey = new PublicKey(accept.asset);
+    const mintInfo = await connection.getAccountInfo(mintPubkey, 'confirmed');
+    if (!mintInfo) throw new Error(`Token mint ${accept.asset} not found`);
+    const programId = mintInfo.owner.equals(TOKEN_2022_PROGRAM_ID)
+      ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+    const mint = unpackMint(mintPubkey, mintInfo, programId);
+    // Match the client's known-USDC fallback as well as explicit metadata.
+    const decimals = accept.extra?.decimals ?? (
+      accept.asset === USDC_MINT || accept.asset === USDC_MINT_DEVNET ? 6 : undefined
+    );
+    if (decimals !== undefined && decimals !== mint.decimals) {
+      throw new X402Error('invalid_payment_required',
+        `Decimals mismatch: requirements say ${decimals}, mint says ${mint.decimals}`);
+    }
+    return { mintPubkey, mint, programId };
+  }
+
+  async validatePaymentRequirements(accept: PaymentAccept, rpcUrl?: string): Promise<void> {
+    const connection = new Connection(rpcUrl || this.getDefaultRpcUrl(accept.network), 'confirmed');
+    await this.getPaymentMint(connection, accept);
+  }
+
   async getBalance(
     accept: PaymentAccept,
     wallet: unknown,
@@ -135,15 +161,9 @@ export class SolanaAdapter implements ChainAdapter {
     const url = rpcUrl || this.getDefaultRpcUrl(accept.network);
     const connection = new Connection(url, 'confirmed');
     const userPubkey = new PublicKey(wallet.publicKey.toBase58());
-    const mintPubkey = new PublicKey(accept.asset);
 
     try {
-      // Determine token program
-      const mintInfo = await connection.getAccountInfo(mintPubkey, 'confirmed');
-      const programId =
-        mintInfo?.owner.toBase58() === TOKEN_2022_PROGRAM_ID.toBase58()
-          ? TOKEN_2022_PROGRAM_ID
-          : TOKEN_PROGRAM_ID;
+      const { mintPubkey, mint, programId } = await this.getPaymentMint(connection, accept);
 
       // allowOwnerOffCurve = false: the owner is the buyer's own wallet,
       // which is always a real account (never a PDA) — off-curve is
@@ -156,8 +176,7 @@ export class SolanaAdapter implements ChainAdapter {
       );
 
       const account = await getAccount(connection, ata, undefined, programId);
-      const decimals = accept.extra?.decimals ?? 6;
-      return Number(account.amount) / Math.pow(10, decimals);
+      return Number(account.amount) / Math.pow(10, mint.decimals);
     } catch (err) {
       // Token account doesn't exist = 0 balance (expected for new wallets)
       if (err && typeof err === 'object' && 'name' in err &&
@@ -200,7 +219,6 @@ export class SolanaAdapter implements ChainAdapter {
     // Note: decimals is optional - we fetch from mint on-chain if not provided
 
     const feePayerPubkey = new PublicKey(extra.feePayer);
-    const mintPubkey = new PublicKey(asset);
     const destinationPubkey = new PublicKey(payTo);
 
     this.log('Building transaction:', {
@@ -228,24 +246,9 @@ export class SolanaAdapter implements ChainAdapter {
       })
     );
 
-    // 3. Determine token program
-    const mintInfo = await connection.getAccountInfo(mintPubkey, 'confirmed');
-    if (!mintInfo) {
-      throw new Error(`Token mint ${asset} not found`);
-    }
-
-    const programId =
-      mintInfo.owner.toBase58() === TOKEN_2022_PROGRAM_ID.toBase58()
-        ? TOKEN_2022_PROGRAM_ID
-        : TOKEN_PROGRAM_ID;
-
-    // Fetch mint to get decimals (required for TransferChecked)
-    const mint = await getMint(connection, mintPubkey, undefined, programId);
-    if (typeof extra?.decimals === 'number' && mint.decimals !== extra.decimals) {
-      this.log(
-        `Decimals mismatch: requirements say ${extra.decimals}, mint says ${mint.decimals}`
-      );
-    }
+    // 3. Recheck metadata here too, including direct adapter calls and changes
+    // made by an approval callback. A mismatch must never reach the signer.
+    const { mintPubkey, mint, programId } = await this.getPaymentMint(connection, accept);
 
     // Derive Associated Token Accounts.
     //

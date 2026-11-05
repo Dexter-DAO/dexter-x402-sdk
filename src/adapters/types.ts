@@ -129,6 +129,13 @@ export interface ChainAdapter {
   canHandle(network: string): boolean;
 
   /**
+   * Validate asset metadata before approval or budget reservation.
+   * Failures must stop payment, even when a balance precheck can be skipped.
+   * Adapters must also validate metadata when building directly.
+   */
+  validatePaymentRequirements?(accept: PaymentAccept, rpcUrl?: string): Promise<void>;
+
+  /**
    * Build and sign a payment transaction
    *
    * @param accept - The payment option from server's accepts[]
