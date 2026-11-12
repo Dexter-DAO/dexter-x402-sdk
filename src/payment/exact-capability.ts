@@ -1,3 +1,5 @@
+import type { PaymentFamily } from '../adapters/types';
+
 /** Capabilities of the per-request builders, shared by selection and signing. */
 interface ExactPaymentOption {
   scheme?: string;
@@ -6,7 +8,7 @@ interface ExactPaymentOption {
 
 export function exactPaymentCapabilityError(
   option: ExactPaymentOption,
-  family: 'evm' | 'svm',
+  family: PaymentFamily,
 ): string | undefined {
   const scheme = option.scheme ?? 'exact';
   if (scheme !== 'exact' && !(family === 'evm' && scheme === 'exact-approval')) {

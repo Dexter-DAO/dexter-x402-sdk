@@ -6,11 +6,12 @@
  *
  * @example
  * ```typescript
- * import { createSolanaAdapter, createEvmAdapter } from '@dexterai/x402/adapters';
+ * import { createSolanaAdapter, createEvmAdapter, createNanoAdapter } from '@dexterai/x402/adapters';
  *
  * const adapters = [
  *   createSolanaAdapter(),
  *   createEvmAdapter(),
+ *   createNanoAdapter(), // opt-in, not part of createDefaultAdapters()
  * ];
  *
  * // Find adapter for a network
@@ -35,6 +36,7 @@ export type {
   GenericWallet,
   WalletSet,
   BalanceInfo,
+  PaymentFamily,
 } from './types';
 
 // Solana
@@ -76,6 +78,22 @@ export {
   EIP712_DOMAINS,
 } from './evm';
 export type { EvmWallet } from './evm';
+
+// Nano (opt-in — not included in createDefaultAdapters)
+export {
+  NanoAdapter,
+  createNanoAdapter,
+  isNanoWallet,
+  isValidNanoAddress,
+  nanoAddressToPublicKey,
+  publicKeyToNanoAddress,
+  xnoToRaw,
+  rawToXno,
+  NANO_MAINNET,
+  NANO_ASSET,
+  NANO_DECIMALS,
+} from './nano';
+export type { NanoWallet, NanoAdapterConfig } from './nano';
 
 /**
  * Check if an asset address is a known USDC contract (any chain).
