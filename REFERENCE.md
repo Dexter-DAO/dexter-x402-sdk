@@ -42,7 +42,7 @@ import { createSolanaAdapter, createEvmAdapter } from '@dexterai/x402/adapters';
 import { toAtomicUnits, fromAtomicUnits } from '@dexterai/x402/utils';
 ```
 
-> `@dexterai/vault` is an exact **peer dependency** at `0.43.4`: install it alongside the matching v6 x402 package so the adapter, revocation wire, and your app use one tested Vault contract.
+> `@dexterai/vault` is a **peer dependency** at `^0.44.0`: install it alongside v6 x402. The package checks use vault 0.44.0 as the supported minimum.
 
 ---
 
@@ -105,7 +105,7 @@ Builds the `vault` adapter the buyer calls drive through.
 | `passkeySigner` | `PasskeySignerWithPublicKey` | A `signOperation(operationMessage)` signer (see below) |
 | `feePayer` | `Signer` | Lamport fee payer |
 
-The `passkeySigner` uses Vault 0.43.4's canonical shape: `{ credentialId, publicKey, signOperation(operationMessage) }`. The adapter passes the raw operation bytes. The signer obtains the canonical V7 200-byte challenge binding the fixed program, exact vault, current monotonic authorization nonce, operation hash, and fresh ceremony entropy; the adapter owns only the precompile assembly. Do not substitute a bare `sha256(operationMessage)` challenge for V7 operations.
+The `passkeySigner` uses Vault 0.44.0's canonical shape: `{ credentialId, publicKey, signOperation(operationMessage) }`. The adapter passes the raw operation bytes. The signer obtains the canonical V7 200-byte challenge binding the fixed program, exact vault, current monotonic authorization nonce, operation hash, and fresh ceremony entropy; the adapter owns only the precompile assembly. Do not substitute a bare `sha256(operationMessage)` challenge for V7 operations.
 
 - **Browser:** vault's `DexterApiBrowserPasskeySigner` — drops in with no shim.
 - **CLI / server agent:** `passkeySignerFromP256Keypair(kp, { resolveAuthorizationContext })` from `@dexterai/x402/tab/adapters/solana`, wrapping a locally-held P-256 keypair. The resolver must read the current `PasskeyAuthorization` state immediately before a revoke ceremony; the helper never guesses that nonce.
@@ -266,11 +266,9 @@ const result = await payAndFetch(
   {},
 );
 
-if (result.ok && result.paid) {
-  const data = await result.response.json();
-  console.log(`Paid ${result.amountPaid} on ${result.network.bare}, tx ${result.txSignature}`);
-} else if (result.ok && !result.paid) {
-  const data = await result.response.json(); // endpoint didn't demand payment; passed through
+if (result.ok) {
+  if (result.paid) console.log(`Paid ${result.amountPaid} on ${result.network.bare}`);
+  if (result.response) console.log(await result.response.json());
 } else {
   console.error(result.reason, result.detail);
 }
@@ -285,7 +283,7 @@ if (result.ok && result.paid) {
 | `url` | `string` | Endpoint to fetch |
 | `init` | `RequestInit` | Standard fetch init. Body must be a string. |
 | `wallets` | `WalletSet` | `{ solana?, evm? }`. The SDK picks the chain by what the merchant accepts and what you can pay |
-| `opts` | `PayAndFetchOptions` | `maxAmountAtomic`, `timeoutMs`, `solanaRpcUrl` |
+| `opts` | `PayAndFetchOptions` | `maxAmountAtomic`, `timeoutMs`, `responseTimeoutMs`, `solanaRpcUrl` |
 
 `PayResult` is a discriminated union. Narrow on `ok`, then on `paid`:
 
@@ -299,6 +297,8 @@ if (result.ok && result.paid) {
   result.detail;
 }
 ```
+
+A `timeout` occurs before the client sends a payment authorization. If the merchant stops responding after dispatch, the SDK tries to confirm settlement. A confirmed payment can return `paid: true` without a merchant `Response`. If you receive `payment_unconfirmed`, check the funding wallet for the transfer before paying again.
 
 In React, `useX402Payment` takes wallets from `@solana/wallet-adapter-react` or `wagmi` and returns a `fetch` that pays automatically. Read a settled receipt off any paid response with `getPaymentReceipt(response)`.
 
@@ -407,7 +407,7 @@ Endpoints paid through the facilitator are auto-discovered, named, and quality-t
 
 Two changes, both about packaging and the passkey signer — the payment path itself is unchanged.
 
-1. **`@dexterai/vault` became a peer dependency** in v5, rather than a bundled dependency. Current v6 consumers must use the exact tested `0.43.2` pair described above.
+1. **`@dexterai/vault` became a peer dependency** in v5, rather than a bundled dependency. Current v6 consumers must install `@dexterai/vault@^0.44.0` alongside x402.
 2. **The passkey signer contract is `signOperation(operationMessage)`**, replacing the old `sign(challenge)`. The adapter hands the signer the RAW operation message. A V7 signer must resolve the authoritative vault authorization nonce and build the canonical 200-byte challenge; bare `sha256(op)` is legacy-only and fails closed on V7. If you wrote a custom signer against `sign(challenge)`, pass the raw operation into Dexter's canonical challenge policy instead of accepting a caller-supplied challenge. Vault's browser signer and this package's `passkeySignerFromP256Keypair` node/agent signer already conform for the supported session operations.
 
 To pin the old surface, stay on `@dexterai/x402@^4`.

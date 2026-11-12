@@ -64,8 +64,9 @@ jobs:
           assert.equal(p.name, '@dexterai/x402');
           assert.match(p.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
           assert.equal(process.env.GITHUB_REF_NAME, `v${p.version}`);
-          const vault = p.peerDependencies['@dexterai/vault'];
+          const vault = p.devDependencies['@dexterai/vault'];
           assert.match(vault, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+          assert.equal(p.peerDependencies['@dexterai/vault'], `^${vault}`);
           appendFileSync(process.env.GITHUB_OUTPUT,
             `version=${p.version}\ndist_tag=${p.version.includes('-') ? 'next' : 'latest'}\nvault_version=${vault}\n`);
           NODE

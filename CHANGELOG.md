@@ -20,6 +20,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   format from the adapter family instead of the adapter name. Solana and EVM
   behave as before.
 
+## [6.1.0] - 2026-10-30
+
+### Added
+
+- `@dexterai/x402/seller`, a browser-safe subpath (no Node built-ins, no client, server or tab code) that checks a
+  store's signed x402 offer against the store file on its own registrable domain (`/.well-known/did.json`, a
+  `did:web` document with a `DexterSellerProfile` listing the quote keys, hosts and receiving addresses, each address
+  with a control proof).
+  - `checkSellerOffer` returns signed, unsigned or refused. Refusals (R1-R3) fire only where the evidence contradicts
+    itself: a key the file does not list, a bad signature, a quote for another URL or host, an address the store did
+    not sign or list. A request without a quote, or a store file that does not load at first contact, is unsigned.
+    For a store the owner already uses, an unreadable file is checked against the key from his last approval.
+  - `screenSeller` decides what an approval screen shows: the seller by its ASCII web address (or its address alone
+    when unsigned), the agent by its key and history, and notices that need an explicit confirm for lookalike names
+    and hosts (R4) or a known store's changed key or addresses (R5).
+  - `buildSellerBinding`, `encodeSellerBinding`, `sellerBindingNonce`: the record a passkey approval commits to
+    through the WebAuthn challenge nonce, holding the complete screen decision and its inputs.
+  - `knownSellers`, `verifySellerEvidence`, `verifySellerReceipt`, `liveSellerStatus` for history and for checking
+    an approval after the fact.
+- `tldts` dependency (the Public Suffix List).
+
+## [6.0.6] - 2026-10-28
+
+- Require `@dexterai/vault` `^0.44.0` and qualify the package against 0.44.0.
+  Vault's exported byte constants now use `Uint8Array`.
+- Move the four example apps to vault 0.44.0 and x402 6.0.6.
+- Package locks omit artifact URLs and integrity for these unpublished versions.
+  After publishing vault 0.44.0 and x402 6.0.6, run
+  `npm install --package-lock-only --ignore-scripts` in the SDK and each example
+  and verify clean registry installs.
+
 ## [6.0.5] - 2026-09-29
 
 ### Fixed
@@ -300,8 +331,8 @@ The v1-era public exports are gone, completing the 3.9.0 deprecation. The paymen
 
 ### Fixed
 - **`PayResult` no longer reports a phantom network on unpaid responses.** When `payAndFetch` hits an endpoint that returns 200 (or any non-402) directly, the result is now `{ ok: true, paid: false, response }` instead of `{ ok: true, response, amountPaid: '0', network: { caip2: '', bare: '', family: 'evm' } }`. The old placeholder poisoned any downstream analytics that grouped by network — every free-endpoint hit registered as an empty-CAIP-2 EVM payment. The `ok: true` variant is now discriminated by `paid: true | false`; callers should narrow on `paid` before reading `network` / `amountPaid` / `txSignature`. Strategy implementations (v1, v2) also set `paid: true` on their success path. (Source: `payment/dispatcher.ts:104` had a `// not-applicable placeholder` self-flag that finally got the type-level fix it was waiting for.)
-- **`payAndFetch` no longer reports `timeout` on a payment that may have settled.** Previously a single 15s deadline governed the whole paid call — both the on-chain settlement and the wait for the merchant's response. A merchant slower than 15s (research / scout / agent endpoints routinely are) had its payment settled, then the abort fired and `payAndFetch` returned `{ ok: false, reason: 'timeout' }` — which reads as "safe to retry" and caused a silent double-charge. The timeout is now two-phase: a short pre-payment deadline (`timeoutMs`, default 15000) covers the unpaid probe and build/sign; a long post-payment deadline (new `responseTimeoutMs`, default 120000) covers the wait for the merchant's response. A pre-payment abort still yields `reason: 'timeout'` (no money moved, safe to retry). A post-payment abort yields the new `reason: 'payment_unconfirmed'` — the payment authorization was sent and may have settled on-chain, so a consumer must NOT blind-retry; the `detail` field spells this out. The `ok: true; paid: true` variant's `response` is now `Response | undefined`. Both v1 and v2 strategies are fixed. (Reported via a bake-off audit — see `FINDINGS-pay-timeout-double-charge-2026-05-21.md`.)
-- **`payAndFetch` confirms settlement on-chain after a post-payment timeout.** When the merchant never responds, the SDK now asks the chain directly whether the payment settled, rather than always reporting `payment_unconfirmed`. EVM EIP-3009 payments (the default `exact` scheme) are confirmed via the token contract's `authorizationState(authorizer, nonce)` view — the nonce is the exact value the SDK generated, so this is a definitive yes/no. EVM Permit2 payments check `Permit2.nonceBitmap`. Solana payments scan recent signatures on the merchant's destination token account for a matching transfer, bounded by the transaction's blockhash validity. When the chain confirms settlement, the result is upgraded to `{ ok: true, paid: true, response: undefined, txSignature }` — a confirmed-but-unanswered payment, so the caller knows it paid and does not retry. When confirmation cannot be performed (RPC failure, or a scheme with no on-chain check such as EVM `exact-approval`), the result stays `payment_unconfirmed` with an explanatory `detail`. New `ChainAdapter.confirmSettlement` method and `SettlementProbe` type.
+- **Separate deadlines for payment and delivery.** The x402 v1 and v2 clients allow 15 seconds for the unpaid probe and signing (`timeoutMs`). Sending the authorization starts a separate 120-second clock for the merchant's response (`responseTimeoutMs`). Callers can change either deadline.
+- **Settlement checks after a response timeout.** The EVM adapters check the EIP-3009 authorization nonce or the Permit2 nonce bitmap. The Solana adapter looks for a matching transfer within the transaction's blockhash validity window. If the chain confirms settlement, `payAndFetch` returns `paid: true` with `response: undefined` and a transaction signature when available. If it cannot confirm settlement, it returns `payment_unconfirmed`. [Settlement checks](https://github.com/Dexter-DAO/dexter-x402-sdk/blob/v3.9.0/src/payment/confirm-settlement.ts) · [Regression tests](https://github.com/Dexter-DAO/dexter-x402-sdk/blob/v3.9.0/src/payment/__tests__/v2-strategy.test.ts#L159-L230)
 
 ### Deprecated
 

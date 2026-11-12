@@ -1,0 +1,5 @@
+/.well-known/did.json
+  Content-Type: application/did+json
+  Cache-Control: no-store
+  Access-Control-Allow-Origin: *
+  X-Content-Type-Options: nosniff

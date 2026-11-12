@@ -1,0 +1,58 @@
+Local clone proof, 2026-10-29
+Published @dexterai/x402 6.0.6 and @dexterai/vault 0.44.0.
+Mainnet transactions sent: 0. Real money moved: false.
+Vault ELF unchanged: 4b92ecb91b27173cdd0ac1af7c322126d18f01741171b7f15db0e0d6ba81355c
+Fixture changes: local GraphConfig admin, USDC mint authority, one Swig CPI signer;
+Vault ProgramData deployment slot 1, original public authority and ELF retained.
+
+Hosted consent used a fresh anonymous passkey principal in temporary PostgreSQL.
+Actual production routes; software authenticator; no browser or biometric prompt.
+Local grant registration tx: YtWncaGnMwiQ2hyeECJjXYTtMssd24rn8tj5r3nDoWqeCUq51tFcTUwEzJ1n9KvhbCDuvsFcpuo4YjA6fd7YXh7
+/api/passkey-vault-anon/grants/authorization-context: HTTP 200, 1 SQL statements, 215 ms
+/api/passkey-anon/sign/challenge: HTTP 200, 3 SQL statements, 22 ms
+/api/passkey-anon/sign/verify: HTTP 200, 4 SQL statements, 13 ms
+/api/passkey-anon/sign/verify: HTTP 400, 2 SQL statements, 6 ms
+/api/passkey-vault-anon/grants/register: HTTP 200, 6 SQL statements, 1307 ms
+/api/passkey-vault-anon/grants/register: HTTP 409, 4 SQL statements, 9 ms
+
+Four separate $1 purchases; HTTP 200 and confirmed payout for each:
+Purchase 1: 1944 ms, gross 1000000, fee 10000, net 990000 atomic USDC.
+  Reservation tx: 2pmgYVQGZkJoGACFSkMP3UvrdMG1kHeAWPMFJrzLVvLC8JoR6C4Fnmsxzr8Feh3w5HeQjKe2ZdkaFExjoFy1rtpL
+  Settlement tx: 2QaXE6Wha1GZxkYZjWGjwM3iVMGjdXXUMExx5Tdtjch2mR1zg3oe3Ky53m6QJUCjXLmNARj11jDVfLMwbWC32e7A
+Purchase 2: 1550 ms, gross 1000000, fee 10000, net 990000 atomic USDC.
+  Reservation tx: 3mkXqTqpSrW7dCG4R3C1PvSFFLg2zSEpckzSryoDgUX7eXodx4N16s9Bq5uChiGaqGzRML4dvrcSyWjHPNt7oJz9
+  Settlement tx: e1ZU1qJyM2U5AgwcJUKp1r4tJbBKN9jr3mBe8i38kKe3CtmtySzbHBJ6HTjdRT79TuMpF7w8oP84vYNDRCiBz1C
+Purchase 3: 1541 ms, gross 1000000, fee 10000, net 990000 atomic USDC.
+  Reservation tx: 5M7t5JuqS2Zoo3kfm6RnTVQJB7t5skYMfk4vUGE9tBMF6JS7ye5vW8NitJFL6H8sAjwaH5WBTYowFScLnyKkxPT7
+  Settlement tx: 34cYJrLmW34WnHHv11NZLpiTLtf1VaFj15GkdF6EcoGvG2ef4JRn8HENgdytsxwkA24cbg2fWimSoZ4HFKhQVRwT
+Purchase 4: 1546 ms, gross 1000000, fee 10000, net 990000 atomic USDC.
+  Reservation tx: 5LkYSyxkfBA5oMaZaMkXy7NdF35RYaLf1hhM3bTk1btVUBTYd8HCMPfNTedYk8iWRV3ByZft19C3vuzX3GNLkfue
+  Settlement tx: 5fEYCq9XbRSLpb9C8mXHuDTadQ7MZ9zYoQzUsmTxht9nNWk23gNUsVgLkDDBKycbCXCuzFAxnLKEPJPaHzFipkqr
+
+Fake USDC balances: buyer 10 -> 6, merchant 0 -> 3.96, treasury 0 -> 0.04.
+Session: cap 5000000, spent 4000000, outstanding 0 atomic.
+Four premature/wrong-key checks stopped without sending; payer balance unchanged.
+
+over-limit: attempt 1500000 atomic; simulation and landed failure at instruction 1:
+  6013 RevolvingCapacityExceeded
+  Failed tx: 2E2YwLwkbsC6gqukpDu5KtXna6PBR86FWEDQUrFBGxffLW71ivZQgbXWgeJCSSKf6yV928GQQwazMFRCyyDEBNrU
+  Fee: 15000 local lamports.
+  Vault, session, buyer and seller token-account data unchanged.
+expired: attempt 1000000 atomic; simulation and landed failure at instruction 1:
+  6009 SessionExpiryInPast
+  Failed tx: 5mYUew6kvve562bK168G6uFt6d6cNbFazAT9dtKQa5CrgQ2WrXtXNeg2cJsqodQLuy87YEYbBAE2SmfDsdokYDTj
+  Fee: 15000 local lamports.
+  Vault, session, buyer and seller token-account data unchanged.
+
+Validator Clock: 1793233918 -> 1793925118; approved expiry 1793838446.
+Expiry snapshot/restart: 19 account-data hashes matched; session expiry was never edited.
+Purchases and 6013 are preserved in the original ledger; 6009 is in the restored ledger.
+Owned validators, merchant, HTTP consent server and disposable database stopped.
+
+Finding: first hosted registration returned HTTP 500 and no session was registered.
+The exception was fingerprinted; its cause was not captured. A later unchanged route passed.
+No production fix is claimed. The harness now retains per-attempt diagnostics.
+
+Synthetic image delivery. XONA, browser/biometric consent, actual Claude task choices
+and mainnet execution remain unverified. /tab/open still requires the internal token.
+New tooling has no before-latency baseline. Purchase-route SQL counts were not measured.

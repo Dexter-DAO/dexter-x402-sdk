@@ -33,5 +33,8 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Test self-held grant tooling
+        run: node --test scripts/case-two-self-held.test.mjs scripts/case-two-reservation.test.mjs scripts/case-three-self-held.test.mjs scripts/case-three-seller-tools.test.mjs scripts/case-three-refusal.test.mjs scripts/case-three-clone-approve.test.mjs
+
       - name: Verify installed Tab package
         run: npm run verify:tab:package

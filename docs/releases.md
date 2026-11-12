@@ -36,4 +36,4 @@ npm run build
 npm run verify:tab:package
 ```
 
-Set `DEXTER_X402_PACKAGE_PROOF_DIR` to an empty directory to choose where the tarball, consumer and proof are saved. The workflow uses that option to upload the same archive it tested. An optional positional Vault archive is available for local prerelease qualification; the installed Vault version must match the exact peer dependency.
+Set `DEXTER_X402_PACKAGE_PROOF_DIR` to an empty directory to choose where the tarball, consumer and proof are saved. The workflow uses that option to upload the same archive it tested. An optional positional Vault archive is available for local prerelease qualification; the installed Vault version must match the exact development dependency.
