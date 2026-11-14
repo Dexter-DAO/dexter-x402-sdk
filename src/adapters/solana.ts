@@ -391,16 +391,19 @@ export class SolanaAdapter implements ChainAdapter {
       if (sigInfo.err) continue; // failed tx — never settled funds
       const tx = await connection.getTransaction(sigInfo.signature, {
         commitment: 'confirmed',
-        maxSupportedTransactionVersion: 0,
+        maxSupportedTransactionVersion: 1,
       });
       if (!tx?.meta) continue;
 
       // The full account key list, so a balance entry's accountIndex can be
       // resolved to an actual address and compared to the destination ATA.
-      const accountKeys = tx.transaction.message
-        .getAccountKeys()
-        .keySegments()
-        .flat();
+      const message = tx.transaction.message;
+      const resolvedKeys = message.version === 0
+        ? message.getAccountKeys({
+            accountKeysFromLookups: tx.meta.loadedAddresses ?? null,
+          })
+        : message.getAccountKeys();
+      const accountKeys = resolvedKeys.keySegments().flat();
 
       const pre = tx.meta.preTokenBalances ?? [];
       const post = tx.meta.postTokenBalances ?? [];

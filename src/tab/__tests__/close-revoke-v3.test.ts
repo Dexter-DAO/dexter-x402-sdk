@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mainnetTransactionRpc } from '../../__tests__/mainnet-transactions';
 import { Keypair, Transaction, type Connection } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { deriveSessionPda } from '@dexterai/vault/session';
@@ -138,6 +139,26 @@ afterEach(() => {
 });
 
 describe('Solana adapter close — Vault 0.43.2 exact-state revocation', () => {
+  it('uses the real mainnet v1 decoder when finalized history reconciles an ambiguous close', async () => {
+    const session = createSession();
+    const fixture = createFixture(exactSnapshot(session));
+    const rpc = mainnetTransactionRpc();
+    vi.mocked(fixture.connection.confirmTransaction)
+      .mockRejectedValueOnce(new Error('confirmation response lost'));
+    vi.mocked(fixture.connection.getTransaction)
+      .mockImplementation(rpc.connection.getTransaction.bind(rpc.connection));
+
+    await expect(fixture.adapter.signCloseTab(
+      session, session.scope.channelId, FINAL_CUMULATIVE.toString(),
+    )).resolves.toEqual(sessionRevokeMessage(exactSnapshot(session)));
+    expect(rpc.fetchRpc).toHaveBeenCalledOnce();
+    expect(fixture.signOperation).toHaveBeenCalledOnce();
+    expect(fixture.connection.sentRaw).toHaveLength(1);
+    expect(fixture.connection.getTransaction).toHaveBeenCalledWith(
+      expect.any(String), { commitment: 'finalized', maxSupportedTransactionVersion: 1 },
+    );
+  });
+
   it('signs the authoritative post-settlement snapshot and carries the exact pending count', async () => {
     const session = createSession();
     const snapshot = exactSnapshot(session);
