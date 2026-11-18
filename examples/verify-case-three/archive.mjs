@@ -13,8 +13,9 @@ export function publicHttps(value) {
   return url;
 }
 
-/** Node fetch decodes HTTP Content-Encoding, including gzip, deflate and br, before arrayBuffer(). */
-export async function fetchPublicBytes(value, {fetcher = fetch, limit = 2_000_000, redirects = 4} = {}) {
+/** Node fetch decodes HTTP Content-Encoding, including gzip, deflate and br, before arrayBuffer(). `follow` decides, per
+ * redirect target, whether that address may be read; a refused target fails the read. */
+export async function fetchPublicBytes(value, {fetcher = fetch, limit = 2_000_000, redirects = 4, follow = () => true} = {}) {
   let url = publicHttps(value);
   for (let i = 0; i <= redirects; i++) {
     const response = await fetcher(url.href, {redirect: 'manual', signal: AbortSignal.timeout(20_000),
@@ -24,6 +25,7 @@ export async function fetchPublicBytes(value, {fetcher = fetch, limit = 2_000_00
       await response.body?.cancel();
       if (!location) throw new Error('Redirect has no location');
       url = publicHttps(new URL(location, url).href);
+      if (!follow(url.href)) throw new Error('Redirect target refused');
       continue;
     }
     if (!response.ok) throw new Error(`HTTP ${response.status} from ${url.origin}`);

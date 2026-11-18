@@ -284,30 +284,49 @@ test('verifyRecord bounds each copycat history by the slot of its no-permission 
   });
 });
 
-test('the archive copy must be the exact capture, taken from 24 hours before through 30 minutes after the approval', async () => {
+test('the archive copy is the capture the archive serves, taken from 24 hours before through 30 minutes after the approval', async () => {
   const body = Buffer.from('{"id":"did:web:dexter.cash"}'), hash = sha256(body);
   const approval = {blockTime: Date.UTC(2026, 9, 30, 14, 0, 0) / 1000};
   const binding = {registrableDomain: 'dexter.cash', didDocumentSha256: hash};
+  const snapshot = stamp => `https://web.archive.org/web/${stamp}id_/https://dexter.cash/.well-known/did.json`;
   const record = stamp => ({seller: {archive: {url: `https://web.archive.org/web/${stamp}/https://dexter.cash/.well-known/did.json`, sha256: hash}}});
   const fetched = [];
   const fetcher = async url => { fetched.push(url); return new Response(body); };
   assert.match(await verifyArchiveCopy(record('20261030140300'), binding, approval, fetcher), /captured 3 min after the approval$/);
-  assert.deepEqual(fetched, ['https://web.archive.org/web/20261030140300id_/https://dexter.cash/.well-known/did.json']);
+  assert.deepEqual(fetched, [snapshot('20261030140300')]);
   // 3.5 hours before the approval, the exact 24-hour and 30-minute edges, and one second before the approval all pass.
   assert.match(await verifyArchiveCopy(record('20261030103000'), binding, approval, fetcher), /captured 3 h 30 min before the approval$/);
   assert.match(await verifyArchiveCopy(record('20261029140000'), binding, approval, fetcher), /captured 24 h 0 min before the approval$/);
   assert.match(await verifyArchiveCopy(record('20261030143000'), binding, approval, fetcher), /captured 30 min after the approval$/);
   assert.match(await verifyArchiveCopy(record('20261030135959'), binding, approval, fetcher), /captured 0 min before the approval$/);
-  // 25 hours before, one second past 24 hours before, 31 minutes after and one second past 30 minutes after all fail unread.
-  fetched.length = 0;
+  // 25 hours before, one second past 24 hours before, 31 minutes after and one second past 30 minutes after all fail.
   for (const stamp of ['20261029130000', '20261029135959', '20261030143100', '20261030143001']) {
     await assert.rejects(verifyArchiveCopy(record(stamp), binding, approval, fetcher), /not captured between 24 hours before and 30 minutes after the approval/);
   }
-  assert.deepEqual(fetched, []);
   await assert.rejects(verifyArchiveCopy(record('20261030140300'), binding, {}, fetcher), /not captured between 24 hours before/);
-  const redirect = async () => new Response(null, {status: 302, headers: {location: 'https://web.archive.org/web/20261030140259id_/https://dexter.cash/.well-known/did.json'}});
-  await assert.rejects(verifyArchiveCopy(record('20261030140300'), binding, approval, redirect), /not an exact capture/);
-  await assert.rejects(verifyArchiveCopy(record('20261030103000'), binding, approval, redirect), /not an exact capture/);
+  // The archive answers the link with another capture of the same file: that capture is read, and its own time is the capture time.
+  const answers = (served, location = snapshot(served), bytes = body) => async url => url === snapshot(served) ? new Response(bytes)
+    : new Response(null, {status: 302, headers: {location}});
+  assert.equal(await verifyArchiveCopy(record('20261030103000'), binding, approval, answers('20261030140120')),
+    `${snapshot('20261030140120')} sha256 ${hash}, captured 1 min after the approval; the record links to 2026-10-30T10:30:00.000Z `
+    + 'and the archive answers that link with this capture from 2026-10-30T14:01:20.000Z');
+  assert.match(await verifyArchiveCopy(record('20261030103000'), binding, approval,
+    answers('20261030140120', '/web/20261030140120id_/https://dexter.cash/.well-known/did.json')), /captured 1 min after the approval; the record links to/);
+  // The served capture's time decides the window, whichever side of it the link's time falls on.
+  assert.match(await verifyArchiveCopy(record('20261029130000'), binding, approval, answers('20261030140300')),
+    /captured 3 min after the approval; the record links to 2026-10-29T13:00:00\.000Z/);
+  await assert.rejects(verifyArchiveCopy(record('20261030140300'), binding, approval, answers('20261030143001')),
+    /not captured between 24 hours before and 30 minutes after the approval/);
+  await assert.rejects(verifyArchiveCopy(record('20261030103000'), binding, approval, answers('20261030140120', undefined, Buffer.from('{}'))),
+    /differ from the signed binding/);
+  // A second redirect, another host, another file, another store, or a capture address that is not the raw id_ form all fail.
+  const redirect = location => async () => new Response(null, {status: 302, headers: {location}});
+  for (const location of [snapshot('20261030140259'), 'https://attacker.example/web/20261030140259id_/https://dexter.cash/.well-known/did.json',
+    'https://web.archive.org/web/20261030140259id_/https://dexter.cash/robots.txt',
+    'https://web.archive.org/web/20261030140259id_/https://dexter-bookstore.pages.dev/.well-known/did.json',
+    'https://web.archive.org/web/20261030140259/https://dexter.cash/.well-known/did.json']) {
+    await assert.rejects(verifyArchiveCopy(record('20261030140300'), binding, approval, redirect(location)), /did not answer the link with one capture of this store file/);
+  }
   await assert.rejects(verifyArchiveCopy(record('20261030140300'), {...binding, didDocumentSha256: '00'.repeat(32)}, approval, fetcher), /differ from the signed binding/);
   await assert.rejects(verifyArchiveCopy(record('20261030103000'), {...binding, didDocumentSha256: '00'.repeat(32)}, approval, fetcher), /differ from the signed binding/);
 });
