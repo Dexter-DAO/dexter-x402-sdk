@@ -138,27 +138,36 @@ const span = seconds => {
 };
 
 /**
- * The Internet Archive's copy of the store file: the exact capture named by the record (a redirect to a nearer capture
- * fails), taken from ARCHIVE_LEAD_SECONDS before the approval through ARCHIVE_WINDOW_SECONDS after it, with the bytes the
- * passkey committed to.
+ * The Internet Archive's copy of the store file, with the bytes the passkey committed to. The record's link names a capture.
+ * When the archive answers that link by redirecting to another capture of the same file, that capture is the copy that is
+ * read, and its own timestamp is the capture time; any other redirect, or a second one, fails. The copy must be taken from
+ * ARCHIVE_LEAD_SECONDS before the approval through ARCHIVE_WINDOW_SECONDS after it.
  */
 export async function verifyArchiveCopy(record, binding, approval, fetcher = fetch) {
   requireCheck(binding && record.seller?.archive, 'A verified seller and archive snapshot are required');
-  const archive = record.seller.archive, raw = archiveRawUrl(archive.url);
-  requireCheck(raw.endsWith(`/https://${binding.registrableDomain}/.well-known/did.json`), 'Archive URL names a different store file');
-  const stamp = /^https:\/\/web\.archive\.org\/web\/(\d{14})id_\//.exec(raw)[1];
-  const capturedAt = Date.UTC(+stamp.slice(0, 4), +stamp.slice(4, 6) - 1, +stamp.slice(6, 8), +stamp.slice(8, 10),
+  const archive = record.seller.archive, cited = archiveRawUrl(archive.url);
+  const file = `/https://${binding.registrableDomain}/.well-known/did.json`;
+  /** The 14-digit timestamp when the address is one raw capture of this store file. */
+  const stampOf = url => url.endsWith(file) ? /^https:\/\/web\.archive\.org\/web\/(\d{14})id_$/.exec(url.slice(0, -file.length))?.[1] : undefined;
+  const seconds = stamp => Date.UTC(+stamp.slice(0, 4), +stamp.slice(4, 6) - 1, +stamp.slice(6, 8), +stamp.slice(8, 10),
     +stamp.slice(10, 12), +stamp.slice(12, 14)) / 1000;
+  requireCheck(stampOf(cited), 'Archive URL names a different store file');
+  let response;
+  try { response = await fetchPublicBytes(cited, {fetcher, limit: 65_536, redirects: 1, follow: url => Boolean(stampOf(url))}); }
+  catch (error) {
+    throw new Error(['Too many redirects', 'Redirect target refused'].includes(error.message)
+      ? 'The archive did not answer the link with one capture of this store file' : error.message);
+  }
+  // The capture the archive served names its own time. The time in the record's link is not used as the capture time.
+  const capturedAt = seconds(stampOf(response.url));
   requireCheck(Number.isSafeInteger(approval?.blockTime) && capturedAt >= approval.blockTime - ARCHIVE_LEAD_SECONDS
     && capturedAt <= approval.blockTime + ARCHIVE_WINDOW_SECONDS,
     'The archive copy was not captured between 24 hours before and 30 minutes after the approval');
-  let response;
-  try { response = await fetchPublicBytes(raw, {fetcher, limit: 65_536, redirects: 0}); }
-  catch (error) { throw new Error(error.message === 'Too many redirects' ? 'The archive URL is not an exact capture' : error.message); }
   const hash = sha256(response.bytes);
   requireCheck(hash === binding.didDocumentSha256 && hash === archive.sha256, 'Decoded archive bytes differ from the signed binding');
-  const offset = capturedAt - approval.blockTime;
-  return `${raw} sha256 ${hash}, captured ${span(offset)} ${offset < 0 ? 'before' : 'after'} the approval`;
+  const offset = capturedAt - approval.blockTime, iso = time => new Date(time * 1000).toISOString();
+  return `${response.url} sha256 ${hash}, captured ${span(offset)} ${offset < 0 ? 'before' : 'after'} the approval`
+    + (response.url === cited ? '' : `; the record links to ${iso(seconds(stampOf(cited)))} and the archive answers that link with this capture from ${iso(capturedAt)}`);
 }
 
 /** True when the vault program ran an instruction, top level or inner, that lists the session account as writable. */
